@@ -1,0 +1,139 @@
+<Page
+    x:Class="JvJvMediaManager.Views.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:JvJvMediaManager"
+    xmlns:viewModels="using:JvJvMediaManager.ViewModels"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="{ThemeResource SurfaceBrush}">
+
+    <Page.Resources>
+        <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
+            <Grid Padding="8" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="72" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Width="72" Height="48" Background="#2D2D2D" CornerRadius="6">
+                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="2">
+                    <TextBlock Text="{x:Bind FileName}" Foreground="{ThemeResource TextBrush}" FontSize="14" TextTrimming="CharacterEllipsis" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                        <TextBlock Text="{x:Bind ResolutionText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="GridItemTemplate" x:DataType="viewModels:MediaItemViewModel">
+            <Grid Width="140" Height="140">
+                <Border CornerRadius="8" Background="#2D2D2D">
+                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                </Border>
+                <Border Background="#80000000" VerticalAlignment="Bottom" CornerRadius="0,0,8,8" Padding="6">
+                    <StackPanel>
+                        <TextBlock Text="{x:Bind FileName}" Foreground="{ThemeResource TextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </DataTemplate>
+    </Page.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <CommandBar Grid.Row="0" Background="{ThemeResource SurfaceAltBrush}" DefaultLabelPosition="Collapsed">
+            <AppBarButton Icon="Add" Label="添加文件" Click="AddFiles_Click" />
+            <AppBarButton Icon="Folder" Label="添加文件夹" Click="AddFolder_Click" />
+            <AppBarButton Icon="Sync" Label="刷新" Click="Refresh_Click" />
+            <AppBarSeparator />
+            <AppBarButton Icon="Setting" Label="设置" Click="Settings_Click" />
+        </CommandBar>
+
+        <SplitView Grid.Row="1" DisplayMode="Inline" IsPaneOpen="True" OpenPaneLength="360" Background="{ThemeResource SurfaceBrush}">
+            <SplitView.Pane>
+                <Grid Background="{ThemeResource SurfaceAltBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Padding="12" Spacing="8">
+                        <TextBox x:Name="SearchBox" PlaceholderText="搜索文件名或输入 #标签" TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown" />
+                        <ItemsControl x:Name="SelectedTagsControl" Visibility="Collapsed">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#1F005FB8" CornerRadius="6" Padding="6,2" Margin="0,0,6,6">
+                                        <TextBlock Text="{Binding}" Foreground="#60CDFF" FontSize="12" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapGrid />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Padding="12" Spacing="8">
+                        <Button Content="列表" Click="ListViewMode_Click" />
+                        <Button Content="网格" Click="GridViewMode_Click" />
+                        <Button Content="排序" Click="Sort_Click" />
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="2" Padding="12,0" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding StatusMessage}" />
+
+                    <Grid Grid.Row="3">
+                        <ListView x:Name="ListView"
+                                  ItemsSource="{Binding FilteredMediaItems}"
+                                  ItemTemplate="{StaticResource ListItemTemplate}"
+                                  SelectionMode="Extended"
+                                  IsItemClickEnabled="True"
+                                  ItemClick="Media_ItemClick"
+                                  SelectionChanged="Media_SelectionChanged" />
+
+                        <GridView x:Name="GridView"
+                                  Visibility="Collapsed"
+                                  ItemsSource="{Binding FilteredMediaItems}"
+                                  ItemTemplate="{StaticResource GridItemTemplate}"
+                                  SelectionMode="Extended"
+                                  IsItemClickEnabled="True"
+                                  ItemClick="Media_ItemClick"
+                                  SelectionChanged="Media_SelectionChanged">
+                            <GridView.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <ItemsWrapGrid ItemWidth="140" ItemHeight="140" />
+                                </ItemsPanelTemplate>
+                            </GridView.ItemsPanel>
+                        </GridView>
+                    </Grid>
+                </Grid>
+            </SplitView.Pane>
+
+            <SplitView.Content>
+                <Grid Background="#202020">
+                    <Grid x:Name="EmptyState" Visibility="Visible">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                            <TextBlock Text="选择一个媒体文件开始播放" Foreground="{ThemeResource TextBrush}" FontSize="18" />
+                            <TextBlock Text="PageUp / PageDown 切换上一个/下一个" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                        </StackPanel>
+                    </Grid>
+
+                    <MediaPlayerElement x:Name="VideoPlayer" AreTransportControlsEnabled="True" Visibility="Collapsed" />
+                    <Image x:Name="ImageViewer" Visibility="Collapsed" Stretch="Uniform" />
+                </Grid>
+            </SplitView.Content>
+        </SplitView>
+    </Grid>
+</Page>
