@@ -161,6 +161,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <Slider x:Name="ProgressSlider"
@@ -204,6 +205,42 @@
                                 <Button x:Name="PlaybackModeButton" Grid.Column="4" Content="列表循环" Click="PlaybackMode_Click" />
                                 <Button x:Name="FullScreenButton" Grid.Column="5" Content="全屏" Click="FullScreen_Click" />
                             </Grid>
+
+                            <Border x:Name="ClipBar"
+                                    Grid.Row="2"
+                                    Margin="0,10,0,0"
+                                    Padding="10,8"
+                                    Background="#55000000"
+                                    CornerRadius="8"
+                                    Visibility="Collapsed">
+                                <StackPanel Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="SetClipStartButton" Content="标记入点 (I)" Click="SetClipStart_Click" />
+                                        <Button x:Name="SetClipEndButton" Content="标记出点 (O)" Click="SetClipEnd_Click" />
+                                        <Button x:Name="ClearClipButton" Content="重置区间" Click="ClearClip_Click" />
+                                        <Button x:Name="ExportClipButton" Content="导出剪辑 (E)" Click="ExportClip_Click" />
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" Spacing="16">
+                                        <TextBlock x:Name="ClipStartText" Text="入点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                        <TextBlock x:Name="ClipEndText" Text="出点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                        <TextBlock x:Name="ClipDurationText" Text="时长：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                        <ProgressBar x:Name="ClipExportProgressBar"
+                                                     Width="180"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Value="0"
+                                                     Visibility="Collapsed" />
+                                        <TextBlock x:Name="ClipStatusText"
+                                                   Foreground="{ThemeResource MutedTextBrush}"
+                                                   FontSize="12"
+                                                   TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
                         </Grid>
                     </Grid>
                 </Grid>

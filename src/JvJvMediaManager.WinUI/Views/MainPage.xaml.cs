@@ -12,6 +12,7 @@ using Windows.Media.Playback;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Services;
 using WinRT.Interop;
 
 namespace JvJvMediaManager.Views;
@@ -31,6 +32,7 @@ public sealed partial class MainPage : Page
     private readonly DispatcherTimer _playbackTimer = new();
     private readonly DispatcherTimer _controlsHideTimer = new();
     private readonly Random _random = new();
+    private readonly VideoClipService _clipService = new();
 
     private MediaPlayer? _player;
     private AppWindow? _appWindow;
@@ -40,6 +42,11 @@ public sealed partial class MainPage : Page
     private bool _isFullScreen;
     private bool _isSyncingSelection;
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
+    private string? _clipMediaId;
+    private TimeSpan? _clipStart;
+    private TimeSpan? _clipEnd;
+    private bool _isExportingClip;
+    private string _clipStatusMessage = string.Empty;
 
     public MainPage()
     {
@@ -61,6 +68,7 @@ public sealed partial class MainPage : Page
 
         UpdatePlaybackModeUi();
         UpdateControlBarState(false);
+        UpdateClipUi();
     }
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
@@ -249,6 +257,7 @@ public sealed partial class MainPage : Page
     private void UpdatePlayer(MediaItemViewModel media)
     {
         EmptyState.Visibility = Visibility.Collapsed;
+        ResetClipState(media);
 
         if (media.Type == MediaType.Video)
         {
@@ -280,6 +289,7 @@ public sealed partial class MainPage : Page
         VideoPlayer.Visibility = Visibility.Collapsed;
         ImageScrollViewer.Visibility = Visibility.Collapsed;
         ImageViewer.Source = null;
+        ResetClipState(null);
         if (_player != null)
         {
             _player.Pause();
@@ -326,6 +336,11 @@ public sealed partial class MainPage : Page
 
     private void MainPage_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (FocusManager.GetFocusedElement(XamlRoot) is TextBox or PasswordBox or RichEditBox or AutoSuggestBox)
+        {
+            return;
+        }
+
         if (ViewModel.SelectedMedia == null) return;
 
         if (e.Key == Windows.System.VirtualKey.Space && ViewModel.SelectedMedia.Type == MediaType.Video)
@@ -356,6 +371,21 @@ public sealed partial class MainPage : Page
         else if (e.Key == Windows.System.VirtualKey.Delete)
         {
             _ = DeleteSelectedAsync();
+            e.Handled = true;
+        }
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.I)
+        {
+            SetClipStartToCurrent();
+            e.Handled = true;
+        }
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.O)
+        {
+            SetClipEndToCurrent();
+            e.Handled = true;
+        }
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.E)
+        {
+            _ = ExportCurrentClipAsync();
             e.Handled = true;
         }
         else if (ViewModel.SelectedMedia.Type == MediaType.Image)
@@ -520,6 +550,8 @@ public sealed partial class MainPage : Page
             ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
             TotalTimeText.Text = FormatTime(duration);
             CurrentTimeText.Text = "0:00";
+            InitializeClipRange(duration);
+            UpdateClipUi();
         });
     }
 
@@ -653,6 +685,138 @@ public sealed partial class MainPage : Page
         SelectedTagsControl.Visibility = ViewModel.SelectedTags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private void SetClipStart_Click(object sender, RoutedEventArgs e)
+    {
+        SetClipStartToCurrent();
+    }
+
+    private void SetClipEnd_Click(object sender, RoutedEventArgs e)
+    {
+        SetClipEndToCurrent();
+    }
+
+    private void ClearClip_Click(object sender, RoutedEventArgs e)
+    {
+        ResetClipRangeToFullDuration();
+        _clipStatusMessage = _clipService.IsAvailable
+            ? "剪辑区间已重置为整段视频。"
+            : _clipService.UnavailableReason;
+        UpdateClipUi();
+    }
+
+    private async void ExportClip_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportCurrentClipAsync();
+    }
+
+    private void SetClipStartToCurrent()
+    {
+        var duration = GetCurrentVideoDuration();
+        if (duration <= TimeSpan.Zero)
+        {
+            _clipStatusMessage = "视频时长尚未就绪，请稍后再试。";
+            UpdateClipUi();
+            return;
+        }
+
+        var position = ClampToDuration(GetCurrentPlaybackPosition(), duration);
+        _clipStart = position;
+
+        if (!_clipEnd.HasValue || _clipEnd.Value <= position)
+        {
+            _clipEnd = duration;
+        }
+
+        _clipStatusMessage = $"入点已设置为 {FormatTime(position)}。";
+        UpdateClipUi();
+    }
+
+    private void SetClipEndToCurrent()
+    {
+        var duration = GetCurrentVideoDuration();
+        if (duration <= TimeSpan.Zero)
+        {
+            _clipStatusMessage = "视频时长尚未就绪，请稍后再试。";
+            UpdateClipUi();
+            return;
+        }
+
+        var position = ClampToDuration(GetCurrentPlaybackPosition(), duration);
+        _clipEnd = position;
+
+        if (!_clipStart.HasValue || _clipStart.Value >= position)
+        {
+            _clipStart = TimeSpan.Zero;
+        }
+
+        _clipStatusMessage = $"出点已设置为 {FormatTime(position)}。";
+        UpdateClipUi();
+    }
+
+    private async Task ExportCurrentClipAsync()
+    {
+        var media = ViewModel.SelectedMedia;
+        if (media?.Type != MediaType.Video)
+        {
+            return;
+        }
+
+        if (!_clipService.IsAvailable)
+        {
+            _clipStatusMessage = _clipService.UnavailableReason;
+            UpdateClipUi();
+            return;
+        }
+
+        if (!_clipStart.HasValue || !_clipEnd.HasValue || _clipEnd.Value <= _clipStart.Value)
+        {
+            _clipStatusMessage = "请先设置有效的入点和出点。";
+            UpdateClipUi();
+            return;
+        }
+
+        var outputPath = _clipService.CreateOutputPath(media.Path, _clipStart.Value, _clipEnd.Value);
+        _isExportingClip = true;
+        _clipStatusMessage = $"正在导出到 {Path.GetFileName(outputPath)}";
+        ClipExportProgressBar.Value = 0;
+        UpdateClipUi();
+
+        try
+        {
+            var progress = new Progress<double>(value =>
+            {
+                ClipExportProgressBar.Value = value * 100;
+                _clipStatusMessage = value >= 1
+                    ? $"正在收尾 {Path.GetFileName(outputPath)}"
+                    : $"正在导出 {Path.GetFileName(outputPath)} ({value:P0})";
+                UpdateClipUi();
+            });
+
+            var result = await _clipService.ExportClipAsync(new VideoClipRequest
+            {
+                InputPath = media.Path,
+                Start = _clipStart.Value,
+                End = _clipEnd.Value,
+                OutputPath = outputPath
+            }, progress);
+
+            _clipStatusMessage = $"导出完成：{Path.GetFileName(result.OutputPath)}";
+            ClipExportProgressBar.Value = 100;
+
+            await ViewModel.AddFilesAsync(new[] { result.OutputPath });
+            UpdateWatchedFolders(new[] { result.OutputPath });
+        }
+        catch (Exception ex)
+        {
+            _clipStatusMessage = $"导出失败：{ex.Message}";
+        }
+        finally
+        {
+            _isExportingClip = false;
+            UpdateClipUi();
+        }
+    }
+
     private void Media_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
     {
         if (args.InRecycleQueue)
@@ -784,6 +948,118 @@ public sealed partial class MainPage : Page
 
         ZoomImage(delta > 0 ? 0.1 : -0.1);
         e.Handled = true;
+    }
+
+    private void ResetClipState(MediaItemViewModel? media)
+    {
+        if (media?.Type != MediaType.Video)
+        {
+            _clipMediaId = null;
+            _clipStart = null;
+            _clipEnd = null;
+            _clipStatusMessage = string.Empty;
+            UpdateClipUi();
+            return;
+        }
+
+        if (string.Equals(_clipMediaId, media.Id, StringComparison.Ordinal))
+        {
+            UpdateClipUi();
+            return;
+        }
+
+        _clipMediaId = media.Id;
+        _clipStart = TimeSpan.Zero;
+        _clipEnd = null;
+        _clipStatusMessage = _clipService.IsAvailable
+            ? "使用 I / O 标记入点和出点，然后按 E 导出。"
+            : _clipService.UnavailableReason;
+        UpdateClipUi();
+    }
+
+    private void ResetClipRangeToFullDuration()
+    {
+        _clipStart = TimeSpan.Zero;
+
+        var duration = GetCurrentVideoDuration();
+        _clipEnd = duration > TimeSpan.Zero ? duration : null;
+    }
+
+    private void InitializeClipRange(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        _clipStart ??= TimeSpan.Zero;
+        if (!_clipEnd.HasValue || _clipEnd.Value > duration)
+        {
+            _clipEnd = duration;
+        }
+    }
+
+    private void UpdateClipUi()
+    {
+        var showClipBar = ViewModel.SelectedMedia?.Type == MediaType.Video;
+        ClipBar.Visibility = showClipBar ? Visibility.Visible : Visibility.Collapsed;
+        if (!showClipBar)
+        {
+            return;
+        }
+
+        var duration = GetCurrentVideoDuration();
+        InitializeClipRange(duration);
+
+        var clipStart = _clipStart ?? TimeSpan.Zero;
+        var clipEnd = _clipEnd ?? duration;
+        var clipLength = clipEnd > clipStart ? clipEnd - clipStart : TimeSpan.Zero;
+
+        ClipStartText.Text = $"入点：{FormatTime(clipStart)}";
+        ClipEndText.Text = clipEnd > TimeSpan.Zero ? $"出点：{FormatTime(clipEnd)}" : "出点：--";
+        ClipDurationText.Text = clipLength > TimeSpan.Zero ? $"时长：{FormatTime(clipLength)}" : "时长：--";
+        ClipExportProgressBar.Visibility = _isExportingClip ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!_isExportingClip && ClipExportProgressBar.Value >= 100 && clipLength > TimeSpan.Zero)
+        {
+            ClipExportProgressBar.Value = 100;
+        }
+        else if (!_isExportingClip && string.IsNullOrWhiteSpace(_clipStatusMessage))
+        {
+            ClipExportProgressBar.Value = 0;
+        }
+
+        ClipStatusText.Text = _clipStatusMessage;
+        SetClipStartButton.IsEnabled = !_isExportingClip && duration > TimeSpan.Zero;
+        SetClipEndButton.IsEnabled = !_isExportingClip && duration > TimeSpan.Zero;
+        ClearClipButton.IsEnabled = !_isExportingClip;
+        ExportClipButton.IsEnabled = !_isExportingClip && _clipService.IsAvailable && clipLength > TimeSpan.Zero;
+        ExportClipButton.Content = _isExportingClip ? "导出中..." : "导出剪辑 (E)";
+    }
+
+    private TimeSpan GetCurrentPlaybackPosition()
+    {
+        return _player?.PlaybackSession.Position ?? TimeSpan.Zero;
+    }
+
+    private TimeSpan GetCurrentVideoDuration()
+    {
+        return _player?.PlaybackSession.NaturalDuration ?? TimeSpan.Zero;
+    }
+
+    private static TimeSpan ClampToDuration(TimeSpan value, TimeSpan duration)
+    {
+        if (value < TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+
+        if (duration > TimeSpan.Zero && value > duration)
+        {
+            return duration;
+        }
+
+        return value;
     }
 
     private static string FormatTime(TimeSpan value)

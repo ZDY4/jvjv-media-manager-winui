@@ -224,7 +224,7 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
 
         private void InitTypeTables()
         {
-            _typeNameTable = new string[18];
+            _typeNameTable = new string[21];
             _typeNameTable[0] = "Microsoft.UI.Xaml.Controls.XamlControlsResources";
             _typeNameTable[1] = "Microsoft.UI.Xaml.ResourceDictionary";
             _typeNameTable[2] = "Object";
@@ -234,17 +234,20 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
             _typeNameTable[6] = "Byte";
             _typeNameTable[7] = "JvJvMediaManager.MainWindow";
             _typeNameTable[8] = "Microsoft.UI.Xaml.Window";
-            _typeNameTable[9] = "JvJvMediaManager.Views.MainPage";
-            _typeNameTable[10] = "Microsoft.UI.Xaml.Controls.Page";
-            _typeNameTable[11] = "Microsoft.UI.Xaml.Controls.UserControl";
-            _typeNameTable[12] = "JvJvMediaManager.ViewModels.MainViewModel";
-            _typeNameTable[13] = "JvJvMediaManager.Utilities.ObservableObject";
-            _typeNameTable[14] = "Microsoft.UI.Xaml.Controls.TreeViewNode";
-            _typeNameTable[15] = "Microsoft.UI.Xaml.DependencyObject";
-            _typeNameTable[16] = "System.Collections.Generic.IList`1<Microsoft.UI.Xaml.Controls.TreeViewNode>";
-            _typeNameTable[17] = "Int32";
+            _typeNameTable[9] = "Microsoft.UI.Xaml.Controls.ProgressBar";
+            _typeNameTable[10] = "Microsoft.UI.Xaml.Controls.Primitives.RangeBase";
+            _typeNameTable[11] = "Microsoft.UI.Xaml.Controls.ProgressBarTemplateSettings";
+            _typeNameTable[12] = "Microsoft.UI.Xaml.DependencyObject";
+            _typeNameTable[13] = "JvJvMediaManager.Views.MainPage";
+            _typeNameTable[14] = "Microsoft.UI.Xaml.Controls.Page";
+            _typeNameTable[15] = "Microsoft.UI.Xaml.Controls.UserControl";
+            _typeNameTable[16] = "JvJvMediaManager.ViewModels.MainViewModel";
+            _typeNameTable[17] = "JvJvMediaManager.Utilities.ObservableObject";
+            _typeNameTable[18] = "Microsoft.UI.Xaml.Controls.TreeViewNode";
+            _typeNameTable[19] = "System.Collections.Generic.IList`1<Microsoft.UI.Xaml.Controls.TreeViewNode>";
+            _typeNameTable[20] = "Int32";
 
-            _typeTable = new global::System.Type[18];
+            _typeTable = new global::System.Type[21];
             _typeTable[0] = typeof(global::Microsoft.UI.Xaml.Controls.XamlControlsResources);
             _typeTable[1] = typeof(global::Microsoft.UI.Xaml.ResourceDictionary);
             _typeTable[2] = typeof(global::System.Object);
@@ -254,15 +257,18 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
             _typeTable[6] = typeof(global::System.Byte);
             _typeTable[7] = typeof(global::JvJvMediaManager.MainWindow);
             _typeTable[8] = typeof(global::Microsoft.UI.Xaml.Window);
-            _typeTable[9] = typeof(global::JvJvMediaManager.Views.MainPage);
-            _typeTable[10] = typeof(global::Microsoft.UI.Xaml.Controls.Page);
-            _typeTable[11] = typeof(global::Microsoft.UI.Xaml.Controls.UserControl);
-            _typeTable[12] = typeof(global::JvJvMediaManager.ViewModels.MainViewModel);
-            _typeTable[13] = typeof(global::JvJvMediaManager.Utilities.ObservableObject);
-            _typeTable[14] = typeof(global::Microsoft.UI.Xaml.Controls.TreeViewNode);
-            _typeTable[15] = typeof(global::Microsoft.UI.Xaml.DependencyObject);
-            _typeTable[16] = typeof(global::System.Collections.Generic.IList<global::Microsoft.UI.Xaml.Controls.TreeViewNode>);
-            _typeTable[17] = typeof(global::System.Int32);
+            _typeTable[9] = typeof(global::Microsoft.UI.Xaml.Controls.ProgressBar);
+            _typeTable[10] = typeof(global::Microsoft.UI.Xaml.Controls.Primitives.RangeBase);
+            _typeTable[11] = typeof(global::Microsoft.UI.Xaml.Controls.ProgressBarTemplateSettings);
+            _typeTable[12] = typeof(global::Microsoft.UI.Xaml.DependencyObject);
+            _typeTable[13] = typeof(global::JvJvMediaManager.Views.MainPage);
+            _typeTable[14] = typeof(global::Microsoft.UI.Xaml.Controls.Page);
+            _typeTable[15] = typeof(global::Microsoft.UI.Xaml.Controls.UserControl);
+            _typeTable[16] = typeof(global::JvJvMediaManager.ViewModels.MainViewModel);
+            _typeTable[17] = typeof(global::JvJvMediaManager.Utilities.ObservableObject);
+            _typeTable[18] = typeof(global::Microsoft.UI.Xaml.Controls.TreeViewNode);
+            _typeTable[19] = typeof(global::System.Collections.Generic.IList<global::Microsoft.UI.Xaml.Controls.TreeViewNode>);
+            _typeTable[20] = typeof(global::System.Int32);
         }
 
         private int LookupTypeIndexByName(string typeName)
@@ -299,9 +305,10 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
 
         private object Activate_0_XamlControlsResources() { return new global::Microsoft.UI.Xaml.Controls.XamlControlsResources(); }
         private object Activate_7_MainWindow() { return new global::JvJvMediaManager.MainWindow(); }
-        private object Activate_9_MainPage() { return new global::JvJvMediaManager.Views.MainPage(); }
-        private object Activate_12_MainViewModel() { return new global::JvJvMediaManager.ViewModels.MainViewModel(); }
-        private object Activate_14_TreeViewNode() { return new global::Microsoft.UI.Xaml.Controls.TreeViewNode(); }
+        private object Activate_9_ProgressBar() { return new global::Microsoft.UI.Xaml.Controls.ProgressBar(); }
+        private object Activate_13_MainPage() { return new global::JvJvMediaManager.Views.MainPage(); }
+        private object Activate_16_MainViewModel() { return new global::JvJvMediaManager.ViewModels.MainViewModel(); }
+        private object Activate_18_TreeViewNode() { return new global::Microsoft.UI.Xaml.Controls.TreeViewNode(); }
         private void MapAdd_0_XamlControlsResources(object instance, object key, object item)
         {
             var collection = (global::System.Collections.Generic.IDictionary<global::System.Object, global::System.Object>)instance;
@@ -309,7 +316,7 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
             var newItem = (global::System.Object)item;
             collection.Add(newKey, newItem);
         }
-        private void VectorAdd_16_IList(object instance, object item)
+        private void VectorAdd_19_IList(object instance, object item)
         {
             var collection = (global::System.Collections.Generic.ICollection<global::Microsoft.UI.Xaml.Controls.TreeViewNode>)instance;
             var newItem = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)item;
@@ -377,38 +384,62 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
                 xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
                 break;
 
-            case 9:   //  JvJvMediaManager.Views.MainPage
+            case 9:   //  Microsoft.UI.Xaml.Controls.ProgressBar
+                userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("Microsoft.UI.Xaml.Controls.Primitives.RangeBase"));
+                userType.Activator = Activate_9_ProgressBar;
+                userType.AddMemberName("IsIndeterminate");
+                userType.AddMemberName("ShowError");
+                userType.AddMemberName("ShowPaused");
+                userType.AddMemberName("TemplateSettings");
+                xamlType = userType;
+                break;
+
+            case 10:   //  Microsoft.UI.Xaml.Controls.Primitives.RangeBase
+                xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
+                break;
+
+            case 11:   //  Microsoft.UI.Xaml.Controls.ProgressBarTemplateSettings
+                userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("Microsoft.UI.Xaml.DependencyObject"));
+                userType.SetIsReturnTypeStub();
+                xamlType = userType;
+                break;
+
+            case 12:   //  Microsoft.UI.Xaml.DependencyObject
+                xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
+                break;
+
+            case 13:   //  JvJvMediaManager.Views.MainPage
                 userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("Microsoft.UI.Xaml.Controls.Page"));
-                userType.Activator = Activate_9_MainPage;
+                userType.Activator = Activate_13_MainPage;
                 userType.AddMemberName("ViewModel");
                 userType.SetIsLocalType();
                 xamlType = userType;
                 break;
 
-            case 10:   //  Microsoft.UI.Xaml.Controls.Page
+            case 14:   //  Microsoft.UI.Xaml.Controls.Page
                 xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
                 break;
 
-            case 11:   //  Microsoft.UI.Xaml.Controls.UserControl
+            case 15:   //  Microsoft.UI.Xaml.Controls.UserControl
                 xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
                 break;
 
-            case 12:   //  JvJvMediaManager.ViewModels.MainViewModel
+            case 16:   //  JvJvMediaManager.ViewModels.MainViewModel
                 userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("JvJvMediaManager.Utilities.ObservableObject"));
                 userType.SetIsReturnTypeStub();
                 userType.SetIsLocalType();
                 xamlType = userType;
                 break;
 
-            case 13:   //  JvJvMediaManager.Utilities.ObservableObject
+            case 17:   //  JvJvMediaManager.Utilities.ObservableObject
                 userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("Object"));
                 userType.SetIsLocalType();
                 xamlType = userType;
                 break;
 
-            case 14:   //  Microsoft.UI.Xaml.Controls.TreeViewNode
+            case 18:   //  Microsoft.UI.Xaml.Controls.TreeViewNode
                 userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, GetXamlTypeByName("Microsoft.UI.Xaml.DependencyObject"));
-                userType.Activator = Activate_14_TreeViewNode;
+                userType.Activator = Activate_18_TreeViewNode;
                 userType.AddMemberName("Children");
                 userType.AddMemberName("Content");
                 userType.AddMemberName("Depth");
@@ -420,18 +451,14 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
                 xamlType = userType;
                 break;
 
-            case 15:   //  Microsoft.UI.Xaml.DependencyObject
-                xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
-                break;
-
-            case 16:   //  System.Collections.Generic.IList`1<Microsoft.UI.Xaml.Controls.TreeViewNode>
+            case 19:   //  System.Collections.Generic.IList`1<Microsoft.UI.Xaml.Controls.TreeViewNode>
                 userType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType(this, typeName, type, null);
-                userType.CollectionAdd = VectorAdd_16_IList;
+                userType.CollectionAdd = VectorAdd_19_IList;
                 userType.SetIsReturnTypeStub();
                 xamlType = userType;
                 break;
 
-            case 17:   //  Int32
+            case 20:   //  Int32
                 xamlType = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlSystemBaseType(typeName, type);
                 break;
             }
@@ -543,57 +570,92 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
             var that = (global::Windows.UI.Color)instance;
             that.B = (global::System.Byte)Value;
         }
-        private object get_5_MainPage_ViewModel(object instance)
+        private object get_5_ProgressBar_IsIndeterminate(object instance)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            return that.IsIndeterminate;
+        }
+        private void set_5_ProgressBar_IsIndeterminate(object instance, object Value)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            that.IsIndeterminate = (global::System.Boolean)Value;
+        }
+        private object get_6_ProgressBar_ShowError(object instance)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            return that.ShowError;
+        }
+        private void set_6_ProgressBar_ShowError(object instance, object Value)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            that.ShowError = (global::System.Boolean)Value;
+        }
+        private object get_7_ProgressBar_ShowPaused(object instance)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            return that.ShowPaused;
+        }
+        private void set_7_ProgressBar_ShowPaused(object instance, object Value)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            that.ShowPaused = (global::System.Boolean)Value;
+        }
+        private object get_8_ProgressBar_TemplateSettings(object instance)
+        {
+            var that = (global::Microsoft.UI.Xaml.Controls.ProgressBar)instance;
+            return that.TemplateSettings;
+        }
+        private object get_9_MainPage_ViewModel(object instance)
         {
             var that = (global::JvJvMediaManager.Views.MainPage)instance;
             return that.ViewModel;
         }
-        private object get_6_TreeViewNode_Children(object instance)
+        private object get_10_TreeViewNode_Children(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.Children;
         }
-        private object get_7_TreeViewNode_Content(object instance)
+        private object get_11_TreeViewNode_Content(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.Content;
         }
-        private void set_7_TreeViewNode_Content(object instance, object Value)
+        private void set_11_TreeViewNode_Content(object instance, object Value)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             that.Content = (global::System.Object)Value;
         }
-        private object get_8_TreeViewNode_Depth(object instance)
+        private object get_12_TreeViewNode_Depth(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.Depth;
         }
-        private object get_9_TreeViewNode_HasChildren(object instance)
+        private object get_13_TreeViewNode_HasChildren(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.HasChildren;
         }
-        private object get_10_TreeViewNode_HasUnrealizedChildren(object instance)
+        private object get_14_TreeViewNode_HasUnrealizedChildren(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.HasUnrealizedChildren;
         }
-        private void set_10_TreeViewNode_HasUnrealizedChildren(object instance, object Value)
+        private void set_14_TreeViewNode_HasUnrealizedChildren(object instance, object Value)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             that.HasUnrealizedChildren = (global::System.Boolean)Value;
         }
-        private object get_11_TreeViewNode_IsExpanded(object instance)
+        private object get_15_TreeViewNode_IsExpanded(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.IsExpanded;
         }
-        private void set_11_TreeViewNode_IsExpanded(object instance, object Value)
+        private void set_15_TreeViewNode_IsExpanded(object instance, object Value)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             that.IsExpanded = (global::System.Boolean)Value;
         }
-        private object get_12_TreeViewNode_Parent(object instance)
+        private object get_16_TreeViewNode_Parent(object instance)
         {
             var that = (global::Microsoft.UI.Xaml.Controls.TreeViewNode)instance;
             return that.Parent;
@@ -637,56 +699,83 @@ namespace JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo
                 xamlMember.Getter = get_4_Color_B;
                 xamlMember.Setter = set_4_Color_B;
                 break;
+            case "Microsoft.UI.Xaml.Controls.ProgressBar.IsIndeterminate":
+                userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.ProgressBar");
+                xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "IsIndeterminate", "Boolean");
+                xamlMember.SetIsDependencyProperty();
+                xamlMember.Getter = get_5_ProgressBar_IsIndeterminate;
+                xamlMember.Setter = set_5_ProgressBar_IsIndeterminate;
+                break;
+            case "Microsoft.UI.Xaml.Controls.ProgressBar.ShowError":
+                userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.ProgressBar");
+                xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "ShowError", "Boolean");
+                xamlMember.SetIsDependencyProperty();
+                xamlMember.Getter = get_6_ProgressBar_ShowError;
+                xamlMember.Setter = set_6_ProgressBar_ShowError;
+                break;
+            case "Microsoft.UI.Xaml.Controls.ProgressBar.ShowPaused":
+                userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.ProgressBar");
+                xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "ShowPaused", "Boolean");
+                xamlMember.SetIsDependencyProperty();
+                xamlMember.Getter = get_7_ProgressBar_ShowPaused;
+                xamlMember.Setter = set_7_ProgressBar_ShowPaused;
+                break;
+            case "Microsoft.UI.Xaml.Controls.ProgressBar.TemplateSettings":
+                userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.ProgressBar");
+                xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "TemplateSettings", "Microsoft.UI.Xaml.Controls.ProgressBarTemplateSettings");
+                xamlMember.Getter = get_8_ProgressBar_TemplateSettings;
+                xamlMember.SetIsReadOnly();
+                break;
             case "JvJvMediaManager.Views.MainPage.ViewModel":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("JvJvMediaManager.Views.MainPage");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "ViewModel", "JvJvMediaManager.ViewModels.MainViewModel");
-                xamlMember.Getter = get_5_MainPage_ViewModel;
+                xamlMember.Getter = get_9_MainPage_ViewModel;
                 xamlMember.SetIsReadOnly();
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.Children":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "Children", "System.Collections.Generic.IList`1<Microsoft.UI.Xaml.Controls.TreeViewNode>");
-                xamlMember.Getter = get_6_TreeViewNode_Children;
+                xamlMember.Getter = get_10_TreeViewNode_Children;
                 xamlMember.SetIsReadOnly();
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.Content":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "Content", "Object");
                 xamlMember.SetIsDependencyProperty();
-                xamlMember.Getter = get_7_TreeViewNode_Content;
-                xamlMember.Setter = set_7_TreeViewNode_Content;
+                xamlMember.Getter = get_11_TreeViewNode_Content;
+                xamlMember.Setter = set_11_TreeViewNode_Content;
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.Depth":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "Depth", "Int32");
                 xamlMember.SetIsDependencyProperty();
-                xamlMember.Getter = get_8_TreeViewNode_Depth;
+                xamlMember.Getter = get_12_TreeViewNode_Depth;
                 xamlMember.SetIsReadOnly();
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.HasChildren":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "HasChildren", "Boolean");
                 xamlMember.SetIsDependencyProperty();
-                xamlMember.Getter = get_9_TreeViewNode_HasChildren;
+                xamlMember.Getter = get_13_TreeViewNode_HasChildren;
                 xamlMember.SetIsReadOnly();
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.HasUnrealizedChildren":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "HasUnrealizedChildren", "Boolean");
-                xamlMember.Getter = get_10_TreeViewNode_HasUnrealizedChildren;
-                xamlMember.Setter = set_10_TreeViewNode_HasUnrealizedChildren;
+                xamlMember.Getter = get_14_TreeViewNode_HasUnrealizedChildren;
+                xamlMember.Setter = set_14_TreeViewNode_HasUnrealizedChildren;
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.IsExpanded":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "IsExpanded", "Boolean");
                 xamlMember.SetIsDependencyProperty();
-                xamlMember.Getter = get_11_TreeViewNode_IsExpanded;
-                xamlMember.Setter = set_11_TreeViewNode_IsExpanded;
+                xamlMember.Getter = get_15_TreeViewNode_IsExpanded;
+                xamlMember.Setter = set_15_TreeViewNode_IsExpanded;
                 break;
             case "Microsoft.UI.Xaml.Controls.TreeViewNode.Parent":
                 userType = (global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlUserType)GetXamlTypeByName("Microsoft.UI.Xaml.Controls.TreeViewNode");
                 xamlMember = new global::JvJvMediaManager.WinUI.JvJvMediaManager_WinUI_XamlTypeInfo.XamlMember(this, "Parent", "Microsoft.UI.Xaml.Controls.TreeViewNode");
-                xamlMember.Getter = get_12_TreeViewNode_Parent;
+                xamlMember.Getter = get_16_TreeViewNode_Parent;
                 xamlMember.SetIsReadOnly();
                 break;
             }

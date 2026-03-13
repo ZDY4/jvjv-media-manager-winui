@@ -51,11 +51,11 @@
         </Grid.RowDefinitions>
 
         <CommandBar Grid.Row="0" Background="{ThemeResource SurfaceAltBrush}" DefaultLabelPosition="Collapsed">
-            <AppBarButton x:ConnectionId='36' Icon="Add" Label="添加文件"                        />
-            <AppBarButton x:ConnectionId='37' Icon="Folder" Label="添加文件夹"                         />
-            <AppBarButton x:ConnectionId='38' Icon="Sync" Label="刷新"                       />
+            <AppBarButton x:ConnectionId='46' Icon="Add" Label="添加文件"                        />
+            <AppBarButton x:ConnectionId='47' Icon="Folder" Label="添加文件夹"                         />
+            <AppBarButton x:ConnectionId='48' Icon="Sync" Label="刷新"                       />
             <AppBarSeparator />
-            <AppBarButton x:ConnectionId='39' Icon="Setting" Label="设置"                        />
+            <AppBarButton x:ConnectionId='49' Icon="Setting" Label="设置"                        />
         </CommandBar>
 
         <SplitView Grid.Row="1" DisplayMode="Inline" IsPaneOpen="True" OpenPaneLength="360" Background="{ThemeResource SurfaceBrush}">
@@ -147,7 +147,7 @@
                                   MinZoomFactor="0.2"
                                   MaxZoomFactor="6"
                                                                                              >
-                        <Image x:ConnectionId='35' x:Name="ImageViewer" Stretch="Uniform" />
+                        <Image x:ConnectionId='45' x:Name="ImageViewer" Stretch="Uniform" />
                     </ScrollViewer>
 
                     <Grid x:ConnectionId='25' x:Name="PlayerOverlay" Background="Transparent">
@@ -159,6 +159,7 @@
                               CornerRadius="10"
                                                                     >
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -184,26 +185,62 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <AppBarButton x:ConnectionId='28' x:Name="PlayPauseButton" Grid.Column="0"                        >
+                                <AppBarButton x:ConnectionId='38' x:Name="PlayPauseButton" Grid.Column="0"                        >
                                     <AppBarButton.Icon>
-                                        <SymbolIcon x:ConnectionId='34' x:Name="PlayPauseIcon" Symbol="Play" />
+                                        <SymbolIcon x:ConnectionId='44' x:Name="PlayPauseIcon" Symbol="Play" />
                                     </AppBarButton.Icon>
                                 </AppBarButton>
 
                                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <TextBlock x:ConnectionId='32' x:Name="CurrentTimeText" Text="0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                    <TextBlock x:ConnectionId='42' x:Name="CurrentTimeText" Text="0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
                                     <TextBlock Text="/" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                                    <TextBlock x:ConnectionId='33' x:Name="TotalTimeText" Text="0:00" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                                    <TextBlock x:ConnectionId='43' x:Name="TotalTimeText" Text="0:00" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
                                 </StackPanel>
 
                                 <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                     <TextBlock Text="音量" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                                    <Slider x:ConnectionId='31' x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="1" Value="0.8"                                          />
+                                    <Slider x:ConnectionId='41' x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="1" Value="0.8"                                          />
                                 </StackPanel>
 
-                                <Button x:ConnectionId='29' x:Name="PlaybackModeButton" Grid.Column="4" Content="列表循环"                            />
-                                <Button x:ConnectionId='30' x:Name="FullScreenButton" Grid.Column="5" Content="全屏"                          />
+                                <Button x:ConnectionId='39' x:Name="PlaybackModeButton" Grid.Column="4" Content="列表循环"                            />
+                                <Button x:ConnectionId='40' x:Name="FullScreenButton" Grid.Column="5" Content="全屏"                          />
                             </Grid>
+
+                            <Border x:ConnectionId='28' x:Name="ClipBar"
+                                    Grid.Row="2"
+                                    Margin="0,10,0,0"
+                                    Padding="10,8"
+                                    Background="#55000000"
+                                    CornerRadius="8"
+                                    Visibility="Collapsed">
+                                <StackPanel Spacing="8">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:ConnectionId='34' x:Name="SetClipStartButton" Content="标记入点 (I)"                            />
+                                        <Button x:ConnectionId='35' x:Name="SetClipEndButton" Content="标记出点 (O)"                          />
+                                        <Button x:ConnectionId='36' x:Name="ClearClipButton" Content="重置区间"                         />
+                                        <Button x:ConnectionId='37' x:Name="ExportClipButton" Content="导出剪辑 (E)"                          />
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" Spacing="16">
+                                        <TextBlock x:ConnectionId='31' x:Name="ClipStartText" Text="入点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                        <TextBlock x:ConnectionId='32' x:Name="ClipEndText" Text="出点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                        <TextBlock x:ConnectionId='33' x:Name="ClipDurationText" Text="时长：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                        <ProgressBar x:ConnectionId='29' x:Name="ClipExportProgressBar"
+                                                     Width="180"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Value="0"
+                                                     Visibility="Collapsed" />
+                                        <TextBlock x:ConnectionId='30' x:Name="ClipStatusText"
+                                                   Foreground="{ThemeResource MutedTextBrush}"
+                                                   FontSize="12"
+                                                   TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
                         </Grid>
                     </Grid>
                 </Grid>
