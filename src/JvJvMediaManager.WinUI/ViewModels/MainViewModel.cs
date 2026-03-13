@@ -14,12 +14,19 @@ public enum MediaViewMode
     Grid
 }
 
+public enum TagUpdateMode
+{
+    Replace,
+    Append
+}
+
 public sealed class MainViewModel : ObservableObject
 {
     private readonly SettingsService _settings;
     private readonly MediaDb _db;
     private readonly MediaLibraryService _library;
     private readonly ThumbnailService _thumbnails;
+    private readonly HashSet<string> _sessionUnlockedFolders = new(StringComparer.OrdinalIgnoreCase);
 
     private DispatcherQueue? _dispatcher;
     private int _refreshVersion;
@@ -32,6 +39,11 @@ public sealed class MainViewModel : ObservableObject
     private MediaSortField _sortField = MediaSortField.ModifiedAt;
     private MediaSortOrder _sortOrder = MediaSortOrder.Desc;
     private int _iconSize = 120;
+    private Playlist? _selectedPlaylist;
+    private bool _isScanning;
+    private int _scanProgressValue;
+    private int _scanProgressMaximum;
+    private string _scanCurrentPath = string.Empty;
 
     public MainViewModel()
     {
@@ -39,9 +51,10 @@ public sealed class MainViewModel : ObservableObject
         _db = new MediaDb(_settings.DataDir);
         _db.Initialize();
         _library = new MediaLibraryService(_db);
-        _thumbnails = new ThumbnailService();
+        _thumbnails = new ThumbnailService(_settings.GetThumbnailCacheDir());
         FilteredMediaItems = new IncrementalMediaCollection(LoadMediaPageAsync);
         WatchedFolders = new ObservableCollection<WatchedFolder>(_settings.WatchedFolders);
+        Playlists = new ObservableCollection<Playlist>(_db.GetPlaylists());
     }
 
     public IncrementalMediaCollection FilteredMediaItems { get; }
@@ -49,6 +62,8 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
 
     public ObservableCollection<string> SelectedTags { get; } = new();
+
+    public ObservableCollection<Playlist> Playlists { get; }
 
     public MediaItemViewModel? SelectedMedia
     {
@@ -116,7 +131,54 @@ public sealed class MainViewModel : ObservableObject
         set => SetProperty(ref _iconSize, value);
     }
 
+    public Playlist? SelectedPlaylist
+    {
+        get => _selectedPlaylist;
+        set
+        {
+            if (SetProperty(ref _selectedPlaylist, value))
+            {
+                OnPropertyChanged(nameof(CurrentScopeTitle));
+                QueueRefreshMedia(false);
+            }
+        }
+    }
+
+    public bool IsScanning
+    {
+        get => _isScanning;
+        private set => SetProperty(ref _isScanning, value);
+    }
+
+    public int ScanProgressValue
+    {
+        get => _scanProgressValue;
+        private set => SetProperty(ref _scanProgressValue, value);
+    }
+
+    public int ScanProgressMaximum
+    {
+        get => _scanProgressMaximum;
+        private set => SetProperty(ref _scanProgressMaximum, value);
+    }
+
+    public string ScanCurrentPath
+    {
+        get => _scanCurrentPath;
+        private set => SetProperty(ref _scanCurrentPath, value);
+    }
+
     public string DataDir => _settings.DataDir;
+
+    public string? ConfiguredDataDir => _settings.ConfiguredDataDir;
+
+    public bool PortableMode => _settings.PortableMode;
+
+    public string LockPassword => _settings.LockPassword;
+
+    public bool HasLockPassword => !string.IsNullOrWhiteSpace(LockPassword);
+
+    public string CurrentScopeTitle => SelectedPlaylist?.Name ?? "全部媒体";
 
     public void SetDispatcher(DispatcherQueue dispatcher)
     {
@@ -125,33 +187,60 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
+        ReloadPlaylists();
         await RefreshMediaAsync(false);
     }
 
     public async Task AddFilesAsync(IEnumerable<string> paths)
     {
-        await AddMediaInternalAsync(() => _library.AddFilesAsync(paths, new Progress<ScanProgress>(OnScanProgress)));
+        await AddMediaInternalAsync(() => _library.AddFilesAsync(paths, new Progress<ScanProgress>(OnScanProgress)), "文件导入完成。");
     }
 
     public async Task AddFolderAsync(string path)
     {
-        await AddMediaInternalAsync(() => _library.AddFolderAsync(path, new Progress<ScanProgress>(OnScanProgress)));
+        await AddMediaInternalAsync(() => _library.AddFolderAsync(path, new Progress<ScanProgress>(OnScanProgress)), "文件夹导入完成。");
     }
 
     public async Task RescanFoldersAsync()
     {
         var folders = WatchedFolders.Select(f => f.Path).ToList();
-        await AddMediaInternalAsync(() => _library.RescanFoldersAsync(folders, new Progress<ScanProgress>(OnScanProgress)));
+        await AddMediaInternalAsync(() => _library.RescanFoldersAsync(folders, new Progress<ScanProgress>(OnScanProgress)), "媒体库刷新完成。");
     }
 
     public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders)
     {
+        var normalized = folders
+            .Where(folder => !string.IsNullOrWhiteSpace(folder.Path))
+            .GroupBy(folder => PathHelpers.NormalizeFolderPath(folder.Path), StringComparer.OrdinalIgnoreCase)
+            .Select(group => new WatchedFolder
+            {
+                Path = group.First().Path,
+                Locked = group.First().Locked
+            })
+            .OrderBy(folder => folder.Path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         WatchedFolders.Clear();
-        foreach (var folder in folders)
+        foreach (var folder in normalized)
         {
             WatchedFolders.Add(folder);
         }
+
         _settings.SetWatchedFolders(WatchedFolders.ToList());
+        CleanupUnlockedFolders();
+        QueueRefreshMedia(false);
+    }
+
+    public void RemoveSelectedTagFilter(string tag)
+    {
+        var existing = SelectedTags.FirstOrDefault(item => string.Equals(item, tag, StringComparison.OrdinalIgnoreCase));
+        if (existing == null)
+        {
+            return;
+        }
+
+        SelectedTags.Remove(existing);
+        QueueRefreshMedia(false);
     }
 
     public void ToggleSort(MediaSortField field)
@@ -172,20 +261,44 @@ public sealed class MainViewModel : ObservableObject
         QueueRefreshMedia(true);
     }
 
-    public async Task UpdateTagsAsync(MediaItemViewModel media, IEnumerable<string> tags)
+    public async Task UpdateTagsAsync(IEnumerable<MediaItemViewModel> items, IEnumerable<string> tags, TagUpdateMode mode)
     {
-        var normalized = tags.Select(t => t.Trim()).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var mediaItems = items
+            .Where(item => item != null)
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
 
-        foreach (var tag in media.Tags.ToList())
+        if (mediaItems.Count == 0)
         {
-            _db.RemoveTag(media.Id, tag);
-        }
-        foreach (var tag in normalized)
-        {
-            _db.AddTag(media.Id, tag);
+            return;
         }
 
-        media.UpdateTags(normalized);
+        var normalized = tags
+            .Select(t => t.Trim())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var media in mediaItems)
+        {
+            var nextTags = mode == TagUpdateMode.Append
+                ? media.Tags.Concat(normalized).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(tag => tag, StringComparer.OrdinalIgnoreCase).ToList()
+                : normalized;
+
+            foreach (var tag in media.Tags.ToList())
+            {
+                _db.RemoveTag(media.Id, tag);
+            }
+
+            foreach (var tag in nextTags)
+            {
+                _db.AddTag(media.Id, tag);
+            }
+
+            media.UpdateTags(nextTags);
+        }
+
         if (!string.IsNullOrWhiteSpace(SearchQuery) || SelectedTags.Count > 0)
         {
             await RefreshMediaAsync(true);
@@ -272,25 +385,202 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        var source = await _thumbnails.GetThumbnailAsync(item.Media.Path, item.Media.Type == MediaType.Video);
+        var source = await _thumbnails.GetThumbnailAsync(item.Media);
         if (source != null)
         {
             SetThumbnailSafe(item, source);
         }
     }
 
-    private async Task AddMediaInternalAsync(Func<Task<int>> loader)
+    public Playlist CreatePlaylist(string name)
+    {
+        var playlist = _db.CreatePlaylist(name);
+        ReloadPlaylists(playlist.Id);
+        return playlist;
+    }
+
+    public void RenamePlaylist(string playlistId, string name)
+    {
+        _db.RenamePlaylist(playlistId, name);
+        ReloadPlaylists(playlistId);
+    }
+
+    public async Task DeletePlaylistAsync(string playlistId)
+    {
+        var deletingCurrent = string.Equals(SelectedPlaylist?.Id, playlistId, StringComparison.Ordinal);
+        _db.DeletePlaylist(playlistId);
+        ReloadPlaylists();
+
+        if (deletingCurrent)
+        {
+            SelectedPlaylist = null;
+        }
+        else
+        {
+            OnPropertyChanged(nameof(CurrentScopeTitle));
+        }
+
+        await RefreshMediaAsync(false);
+    }
+
+    public void UpdatePlaylistOrder(IReadOnlyList<Playlist> playlists)
+    {
+        for (var i = 0; i < playlists.Count; i++)
+        {
+            playlists[i].SortOrder = i;
+        }
+
+        _db.UpdatePlaylistOrder(playlists.Select(item => item.Id).ToList());
+        ReloadPlaylists(SelectedPlaylist?.Id);
+    }
+
+    public async Task AddMediaToPlaylistAsync(string playlistId, IEnumerable<MediaItemViewModel> items)
+    {
+        _db.AddMediaToPlaylist(playlistId, items.Select(item => item.Id));
+        ReloadPlaylists(SelectedPlaylist?.Id ?? playlistId);
+
+        if (string.Equals(SelectedPlaylist?.Id, playlistId, StringComparison.Ordinal))
+        {
+            await RefreshMediaAsync(true);
+        }
+    }
+
+    public async Task RemoveMediaFromSelectedPlaylistAsync(IEnumerable<MediaItemViewModel> items)
+    {
+        if (SelectedPlaylist == null)
+        {
+            return;
+        }
+
+        _db.RemoveMediaFromPlaylist(SelectedPlaylist.Id, items.Select(item => item.Id));
+        await RefreshMediaAsync(true);
+    }
+
+    public void SetDataDir(string path)
+    {
+        _settings.SetDataDir(path);
+        OnPropertyChanged(nameof(DataDir));
+        OnPropertyChanged(nameof(ConfiguredDataDir));
+    }
+
+    public void SetPortableMode(bool enabled)
+    {
+        _settings.SetPortableMode(enabled);
+        OnPropertyChanged(nameof(PortableMode));
+        OnPropertyChanged(nameof(DataDir));
+    }
+
+    public void SetLockPassword(string password)
+    {
+        _settings.SetLockPassword(password.Trim());
+        OnPropertyChanged(nameof(LockPassword));
+        OnPropertyChanged(nameof(HasLockPassword));
+    }
+
+    public IReadOnlyList<WatchedFolder> GetProtectedFolders()
+    {
+        return WatchedFolders
+            .Where(folder => folder.Locked)
+            .Select(folder => new WatchedFolder
+            {
+                Path = folder.Path,
+                Locked = folder.Locked
+            })
+            .ToList();
+    }
+
+    public bool IsFolderUnlocked(string folderPath)
+    {
+        var normalized = PathHelpers.NormalizeFolderPath(folderPath);
+        return _sessionUnlockedFolders.Contains(normalized);
+    }
+
+    public async Task<bool> UnlockFolderAsync(string folderPath, string password)
+    {
+        if (!HasLockPassword)
+        {
+            return false;
+        }
+
+        if (!string.Equals(password, LockPassword, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _sessionUnlockedFolders.Add(PathHelpers.NormalizeFolderPath(folderPath));
+        StatusMessage = $"已解锁 {Path.GetFileName(folderPath)}";
+        await RefreshMediaAsync(false);
+        return true;
+    }
+
+    public async Task LockFolderAsync(string folderPath)
+    {
+        _sessionUnlockedFolders.Remove(PathHelpers.NormalizeFolderPath(folderPath));
+        StatusMessage = $"已重新锁定 {Path.GetFileName(folderPath)}";
+        await RefreshMediaAsync(false);
+    }
+
+    public async Task RelockAllFoldersAsync()
+    {
+        _sessionUnlockedFolders.Clear();
+        StatusMessage = "所有受保护文件夹已重新锁定。";
+        await RefreshMediaAsync(false);
+    }
+
+    public async Task ResetLibraryAsync(bool includePlaylists)
+    {
+        _db.ClearAllMedia(includePlaylists);
+        _thumbnails.ClearCache();
+        _sessionUnlockedFolders.Clear();
+        ReloadPlaylists();
+        SelectedMedia = null;
+        if (includePlaylists)
+        {
+            SelectedPlaylist = null;
+        }
+
+        await RefreshMediaAsync(false);
+        StatusMessage = includePlaylists ? "媒体库、标签和播放列表已清空。" : "媒体库和标签已清空。";
+    }
+
+    public void ClearThumbnailCache()
+    {
+        _thumbnails.ClearCache();
+        foreach (var item in FilteredMediaItems)
+        {
+            item.ResetThumbnailLoadState();
+            item.Thumbnail = null;
+        }
+    }
+
+    public IReadOnlyList<string> GetAllTags()
+    {
+        return _db.GetAllTags();
+    }
+
+    private async Task AddMediaInternalAsync(Func<Task<int>> loader, string successMessage)
     {
         IsLoading = true;
+        IsScanning = true;
+        ScanProgressValue = 0;
+        ScanProgressMaximum = 0;
+        ScanCurrentPath = string.Empty;
+
         try
         {
-            await loader();
+            var added = await loader();
             await RefreshMediaAsync(true);
+            StatusMessage = $"{successMessage} 新增或更新 {added} 个媒体。";
         }
         finally
         {
             IsLoading = false;
-            StatusMessage = string.Empty;
+            IsScanning = false;
+            ScanCurrentPath = string.Empty;
+            if (ScanProgressMaximum > 0)
+            {
+                ScanProgressValue = ScanProgressMaximum;
+            }
         }
     }
 
@@ -300,6 +590,8 @@ public sealed class MainViewModel : ObservableObject
         {
             SearchText = SearchQuery,
             SelectedTags = SelectedTags.ToList(),
+            PlaylistId = SelectedPlaylist?.Id,
+            ExcludedFolderPaths = GetActiveLockedFolderPaths(),
             SortField = SortField,
             SortOrder = SortOrder,
             Offset = offset,
@@ -309,9 +601,20 @@ public sealed class MainViewModel : ObservableObject
 
     private void OnScanProgress(ScanProgress progress)
     {
-        StatusMessage = progress.Total > 0
-            ? $"正在扫描 {progress.Scanned}/{progress.Total}"
-            : "准备扫描...";
+        IsScanning = !progress.IsComplete;
+        ScanProgressMaximum = progress.Total;
+        ScanProgressValue = progress.Scanned;
+        ScanCurrentPath = progress.CurrentPath;
+
+        if (progress.Total > 0)
+        {
+            StatusMessage = progress.IsComplete
+                ? $"扫描完成 {progress.Scanned}/{progress.Total}"
+                : $"正在扫描 {progress.Scanned}/{progress.Total}";
+            return;
+        }
+
+        StatusMessage = progress.IsComplete ? "扫描完成。" : "准备扫描...";
     }
 
     private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source)
@@ -328,6 +631,40 @@ public sealed class MainViewModel : ObservableObject
     private void QueueRefreshMedia(bool preserveSelection)
     {
         _ = RefreshMediaAsync(preserveSelection);
+    }
+
+    private IReadOnlyList<string> GetActiveLockedFolderPaths()
+    {
+        return WatchedFolders
+            .Where(folder => folder.Locked)
+            .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
+            .Where(path => !_sessionUnlockedFolders.Contains(path))
+            .ToList();
+    }
+
+    private void CleanupUnlockedFolders()
+    {
+        var protectedPaths = WatchedFolders
+            .Where(folder => folder.Locked)
+            .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _sessionUnlockedFolders.RemoveWhere(path => !protectedPaths.Contains(path));
+    }
+
+    private void ReloadPlaylists(string? selectedPlaylistId = null)
+    {
+        var preferredId = selectedPlaylistId ?? SelectedPlaylist?.Id;
+        var playlists = _db.GetPlaylists();
+
+        Playlists.Clear();
+        foreach (var playlist in playlists)
+        {
+            Playlists.Add(playlist);
+        }
+
+        SelectedPlaylist = string.IsNullOrWhiteSpace(preferredId)
+            ? null
+            : Playlists.FirstOrDefault(item => string.Equals(item.Id, preferredId, StringComparison.Ordinal));
     }
 
     private async Task RestoreSelectionAsync(int refreshVersion, string? selectedId)

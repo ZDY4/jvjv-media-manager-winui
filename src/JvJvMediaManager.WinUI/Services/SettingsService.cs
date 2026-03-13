@@ -20,11 +20,17 @@ public sealed class SettingsService
     {
         get
         {
-            var dir = string.IsNullOrWhiteSpace(_settings.DataDir) ? GetDefaultDataDir() : _settings.DataDir!;
+            var dir = PortableMode
+                ? GetPortableDataDir()
+                : string.IsNullOrWhiteSpace(_settings.DataDir) ? GetDefaultDataDir() : _settings.DataDir!;
             Directory.CreateDirectory(dir);
             return dir;
         }
     }
+
+    public string? ConfiguredDataDir => _settings.DataDir;
+
+    public bool PortableMode => _settings.PortableMode;
 
     public IReadOnlyList<WatchedFolder> WatchedFolders => _settings.WatchedFolders;
 
@@ -37,6 +43,12 @@ public sealed class SettingsService
             return;
         }
         _settings.DataDir = path;
+        Save();
+    }
+
+    public void SetPortableMode(bool enabled)
+    {
+        _settings.PortableMode = enabled;
         Save();
     }
 
@@ -56,6 +68,18 @@ public sealed class SettingsService
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JvJvMediaManager");
         return Path.Combine(root, "data");
+    }
+
+    public string GetPortableDataDir()
+    {
+        return Path.Combine(AppContext.BaseDirectory, "data");
+    }
+
+    public string GetThumbnailCacheDir()
+    {
+        var dir = Path.Combine(DataDir, "thumb-cache");
+        Directory.CreateDirectory(dir);
+        return dir;
     }
 
     private SettingsModel LoadInternal()
@@ -85,6 +109,7 @@ public sealed class SettingsService
     private sealed class SettingsModel
     {
         public string? DataDir { get; set; }
+        public bool PortableMode { get; set; }
         public List<WatchedFolder> WatchedFolders { get; set; } = new();
         public string? LockPassword { get; set; }
     }

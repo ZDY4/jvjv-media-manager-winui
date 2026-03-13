@@ -14,8 +14,9 @@ public static class FormatHelpers
     {
         if (!seconds.HasValue || seconds.Value <= 0) return "";
         var total = (int)Math.Round(seconds.Value);
-        var minutes = total / 60;
+        var hours = total / 3600;
+        var minutes = (total % 3600) / 60;
         var secs = total % 60;
-        return $"{minutes}:{secs:00}";
+        return hours > 0 ? $"{hours}:{minutes:00}:{secs:00}" : $"{minutes}:{secs:00}";
     }
 }

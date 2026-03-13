@@ -7,6 +7,18 @@ public static class PathHelpers
 {
     public static string NormalizePath(string path) => path.Replace('\\', '/');
 
+    public static string NormalizeFolderPath(string path)
+    {
+        return NormalizePath(path).TrimEnd('/');
+    }
+
+    public static bool IsPathUnderFolder(string path, string folderPath)
+    {
+        var normalizedPath = NormalizePath(path);
+        var normalizedFolder = NormalizeFolderPath(folderPath);
+        return normalizedPath.StartsWith($"{normalizedFolder}/", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string ComputeStableId(string path)
     {
         var normalized = NormalizePath(path);

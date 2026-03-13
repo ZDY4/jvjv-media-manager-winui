@@ -16,6 +16,8 @@ public sealed class MediaQuery
 {
     public string SearchText { get; init; } = string.Empty;
     public IReadOnlyList<string> SelectedTags { get; init; } = Array.Empty<string>();
+    public string? PlaylistId { get; init; }
+    public IReadOnlyList<string> ExcludedFolderPaths { get; init; } = Array.Empty<string>();
     public MediaSortField SortField { get; init; } = MediaSortField.ModifiedAt;
     public MediaSortOrder SortOrder { get; init; } = MediaSortOrder.Desc;
     public int Offset { get; init; }

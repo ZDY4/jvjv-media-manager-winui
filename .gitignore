@@ -1,0 +1,10 @@
+# Build outputs
+artifacts/
+**/bin/
+**/obj/
+
+# Visual Studio user state
+.vs/
+*.user
+*.rsuser
+*.suo

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("JvJvMediaManager.WinUI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+eeb7de7e81c9099dce9a81f0b138f8bada1eaa25")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+23f28bc7e308add382829d29ce88bd5e04885c28")]
 [assembly: System.Reflection.AssemblyProductAttribute("JvJvMediaManager.WinUI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("JvJvMediaManager.WinUI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

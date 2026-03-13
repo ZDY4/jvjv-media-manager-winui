@@ -155,21 +155,40 @@ public sealed class MediaLibraryService
 
         int? width = null;
         int? height = null;
+        double? duration = null;
 
-        if (type == MediaType.Image)
+        try
         {
-            try
+            var storage = await StorageFile.GetFileFromPathAsync(filePath);
+            if (type == MediaType.Image)
             {
-                var storage = await StorageFile.GetFileFromPathAsync(filePath);
                 using var stream = await storage.OpenReadAsync();
                 var decoder = await BitmapDecoder.CreateAsync(stream);
                 width = (int)decoder.PixelWidth;
                 height = (int)decoder.PixelHeight;
             }
-            catch
+            else
             {
-                // Ignore metadata errors
+                var properties = await storage.Properties.GetVideoPropertiesAsync();
+                if (properties.Width > 0)
+                {
+                    width = (int)properties.Width;
+                }
+
+                if (properties.Height > 0)
+                {
+                    height = (int)properties.Height;
+                }
+
+                if (properties.Duration > TimeSpan.Zero)
+                {
+                    duration = properties.Duration.TotalSeconds;
+                }
             }
+        }
+        catch
+        {
+            // Ignore metadata errors.
         }
 
         var createdAt = new DateTimeOffset(info.CreationTimeUtc).ToUnixTimeSeconds();
@@ -184,6 +203,7 @@ public sealed class MediaLibraryService
             Size = info.Length,
             Width = width,
             Height = height,
+            Duration = duration,
             CreatedAt = createdAt,
             ModifiedAt = modifiedAt
         };

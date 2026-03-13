@@ -64,4 +64,9 @@ public sealed class MediaItemViewModel : ObservableObject
     {
         return Interlocked.CompareExchange(ref _thumbnailRequested, 1, 0) == 0;
     }
+
+    public void ResetThumbnailLoadState()
+    {
+        Interlocked.Exchange(ref _thumbnailRequested, 0);
+    }
 }
