@@ -14,18 +14,6 @@ public enum MediaViewMode
     Grid
 }
 
-public enum MediaSortField
-{
-    FileName,
-    ModifiedAt
-}
-
-public enum MediaSortOrder
-{
-    Asc,
-    Desc
-}
-
 public sealed class MainViewModel : ObservableObject
 {
     private readonly SettingsService _settings;
@@ -34,6 +22,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ThumbnailService _thumbnails;
 
     private DispatcherQueue? _dispatcher;
+    private int _refreshVersion;
 
     private MediaItemViewModel? _selectedMedia;
     private string _searchQuery = string.Empty;
@@ -51,12 +40,14 @@ public sealed class MainViewModel : ObservableObject
         _db.Initialize();
         _library = new MediaLibraryService(_db);
         _thumbnails = new ThumbnailService();
+        FilteredMediaItems = new IncrementalMediaCollection(LoadMediaPageAsync);
         WatchedFolders = new ObservableCollection<WatchedFolder>(_settings.WatchedFolders);
     }
 
-    public ObservableCollection<MediaItemViewModel> MediaItems { get; } = new();
-    public ObservableCollection<MediaItemViewModel> FilteredMediaItems { get; } = new();
+    public IncrementalMediaCollection FilteredMediaItems { get; }
+
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
+
     public ObservableCollection<string> SelectedTags { get; } = new();
 
     public MediaItemViewModel? SelectedMedia
@@ -72,7 +63,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _searchQuery, value))
             {
-                ApplyFilters();
+                QueueRefreshMedia(false);
             }
         }
     }
@@ -102,7 +93,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _sortField, value))
             {
-                ApplyFilters();
+                QueueRefreshMedia(true);
             }
         }
     }
@@ -114,7 +105,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (SetProperty(ref _sortOrder, value))
             {
-                ApplyFilters();
+                QueueRefreshMedia(true);
             }
         }
     }
@@ -134,18 +125,7 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
-        IsLoading = true;
-        try
-        {
-            var media = await _library.LoadAllAsync();
-            ReplaceMediaItems(media);
-            ApplyFilters();
-            _ = LoadThumbnailsAsync(MediaItems.ToList());
-        }
-        finally
-        {
-            IsLoading = false;
-        }
+        await RefreshMediaAsync(false);
     }
 
     public async Task AddFilesAsync(IEnumerable<string> paths)
@@ -178,43 +158,18 @@ public sealed class MainViewModel : ObservableObject
     {
         if (SortField == field)
         {
-            SortOrder = SortOrder == MediaSortOrder.Asc ? MediaSortOrder.Desc : MediaSortOrder.Asc;
+            _sortOrder = SortOrder == MediaSortOrder.Asc ? MediaSortOrder.Desc : MediaSortOrder.Asc;
+            OnPropertyChanged(nameof(SortOrder));
         }
         else
         {
-            SortField = field;
-            SortOrder = MediaSortOrder.Asc;
-        }
-    }
-
-    public void ApplyFilters()
-    {
-        var query = SearchQuery.Trim().ToLowerInvariant();
-        var tags = SelectedTags.Select(t => t.ToLowerInvariant()).ToList();
-
-        IEnumerable<MediaItemViewModel> filtered = MediaItems;
-
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            filtered = filtered.Where(m => m.FileName.ToLowerInvariant().Contains(query) || m.Tags.Any(t => t.ToLowerInvariant().Contains(query)));
+            _sortField = field;
+            _sortOrder = MediaSortOrder.Asc;
+            OnPropertyChanged(nameof(SortField));
+            OnPropertyChanged(nameof(SortOrder));
         }
 
-        if (tags.Count > 0)
-        {
-            filtered = filtered.Where(m => tags.All(tag => m.Tags.Any(t => t.ToLowerInvariant().Contains(tag))));
-        }
-
-        filtered = SortField switch
-        {
-            MediaSortField.FileName => SortOrder == MediaSortOrder.Asc
-                ? filtered.OrderBy(m => m.FileName, StringComparer.OrdinalIgnoreCase)
-                : filtered.OrderByDescending(m => m.FileName, StringComparer.OrdinalIgnoreCase),
-            _ => SortOrder == MediaSortOrder.Asc
-                ? filtered.OrderBy(m => m.Media.ModifiedAt)
-                : filtered.OrderByDescending(m => m.Media.ModifiedAt)
-        };
-
-        ReplaceCollection(FilteredMediaItems, filtered);
+        QueueRefreshMedia(true);
     }
 
     public async Task UpdateTagsAsync(MediaItemViewModel media, IEnumerable<string> tags)
@@ -231,37 +186,106 @@ public sealed class MainViewModel : ObservableObject
         }
 
         media.UpdateTags(normalized);
-        ApplyFilters();
-        await Task.CompletedTask;
-    }
-
-    public void DeleteMedia(IEnumerable<MediaItemViewModel> items)
-    {
-        var list = items.ToList();
-        foreach (var item in list)
+        if (!string.IsNullOrWhiteSpace(SearchQuery) || SelectedTags.Count > 0)
         {
-            _db.DeleteMedia(item.Id);
-            MediaItems.Remove(item);
-            FilteredMediaItems.Remove(item);
+            await RefreshMediaAsync(true);
         }
     }
 
-    private async Task AddMediaInternalAsync(Func<Task<IReadOnlyList<MediaFile>>> loader)
+    public async Task<MediaItemViewModel?> DeleteMediaAsync(IEnumerable<MediaItemViewModel> items)
+    {
+        var list = items.ToList();
+        if (list.Count == 0)
+        {
+            return SelectedMedia;
+        }
+
+        var loadedCount = FilteredMediaItems.Count;
+        var selectedId = SelectedMedia?.Id;
+        var removedIds = new HashSet<string>(list.Select(item => item.Id), StringComparer.Ordinal);
+        var firstRemovedIndex = list
+            .Select(item => FilteredMediaItems.IndexOf(item))
+            .Where(index => index >= 0)
+            .DefaultIfEmpty(FilteredMediaItems.Count)
+            .Min();
+        _db.DeleteMedia(list.Select(item => item.Id));
+
+        foreach (var item in list)
+        {
+            FilteredMediaItems.Remove(item);
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectedId) && !removedIds.Contains(selectedId))
+        {
+            var existingSelection = FilteredMediaItems.FirstOrDefault(item => item.Id == selectedId);
+            if (existingSelection != null)
+            {
+                SelectedMedia = existingSelection;
+                return existingSelection;
+            }
+        }
+
+        await FilteredMediaItems.EnsureItemAvailableAsync(Math.Max(loadedCount - 1, 0));
+        if (FilteredMediaItems.Count == 0)
+        {
+            SelectedMedia = null;
+            return null;
+        }
+
+        var fallbackIndex = Math.Clamp(firstRemovedIndex, 0, FilteredMediaItems.Count - 1);
+        var replacement = FilteredMediaItems[fallbackIndex];
+        SelectedMedia = replacement;
+        return replacement;
+    }
+
+    public async Task RefreshMediaAsync(bool preserveSelection)
+    {
+        var refreshVersion = Interlocked.Increment(ref _refreshVersion);
+        var selectedId = preserveSelection ? SelectedMedia?.Id : null;
+        IsLoading = true;
+        try
+        {
+            await FilteredMediaItems.RefreshAsync();
+            if (refreshVersion == _refreshVersion)
+            {
+                await RestoreSelectionAsync(refreshVersion, selectedId);
+            }
+        }
+        finally
+        {
+            if (refreshVersion == _refreshVersion)
+            {
+                IsLoading = false;
+            }
+        }
+    }
+
+    public Task EnsureMediaItemLoadedAsync(int index)
+    {
+        return FilteredMediaItems.EnsureItemAvailableAsync(index);
+    }
+
+    public async Task EnsureThumbnailAsync(MediaItemViewModel item)
+    {
+        if (!item.TryBeginThumbnailLoad())
+        {
+            return;
+        }
+
+        var source = await _thumbnails.GetThumbnailAsync(item.Media.Path, item.Media.Type == MediaType.Video);
+        if (source != null)
+        {
+            SetThumbnailSafe(item, source);
+        }
+    }
+
+    private async Task AddMediaInternalAsync(Func<Task<int>> loader)
     {
         IsLoading = true;
         try
         {
-            var media = await loader();
-            if (media.Count > 0)
-            {
-                var newItems = media.Select(m => new MediaItemViewModel(m)).ToList();
-                foreach (var item in newItems)
-                {
-                    MediaItems.Add(item);
-                }
-                ApplyFilters();
-                _ = LoadThumbnailsAsync(newItems);
-            }
+            await loader();
+            await RefreshMediaAsync(true);
         }
         finally
         {
@@ -270,13 +294,17 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ReplaceMediaItems(IReadOnlyList<MediaFile> items)
+    private Task<MediaPageResult> LoadMediaPageAsync(int offset, int limit)
     {
-        MediaItems.Clear();
-        foreach (var media in items)
+        return _library.QueryPageAsync(new MediaQuery
         {
-            MediaItems.Add(new MediaItemViewModel(media));
-        }
+            SearchText = SearchQuery,
+            SelectedTags = SelectedTags.ToList(),
+            SortField = SortField,
+            SortOrder = SortOrder,
+            Offset = offset,
+            Limit = limit
+        });
     }
 
     private void OnScanProgress(ScanProgress progress)
@@ -284,18 +312,6 @@ public sealed class MainViewModel : ObservableObject
         StatusMessage = progress.Total > 0
             ? $"正在扫描 {progress.Scanned}/{progress.Total}"
             : "准备扫描...";
-    }
-
-    private async Task LoadThumbnailsAsync(IEnumerable<MediaItemViewModel> items)
-    {
-        foreach (var item in items)
-        {
-            var source = await _thumbnails.GetThumbnailAsync(item.Media.Path, item.Media.Type == MediaType.Video);
-            if (source != null)
-            {
-                SetThumbnailSafe(item, source);
-            }
-        }
     }
 
     private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source)
@@ -309,12 +325,51 @@ public sealed class MainViewModel : ObservableObject
         _dispatcher.TryEnqueue(() => item.Thumbnail = source);
     }
 
-    private static void ReplaceCollection<T>(ObservableCollection<T> target, IEnumerable<T> items)
+    private void QueueRefreshMedia(bool preserveSelection)
     {
-        target.Clear();
-        foreach (var item in items)
+        _ = RefreshMediaAsync(preserveSelection);
+    }
+
+    private async Task RestoreSelectionAsync(int refreshVersion, string? selectedId)
+    {
+        if (string.IsNullOrWhiteSpace(selectedId))
         {
-            target.Add(item);
+            SelectedMedia = null;
+            return;
         }
+
+        var restored = await FindMediaByIdAsync(selectedId, refreshVersion);
+        if (refreshVersion != _refreshVersion)
+        {
+            return;
+        }
+
+        SelectedMedia = restored;
+    }
+
+    private async Task<MediaItemViewModel?> FindMediaByIdAsync(string mediaId, int refreshVersion)
+    {
+        while (refreshVersion == _refreshVersion)
+        {
+            var existing = FilteredMediaItems.FirstOrDefault(item => item.Id == mediaId);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            if (!FilteredMediaItems.HasMoreItems)
+            {
+                return null;
+            }
+
+            var previousCount = FilteredMediaItems.Count;
+            await FilteredMediaItems.EnsureItemAvailableAsync(previousCount);
+            if (FilteredMediaItems.Count == previousCount)
+            {
+                return null;
+            }
+        }
+
+        return null;
     }
 }

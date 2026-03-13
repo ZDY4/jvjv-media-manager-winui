@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Threading;
 using Microsoft.UI.Xaml.Media;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Utilities;
@@ -9,6 +10,7 @@ public sealed class MediaItemViewModel : ObservableObject
 {
     private ImageSource? _thumbnail;
     private bool _isSelected;
+    private int _thumbnailRequested;
 
     public MediaItemViewModel(MediaFile media)
     {
@@ -56,5 +58,10 @@ public sealed class MediaItemViewModel : ObservableObject
             Tags.Add(tag);
         }
         OnPropertyChanged(nameof(TagsText));
+    }
+
+    public bool TryBeginThumbnailLoad()
+    {
+        return Interlocked.CompareExchange(ref _thumbnailRequested, 1, 0) == 0;
     }
 }

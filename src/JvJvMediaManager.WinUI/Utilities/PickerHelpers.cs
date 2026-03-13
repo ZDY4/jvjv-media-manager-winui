@@ -51,6 +51,6 @@ public static class PickerHelpers
     private static void InitializeWithWindow(object picker, Window window)
     {
         var hwnd = WindowNative.GetWindowHandle(window);
-        InitializeWithWindow.Initialize(picker, hwnd);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
     }
 }

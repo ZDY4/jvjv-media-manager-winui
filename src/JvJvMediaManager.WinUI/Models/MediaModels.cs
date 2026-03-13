@@ -44,7 +44,7 @@ public sealed class TrimSegment
     public double End { get; set; }
 }
 
-public sealed class Playlist
+public class Playlist
 {
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;

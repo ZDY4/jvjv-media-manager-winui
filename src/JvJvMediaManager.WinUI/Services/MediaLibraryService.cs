@@ -9,18 +9,19 @@ namespace JvJvMediaManager.Services;
 public sealed class MediaLibraryService
 {
     private readonly MediaDb _db;
+    private const int BatchSize = 200;
 
     public MediaLibraryService(MediaDb db)
     {
         _db = db;
     }
 
-    public Task<IReadOnlyList<MediaFile>> LoadAllAsync()
+    public Task<MediaPageResult> QueryPageAsync(MediaQuery query)
     {
-        return Task.Run<IReadOnlyList<MediaFile>>(() => _db.GetAllMedia());
+        return Task.Run(() => _db.QueryMediaPage(query));
     }
 
-    public async Task<IReadOnlyList<MediaFile>> AddFilesAsync(IEnumerable<string> paths, IProgress<ScanProgress>? progress = null)
+    public async Task<int> AddFilesAsync(IEnumerable<string> paths, IProgress<ScanProgress>? progress = null)
     {
         var normalized = paths
             .Where(p => !string.IsNullOrWhiteSpace(p))
@@ -44,20 +45,20 @@ public sealed class MediaLibraryService
         return await ProcessFilesAsync(files, progress);
     }
 
-    public async Task<IReadOnlyList<MediaFile>> AddFolderAsync(string folderPath, IProgress<ScanProgress>? progress = null)
+    public async Task<int> AddFolderAsync(string folderPath, IProgress<ScanProgress>? progress = null)
     {
         var files = EnumerateMediaFiles(folderPath);
         return await ProcessFilesAsync(files, progress);
     }
 
-    public async Task<IReadOnlyList<MediaFile>> RescanFoldersAsync(IEnumerable<string> folders, IProgress<ScanProgress>? progress = null)
+    public async Task<int> RescanFoldersAsync(IEnumerable<string> folders, IProgress<ScanProgress>? progress = null)
     {
         var files = new List<string>();
         foreach (var folder in folders)
         {
             files.AddRange(EnumerateMediaFiles(folder));
         }
-        return await ProcessFilesAsync(files, progress, true);
+        return await ProcessFilesAsync(files, progress);
     }
 
     private static List<string> EnumerateMediaFiles(string folderPath)
@@ -80,18 +81,19 @@ public sealed class MediaLibraryService
         return results;
     }
 
-    private async Task<IReadOnlyList<MediaFile>> ProcessFilesAsync(List<string> files, IProgress<ScanProgress>? progress, bool rescan = false)
+    private async Task<int> ProcessFilesAsync(List<string> files, IProgress<ScanProgress>? progress)
     {
-        var result = new List<MediaFile>();
         if (files.Count == 0)
         {
             progress?.Report(new ScanProgress(0, 0, "", true));
-            return result;
+            return 0;
         }
 
         var total = files.Count;
         var processed = 0;
+        var persisted = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var batch = new List<MediaFile>(BatchSize);
 
         foreach (var file in files)
         {
@@ -105,15 +107,26 @@ public sealed class MediaLibraryService
             var media = await ProcessFileAsync(file);
             if (media != null)
             {
-                _db.AddMedia(media);
-                result.Add(media);
+                batch.Add(media);
+                if (batch.Count >= BatchSize)
+                {
+                    _db.UpsertMediaBatch(batch);
+                    persisted += batch.Count;
+                    batch.Clear();
+                }
             }
 
             progress?.Report(new ScanProgress(processed, total, file, processed == total));
             await Task.Yield();
         }
 
-        return result;
+        if (batch.Count > 0)
+        {
+            _db.UpsertMediaBatch(batch);
+            persisted += batch.Count;
+        }
+
+        return persisted;
     }
 
     private async Task<MediaFile?> ProcessFileAsync(string filePath)

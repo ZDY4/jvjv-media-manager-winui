@@ -1,0 +1,214 @@
+﻿<Page
+    x:Class="JvJvMediaManager.Views.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:JvJvMediaManager"
+    xmlns:viewModels="using:JvJvMediaManager.ViewModels"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Background="{ThemeResource SurfaceBrush}">
+
+    <Page.Resources>
+        <DataTemplate x:Key="ListItemTemplate"                                           >
+            <Grid x:ConnectionId='8' Padding="8" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="72" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Width="72" Height="48" Background="#2D2D2D" CornerRadius="6">
+                    <Image x:ConnectionId='12'                             Stretch="UniformToFill" />
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="2">
+                    <TextBlock x:ConnectionId='9'                          Foreground="{ThemeResource TextBrush}" FontSize="14" TextTrimming="CharacterEllipsis" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock x:ConnectionId='10'                          Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                        <TextBlock x:ConnectionId='11'                                Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="GridItemTemplate"                                           >
+            <Grid x:ConnectionId='3' Width="140" Height="140">
+                <Border CornerRadius="8" Background="#2D2D2D">
+                    <Image x:ConnectionId='6'                             Stretch="UniformToFill" />
+                </Border>
+                <Border Background="#80000000" VerticalAlignment="Bottom" CornerRadius="0,0,8,8" Padding="6">
+                    <StackPanel>
+                        <TextBlock x:ConnectionId='4'                          Foreground="{ThemeResource TextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:ConnectionId='5'                          Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </DataTemplate>
+    </Page.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <CommandBar Grid.Row="0" Background="{ThemeResource SurfaceAltBrush}" DefaultLabelPosition="Collapsed">
+            <AppBarButton x:ConnectionId='36' Icon="Add" Label="添加文件"                        />
+            <AppBarButton x:ConnectionId='37' Icon="Folder" Label="添加文件夹"                         />
+            <AppBarButton x:ConnectionId='38' Icon="Sync" Label="刷新"                       />
+            <AppBarSeparator />
+            <AppBarButton x:ConnectionId='39' Icon="Setting" Label="设置"                        />
+        </CommandBar>
+
+        <SplitView Grid.Row="1" DisplayMode="Inline" IsPaneOpen="True" OpenPaneLength="360" Background="{ThemeResource SurfaceBrush}">
+            <SplitView.Pane>
+                <Grid Background="{ThemeResource SurfaceAltBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Padding="12" Spacing="8">
+                        <TextBox x:ConnectionId='18' x:Name="SearchBox" PlaceholderText="搜索文件名或输入 #标签"                                                                 />
+                        <ItemsControl x:ConnectionId='19' x:Name="SelectedTagsControl" Visibility="Collapsed">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#1F005FB8" CornerRadius="6" Padding="6,2" Margin="0,0,6,6">
+                                        <TextBlock Text="{Binding}" Foreground="#60CDFF" FontSize="12" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapGrid />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Padding="12" Spacing="8">
+                        <Button x:ConnectionId='15' Content="列表"                            />
+                        <Button x:ConnectionId='16' Content="网格"                            />
+                        <Button x:ConnectionId='17' Content="排序"                    />
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="2" Padding="12,0" Foreground="{ThemeResource MutedTextBrush}" Text="{Binding StatusMessage}" />
+
+                    <Grid Grid.Row="3">
+                        <ListView x:ConnectionId='13' x:Name="ListView"
+                                  ItemsSource="{Binding FilteredMediaItems}"
+                                  ItemTemplate="{StaticResource ListItemTemplate}"
+                                  IncrementalLoadingTrigger="Edge"
+                                  IncrementalLoadingThreshold="2"
+                                  DataFetchSize="1"
+                                  SelectionMode="Extended"
+                                  IsItemClickEnabled="True"
+                                                             
+                                                                                           
+                                                                            />
+
+                        <GridView x:ConnectionId='14' x:Name="GridView"
+                                  Visibility="Collapsed"
+                                  ItemsSource="{Binding FilteredMediaItems}"
+                                  ItemTemplate="{StaticResource GridItemTemplate}"
+                                  IncrementalLoadingTrigger="Edge"
+                                  IncrementalLoadingThreshold="2"
+                                  DataFetchSize="1"
+                                  SelectionMode="Extended"
+                                  IsItemClickEnabled="True"
+                                                             
+                                                                                           
+                                                                           >
+                            <GridView.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <ItemsWrapGrid ItemWidth="140" ItemHeight="140" />
+                                </ItemsPanelTemplate>
+                            </GridView.ItemsPanel>
+                        </GridView>
+                    </Grid>
+                </Grid>
+            </SplitView.Pane>
+
+            <SplitView.Content>
+                <Grid x:ConnectionId='21' x:Name="PlayerRoot" Background="#202020"                                                                                                                           >
+                    <Grid x:ConnectionId='22' x:Name="EmptyState" Visibility="Visible">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                            <TextBlock Text="选择一个媒体文件开始播放" Foreground="{ThemeResource TextBrush}" FontSize="18" />
+                            <TextBlock Text="PageUp / PageDown 切换上一个/下一个" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                        </StackPanel>
+                    </Grid>
+
+                    <MediaPlayerElement x:ConnectionId='23' x:Name="VideoPlayer" AreTransportControlsEnabled="False" AutoPlay="True" Visibility="Collapsed" Stretch="Uniform" />
+                    <ScrollViewer x:ConnectionId='24' x:Name="ImageScrollViewer"
+                                  Visibility="Collapsed"
+                                  ZoomMode="Enabled"
+                                  HorizontalScrollMode="Enabled"
+                                  VerticalScrollMode="Enabled"
+                                  MinZoomFactor="0.2"
+                                  MaxZoomFactor="6"
+                                                                                             >
+                        <Image x:ConnectionId='35' x:Name="ImageViewer" Stretch="Uniform" />
+                    </ScrollViewer>
+
+                    <Grid x:ConnectionId='25' x:Name="PlayerOverlay" Background="Transparent">
+                        <Grid x:ConnectionId='26' x:Name="ControlBar"
+                              VerticalAlignment="Bottom"
+                              Margin="16"
+                              Padding="12"
+                              Background="#99000000"
+                              CornerRadius="10"
+                                                                    >
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Slider x:ConnectionId='27' x:Name="ProgressSlider"
+                                    Grid.Row="0"
+                                    Minimum="0"
+                                    Maximum="1"
+                                    Value="0"
+                                    SmallChange="1"
+                                    LargeChange="10"
+                                                                              
+                                                                                  
+                                                                                     />
+
+                            <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <AppBarButton x:ConnectionId='28' x:Name="PlayPauseButton" Grid.Column="0"                        >
+                                    <AppBarButton.Icon>
+                                        <SymbolIcon x:ConnectionId='34' x:Name="PlayPauseIcon" Symbol="Play" />
+                                    </AppBarButton.Icon>
+                                </AppBarButton>
+
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <TextBlock x:ConnectionId='32' x:Name="CurrentTimeText" Text="0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
+                                    <TextBlock Text="/" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                                    <TextBlock x:ConnectionId='33' x:Name="TotalTimeText" Text="0:00" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <TextBlock Text="音量" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                                    <Slider x:ConnectionId='31' x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="1" Value="0.8"                                          />
+                                </StackPanel>
+
+                                <Button x:ConnectionId='29' x:Name="PlaybackModeButton" Grid.Column="4" Content="列表循环"                            />
+                                <Button x:ConnectionId='30' x:Name="FullScreenButton" Grid.Column="5" Content="全屏"                          />
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </SplitView.Content>
+        </SplitView>
+    </Grid>
+</Page>
+

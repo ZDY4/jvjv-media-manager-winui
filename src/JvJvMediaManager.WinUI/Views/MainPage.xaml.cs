@@ -1,5 +1,10 @@
+using System.Collections.Specialized;
+using System.ComponentModel;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Media.Core;
@@ -7,28 +12,88 @@ using Windows.Media.Playback;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.Models;
+using WinRT.Interop;
 
 namespace JvJvMediaManager.Views;
 
 public sealed partial class MainPage : Page
 {
+    private enum PlaybackMode
+    {
+        ListLoop,
+        SingleLoop,
+        Shuffle
+    }
+
     public MainViewModel ViewModel { get; } = new();
 
     private readonly DebounceDispatcher _debouncer = new();
+    private readonly DispatcherTimer _playbackTimer = new();
+    private readonly DispatcherTimer _controlsHideTimer = new();
+    private readonly Random _random = new();
+
+    private MediaPlayer? _player;
+    private AppWindow? _appWindow;
+
+    private bool _isSeeking;
+    private bool _controlsVisible = true;
+    private bool _isFullScreen;
+    private bool _isSyncingSelection;
+    private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
 
     public MainPage()
     {
         InitializeComponent();
         DataContext = ViewModel;
+        ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        ViewModel.SelectedTags.CollectionChanged += SelectedTags_CollectionChanged;
         ViewModel.SetDispatcher(DispatcherQueue);
         Loaded += MainPage_Loaded;
+        Unloaded += MainPage_Unloaded;
         SelectedTagsControl.ItemsSource = ViewModel.SelectedTags;
         KeyDown += MainPage_KeyDown;
+
+        _playbackTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _playbackTimer.Tick += PlaybackTimer_Tick;
+
+        _controlsHideTimer.Interval = TimeSpan.FromSeconds(2.5);
+        _controlsHideTimer.Tick += ControlsHideTimer_Tick;
+
+        UpdatePlaybackModeUi();
+        UpdateControlBarState(false);
     }
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         await ViewModel.InitializeAsync();
+        RefreshTagChips();
+    }
+
+    private void MainPage_Unloaded(object sender, RoutedEventArgs e)
+    {
+        ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        ViewModel.SelectedTags.CollectionChanged -= SelectedTags_CollectionChanged;
+        _playbackTimer.Stop();
+        _controlsHideTimer.Stop();
+
+        if (_player != null)
+        {
+            _player.MediaOpened -= Player_MediaOpened;
+            _player.MediaEnded -= Player_MediaEnded;
+            _player.PlaybackSession.PlaybackStateChanged -= PlaybackSession_PlaybackStateChanged;
+        }
+    }
+
+    private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.SelectedMedia))
+        {
+            DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
+        }
+    }
+
+    private void SelectedTags_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
         RefreshTagChips();
     }
 
@@ -95,12 +160,15 @@ public sealed partial class MainPage : Page
 
         var tag = value[1..].Trim();
         if (tag.Length == 0) return;
+        var needsImmediateRefresh = string.IsNullOrWhiteSpace(ViewModel.SearchQuery);
 
-        if (!ViewModel.SelectedTags.Contains(tag))
+        if (!ViewModel.SelectedTags.Any(existing => string.Equals(existing, tag, StringComparison.OrdinalIgnoreCase)))
         {
             ViewModel.SelectedTags.Add(tag);
-            ViewModel.ApplyFilters();
-            RefreshTagChips();
+            if (needsImmediateRefresh)
+            {
+                _ = ViewModel.RefreshMediaAsync(false);
+            }
         }
 
         SearchBox.Text = string.Empty;
@@ -113,6 +181,7 @@ public sealed partial class MainPage : Page
         ViewModel.ViewMode = MediaViewMode.List;
         ListView.Visibility = Visibility.Visible;
         GridView.Visibility = Visibility.Collapsed;
+        DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
     }
 
     private void GridViewMode_Click(object sender, RoutedEventArgs e)
@@ -120,6 +189,7 @@ public sealed partial class MainPage : Page
         ViewModel.ViewMode = MediaViewMode.Grid;
         ListView.Visibility = Visibility.Collapsed;
         GridView.Visibility = Visibility.Visible;
+        DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -146,23 +216,34 @@ public sealed partial class MainPage : Page
     {
         if (e.ClickedItem is MediaItemViewModel media)
         {
-            ViewModel.SelectedMedia = media;
-            UpdatePlayer(media);
+            SelectMedia(media);
         }
     }
 
     private void Media_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_isSyncingSelection)
+        {
+            return;
+        }
+
         if (sender is ListView listView && listView.SelectedItem is MediaItemViewModel media)
         {
-            ViewModel.SelectedMedia = media;
-            UpdatePlayer(media);
+            SelectMedia(media);
         }
         else if (sender is GridView gridView && gridView.SelectedItem is MediaItemViewModel gridMedia)
         {
-            ViewModel.SelectedMedia = gridMedia;
-            UpdatePlayer(gridMedia);
+            SelectMedia(gridMedia);
         }
+        else if (sender is ListView || sender is GridView)
+        {
+            ViewModel.SelectedMedia = null;
+        }
+    }
+
+    private void SelectMedia(MediaItemViewModel media)
+    {
+        ViewModel.SelectedMedia = media;
     }
 
     private void UpdatePlayer(MediaItemViewModel media)
@@ -171,21 +252,76 @@ public sealed partial class MainPage : Page
 
         if (media.Type == MediaType.Video)
         {
-            ImageViewer.Visibility = Visibility.Collapsed;
+            ImageScrollViewer.Visibility = Visibility.Collapsed;
             VideoPlayer.Visibility = Visibility.Visible;
-            if (VideoPlayer.MediaPlayer == null)
-            {
-                VideoPlayer.SetMediaPlayer(new MediaPlayer());
-            }
-            var uri = new Uri(media.Media.Path);
-            VideoPlayer.Source = MediaSource.CreateFromUri(uri);
+            var player = EnsureMediaPlayer();
+            player.Source = MediaSource.CreateFromUri(new Uri(media.Media.Path));
+            UpdateControlBarState(true);
+            ShowControls();
         }
         else
         {
             VideoPlayer.Visibility = Visibility.Collapsed;
-            ImageViewer.Visibility = Visibility.Visible;
+            ImageScrollViewer.Visibility = Visibility.Visible;
+            if (_player != null)
+            {
+                _player.Pause();
+                _player.Source = null;
+            }
             ImageViewer.Source = media.Thumbnail ?? new BitmapImage(new Uri(media.Media.Path));
+            ResetImageZoom();
+            UpdateControlBarState(false);
         }
+    }
+
+    private void ClearPlayerSelection()
+    {
+        EmptyState.Visibility = Visibility.Visible;
+        VideoPlayer.Visibility = Visibility.Collapsed;
+        ImageScrollViewer.Visibility = Visibility.Collapsed;
+        ImageViewer.Source = null;
+        if (_player != null)
+        {
+            _player.Pause();
+            _player.Source = null;
+        }
+
+        UpdateControlBarState(false);
+    }
+
+    private void SyncSelectionFromViewModel()
+    {
+        _isSyncingSelection = true;
+        try
+        {
+            var selected = ViewModel.SelectedMedia;
+            ListView.SelectedItem = selected;
+            GridView.SelectedItem = selected;
+
+            if (selected == null)
+            {
+                ClearPlayerSelection();
+                return;
+            }
+
+            UpdatePlayer(selected);
+            RevealSelectedMedia(selected);
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+    }
+
+    private void RevealSelectedMedia(MediaItemViewModel media)
+    {
+        if (ViewModel.ViewMode == MediaViewMode.Grid)
+        {
+            GridView.ScrollIntoView(media);
+            return;
+        }
+
+        ListView.ScrollIntoView(media);
     }
 
     private void MainPage_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -194,18 +330,7 @@ public sealed partial class MainPage : Page
 
         if (e.Key == Windows.System.VirtualKey.Space && ViewModel.SelectedMedia.Type == MediaType.Video)
         {
-            var player = VideoPlayer.MediaPlayer;
-            if (player != null)
-            {
-                if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
-                {
-                    player.Pause();
-                }
-                else
-                {
-                    player.Play();
-                }
-            }
+            TogglePlayPause();
             e.Handled = true;
         }
         else if (e.Key == Windows.System.VirtualKey.Left && ViewModel.SelectedMedia.Type == MediaType.Video)
@@ -220,12 +345,12 @@ public sealed partial class MainPage : Page
         }
         else if (e.Key == Windows.System.VirtualKey.PageUp)
         {
-            NavigateRelative(-1);
+            _ = NavigateRelativeAsync(-1);
             e.Handled = true;
         }
         else if (e.Key == Windows.System.VirtualKey.PageDown)
         {
-            NavigateRelative(1);
+            _ = NavigateRelativeAsync(1);
             e.Handled = true;
         }
         else if (e.Key == Windows.System.VirtualKey.Delete)
@@ -233,31 +358,272 @@ public sealed partial class MainPage : Page
             _ = DeleteSelectedAsync();
             e.Handled = true;
         }
+        else if (ViewModel.SelectedMedia.Type == MediaType.Image)
+        {
+            if (e.Key == Windows.System.VirtualKey.Add || e.Key == (Windows.System.VirtualKey)187)
+            {
+                ZoomImage(0.1);
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Subtract || e.Key == (Windows.System.VirtualKey)189)
+            {
+                ZoomImage(-0.1);
+                e.Handled = true;
+            }
+            else if (e.Key == Windows.System.VirtualKey.Number0)
+            {
+                ResetImageZoom();
+                e.Handled = true;
+            }
+        }
+
+        if (e.Handled)
+        {
+            ShowControls();
+        }
+    }
+
+    private void PlayPause_Click(object sender, RoutedEventArgs e)
+    {
+        TogglePlayPause();
+    }
+
+    private void TogglePlayPause()
+    {
+        var player = _player;
+        if (player == null) return;
+
+        if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+        {
+            player.Pause();
+        }
+        else
+        {
+            player.Play();
+        }
+
+        ShowControls();
+    }
+
+    private void PlaybackMode_Click(object sender, RoutedEventArgs e)
+    {
+        _playbackMode = _playbackMode switch
+        {
+            PlaybackMode.ListLoop => PlaybackMode.SingleLoop,
+            PlaybackMode.SingleLoop => PlaybackMode.Shuffle,
+            _ => PlaybackMode.ListLoop
+        };
+
+        UpdatePlaybackModeUi();
+        ShowControls();
+    }
+
+    private void FullScreen_Click(object sender, RoutedEventArgs e)
+    {
+        var appWindow = GetAppWindow();
+        if (appWindow == null) return;
+
+        if (_isFullScreen)
+        {
+            appWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
+            _isFullScreen = false;
+            FullScreenButton.Content = "全屏";
+        }
+        else
+        {
+            appWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+            _isFullScreen = true;
+            FullScreenButton.Content = "退出全屏";
+        }
+
+        ShowControls();
+    }
+
+    private void ProgressSlider_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        _isSeeking = true;
+        ShowControls();
+    }
+
+    private void ProgressSlider_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        SeekToSlider();
+        _isSeeking = false;
+        ShowControls();
+    }
+
+    private void ProgressSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_player == null || !_isSeeking) return;
+        var target = TimeSpan.FromSeconds(ProgressSlider.Value);
+        _player.PlaybackSession.Position = target;
+        CurrentTimeText.Text = FormatTime(target);
+    }
+
+    private void VolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_player != null)
+        {
+            _player.Volume = VolumeSlider.Value;
+        }
+    }
+
+    private void PlayerRoot_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        ShowControls();
+    }
+
+    private void PlayerRoot_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        ShowControls();
+    }
+
+    private void PlayerRoot_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        ShowControls();
+    }
+
+    private void ControlBar_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        ShowControls();
+    }
+
+    private void ControlsHideTimer_Tick(object? sender, object e)
+    {
+        _controlsHideTimer.Stop();
+        HideControls();
+    }
+
+    private void PlaybackTimer_Tick(object? sender, object e)
+    {
+        var player = _player;
+        if (player == null) return;
+
+        var duration = player.PlaybackSession.NaturalDuration;
+        if (duration.TotalSeconds <= 0) return;
+
+        if (!_isSeeking)
+        {
+            ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
+            ProgressSlider.Value = player.PlaybackSession.Position.TotalSeconds;
+        }
+
+        CurrentTimeText.Text = FormatTime(player.PlaybackSession.Position);
+        TotalTimeText.Text = FormatTime(duration);
+    }
+
+    private void Player_MediaOpened(MediaPlayer sender, object args)
+    {
+        var duration = sender.PlaybackSession.NaturalDuration;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
+            TotalTimeText.Text = FormatTime(duration);
+            CurrentTimeText.Text = "0:00";
+        });
+    }
+
+    private void Player_MediaEnded(MediaPlayer sender, object args)
+    {
+        DispatcherQueue.TryEnqueue(HandlePlaybackEnded);
+    }
+
+    private void PlaybackSession_PlaybackStateChanged(MediaPlaybackSession sender, object args)
+    {
+        DispatcherQueue.TryEnqueue(UpdatePlayPauseState);
+    }
+
+    private void UpdatePlayPauseState()
+    {
+        if (_player == null) return;
+
+        PlayPauseIcon.Symbol = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing
+            ? Symbol.Pause
+            : Symbol.Play;
+    }
+
+    private void HandlePlaybackEnded()
+    {
+        if (ViewModel.SelectedMedia == null) return;
+
+        if (_playbackMode == PlaybackMode.SingleLoop)
+        {
+            if (_player != null)
+            {
+                _player.PlaybackSession.Position = TimeSpan.Zero;
+                _player.Play();
+            }
+            return;
+        }
+
+        if (_playbackMode == PlaybackMode.Shuffle)
+        {
+            NavigateRandom();
+            return;
+        }
+
+        _ = NavigateRelativeAsync(1);
+    }
+
+    private void NavigateRandom()
+    {
+        var list = ViewModel.FilteredMediaItems;
+        if (list.Count == 0 || ViewModel.SelectedMedia == null) return;
+
+        var currentIndex = list.IndexOf(ViewModel.SelectedMedia);
+        var nextIndex = currentIndex;
+
+        if (list.Count > 1)
+        {
+            while (nextIndex == currentIndex)
+            {
+                nextIndex = _random.Next(list.Count);
+            }
+        }
+
+        var next = list[nextIndex];
+        ViewModel.SelectedMedia = next;
     }
 
     private void SeekRelative(double seconds)
     {
-        var player = VideoPlayer.MediaPlayer;
+        var player = _player;
         if (player == null) return;
+
         var position = player.PlaybackSession.Position;
         var next = position + TimeSpan.FromSeconds(seconds);
         if (next < TimeSpan.Zero) next = TimeSpan.Zero;
         player.PlaybackSession.Position = next;
     }
 
-    private void NavigateRelative(int offset)
+    private void SeekToSlider()
+    {
+        if (_player == null) return;
+        _player.PlaybackSession.Position = TimeSpan.FromSeconds(ProgressSlider.Value);
+    }
+
+    private async Task NavigateRelativeAsync(int offset)
     {
         var list = ViewModel.FilteredMediaItems;
         if (list.Count == 0 || ViewModel.SelectedMedia == null) return;
 
         var index = list.IndexOf(ViewModel.SelectedMedia);
         if (index < 0) return;
-        var nextIndex = (index + offset + list.Count) % list.Count;
+
+        var nextIndex = index + offset;
+        if (offset > 0)
+        {
+            await ViewModel.EnsureMediaItemLoadedAsync(nextIndex);
+        }
+
+        if (list.Count == 0)
+        {
+            return;
+        }
+
+        nextIndex = ((nextIndex % list.Count) + list.Count) % list.Count;
         var next = list[nextIndex];
         ViewModel.SelectedMedia = next;
-        UpdatePlayer(next);
-        ListView.SelectedItem = next;
-        GridView.SelectedItem = next;
     }
 
     private void UpdateWatchedFolders(IEnumerable<string> paths)
@@ -287,6 +653,19 @@ public sealed partial class MainPage : Page
         SelectedTagsControl.Visibility = ViewModel.SelectedTags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private void Media_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.InRecycleQueue)
+        {
+            return;
+        }
+
+        if (args.Item is MediaItemViewModel media)
+        {
+            _ = ViewModel.EnsureThumbnailAsync(media);
+        }
+    }
+
     private async Task DeleteSelectedAsync()
     {
         var selected = GetSelectedItems().ToList();
@@ -308,7 +687,11 @@ public sealed partial class MainPage : Page
         var result = await dialog.ShowAsync();
         if (result != ContentDialogResult.Primary) return;
 
-        ViewModel.DeleteMedia(selected);
+        var nextSelection = await ViewModel.DeleteMediaAsync(selected);
+        if (nextSelection == null)
+        {
+            ClearPlayerSelection();
+        }
     }
 
     private IEnumerable<MediaItemViewModel> GetSelectedItems()
@@ -318,5 +701,112 @@ public sealed partial class MainPage : Page
             return GridView.SelectedItems.OfType<MediaItemViewModel>();
         }
         return ListView.SelectedItems.OfType<MediaItemViewModel>();
+    }
+
+    private MediaPlayer EnsureMediaPlayer()
+    {
+        if (_player != null) return _player;
+
+        _player = new MediaPlayer();
+        _player.MediaOpened += Player_MediaOpened;
+        _player.MediaEnded += Player_MediaEnded;
+        _player.PlaybackSession.PlaybackStateChanged += PlaybackSession_PlaybackStateChanged;
+        _player.Volume = VolumeSlider.Value;
+        VideoPlayer.SetMediaPlayer(_player);
+        _playbackTimer.Start();
+        return _player;
+    }
+
+    private void UpdatePlaybackModeUi()
+    {
+        PlaybackModeButton.Content = _playbackMode switch
+        {
+            PlaybackMode.ListLoop => "列表循环",
+            PlaybackMode.SingleLoop => "单曲循环",
+            _ => "随机播放"
+        };
+    }
+
+    private void UpdateControlBarState(bool showForVideo)
+    {
+        ControlBar.Visibility = showForVideo ? Visibility.Visible : Visibility.Collapsed;
+        ControlBar.IsHitTestVisible = showForVideo;
+        ControlBar.Opacity = showForVideo ? 1 : 0;
+        _controlsVisible = showForVideo;
+
+        if (!showForVideo)
+        {
+            _controlsHideTimer.Stop();
+        }
+    }
+
+    private void ShowControls()
+    {
+        if (ControlBar.Visibility != Visibility.Visible) return;
+
+        ControlBar.Opacity = 1;
+        ControlBar.IsHitTestVisible = true;
+        _controlsVisible = true;
+
+        _controlsHideTimer.Stop();
+        _controlsHideTimer.Start();
+    }
+
+    private void HideControls()
+    {
+        if (!_controlsVisible) return;
+
+        ControlBar.Opacity = 0;
+        ControlBar.IsHitTestVisible = false;
+        _controlsVisible = false;
+    }
+
+    private void ZoomImage(double delta)
+    {
+        if (ImageScrollViewer.Visibility != Visibility.Visible) return;
+
+        var min = ImageScrollViewer.MinZoomFactor;
+        var max = ImageScrollViewer.MaxZoomFactor;
+        var target = Math.Clamp(ImageScrollViewer.ZoomFactor + delta, min, max);
+        ImageScrollViewer.ChangeView(null, null, (float)target, true);
+    }
+
+    private void ResetImageZoom()
+    {
+        if (ImageScrollViewer.Visibility != Visibility.Visible) return;
+        ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
+    }
+
+    private void ImageScrollViewer_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        var delta = e.GetCurrentPoint(ImageScrollViewer).Properties.MouseWheelDelta;
+        if (delta == 0) return;
+
+        ZoomImage(delta > 0 ? 0.1 : -0.1);
+        e.Handled = true;
+    }
+
+    private static string FormatTime(TimeSpan value)
+    {
+        var totalSeconds = (int)Math.Max(0, value.TotalSeconds);
+        var hours = totalSeconds / 3600;
+        var minutes = (totalSeconds % 3600) / 60;
+        var seconds = totalSeconds % 60;
+
+        return hours > 0
+            ? $"{hours}:{minutes:00}:{seconds:00}"
+            : $"{minutes}:{seconds:00}";
+    }
+
+    private AppWindow? GetAppWindow()
+    {
+        if (_appWindow != null) return _appWindow;
+        var window = App.MainWindow;
+        if (window == null) return null;
+
+        var hWnd = WindowNative.GetWindowHandle(window);
+        var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
+        _appWindow = AppWindow.GetFromWindowId(windowId);
+        return _appWindow;
     }
 }
