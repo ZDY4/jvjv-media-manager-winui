@@ -7,6 +7,8 @@ public static class PathHelpers
 {
     public static string NormalizePath(string path) => path.Replace('\\', '/');
 
+    public static string ToNativePath(string path) => path.Replace('/', Path.DirectorySeparatorChar);
+
     public static string NormalizeFolderPath(string path)
     {
         return NormalizePath(path).TrimEnd('/');

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Runtime.InteropServices.WindowsRuntime;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Data;
 using JvJvMediaManager.Models;
 
@@ -13,6 +14,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
     private readonly int _pageSize;
     private int _generation;
     private bool _hasMoreItems = true;
+    private DispatcherQueue? _dispatcher;
 
     public IncrementalMediaCollection(Func<int, int, Task<MediaPageResult>> pageLoader, int pageSize = 200)
     {
@@ -24,11 +26,16 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
 
     public int PageSize => _pageSize;
 
+    public void SetDispatcher(DispatcherQueue dispatcher)
+    {
+        _dispatcher = dispatcher;
+    }
+
     public async Task RefreshAsync()
     {
         var generation = Interlocked.Increment(ref _generation);
         _hasMoreItems = true;
-        Clear();
+        await RunOnUiThreadAsync(base.ClearItems);
         await LoadMoreCoreAsync((uint)_pageSize, generation);
     }
 
@@ -80,10 +87,13 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 return 0;
             }
 
-            foreach (var item in result.Items)
+            await RunOnUiThreadAsync(() =>
             {
-                Add(new MediaItemViewModel(item));
-            }
+                foreach (var item in result.Items)
+                {
+                    Add(new MediaItemViewModel(item));
+                }
+            });
 
             _hasMoreItems = result.HasMore;
             return (uint)result.Items.Count;
@@ -92,5 +102,33 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         {
             _loadLock.Release();
         }
+    }
+
+    private Task RunOnUiThreadAsync(Action action)
+    {
+        if (_dispatcher == null || _dispatcher.HasThreadAccess)
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    action();
+                    tcs.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            }))
+        {
+            tcs.SetException(new InvalidOperationException("无法切换到 UI 线程更新媒体集合。"));
+        }
+
+        return tcs.Task;
     }
 }

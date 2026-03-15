@@ -4,6 +4,7 @@ using Windows.Storage;
 using Windows.Storage.FileProperties;
 using Windows.Storage.Streams;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services;
 
@@ -101,7 +102,7 @@ public sealed class ThumbnailService
     {
         try
         {
-            var file = await StorageFile.GetFileFromPathAsync(media.Path);
+            var file = await StorageFile.GetFileFromPathAsync(PathHelpers.ToNativePath(media.Path));
             var thumbnailMode = media.Type == MediaType.Video ? ThumbnailMode.VideosView : ThumbnailMode.PicturesView;
             using var thumbnail = await file.GetThumbnailAsync(thumbnailMode, 320, ThumbnailOptions.UseCurrentScale);
             if (thumbnail != null && thumbnail.Size > 0)
@@ -115,14 +116,7 @@ public sealed class ThumbnailService
             // Ignore Windows thumbnail generation failures and fall back below.
         }
 
-        try
-        {
-            return new BitmapImage(new Uri(media.Path));
-        }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     private async Task PersistStreamAsync(MediaFile media, IRandomAccessStream stream, string cachePath)

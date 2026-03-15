@@ -22,6 +22,7 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public string Id => Media.Id;
     public string Path => Media.Path;
+    public string FileSystemPath => PathHelpers.ToNativePath(Media.Path);
     public string FileName => Media.FileName;
     public MediaType Type => Media.Type;
 

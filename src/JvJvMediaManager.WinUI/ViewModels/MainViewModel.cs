@@ -183,6 +183,7 @@ public sealed class MainViewModel : ObservableObject
     public void SetDispatcher(DispatcherQueue dispatcher)
     {
         _dispatcher = dispatcher;
+        FilteredMediaItems.SetDispatcher(dispatcher);
     }
 
     public async Task InitializeAsync()
@@ -207,7 +208,7 @@ public sealed class MainViewModel : ObservableObject
         await AddMediaInternalAsync(() => _library.RescanFoldersAsync(folders, new Progress<ScanProgress>(OnScanProgress)), "媒体库刷新完成。");
     }
 
-    public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders)
+    public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders, bool refreshMedia = true)
     {
         var normalized = folders
             .Where(folder => !string.IsNullOrWhiteSpace(folder.Path))
@@ -228,7 +229,10 @@ public sealed class MainViewModel : ObservableObject
 
         _settings.SetWatchedFolders(WatchedFolders.ToList());
         CleanupUnlockedFolders();
-        QueueRefreshMedia(false);
+        if (refreshMedia)
+        {
+            QueueRefreshMedia(false);
+        }
     }
 
     public void RemoveSelectedTagFilter(string tag)
@@ -323,17 +327,20 @@ public sealed class MainViewModel : ObservableObject
             .Min();
         _db.DeleteMedia(list.Select(item => item.Id));
 
-        foreach (var item in list)
+        await RunOnUiThreadAsync(() =>
         {
-            FilteredMediaItems.Remove(item);
-        }
+            foreach (var item in list)
+            {
+                FilteredMediaItems.Remove(item);
+            }
+        });
 
         if (!string.IsNullOrWhiteSpace(selectedId) && !removedIds.Contains(selectedId))
         {
             var existingSelection = FilteredMediaItems.FirstOrDefault(item => item.Id == selectedId);
             if (existingSelection != null)
             {
-                SelectedMedia = existingSelection;
+                await RunOnUiThreadAsync(() => SelectedMedia = existingSelection);
                 return existingSelection;
             }
         }
@@ -341,13 +348,13 @@ public sealed class MainViewModel : ObservableObject
         await FilteredMediaItems.EnsureItemAvailableAsync(Math.Max(loadedCount - 1, 0));
         if (FilteredMediaItems.Count == 0)
         {
-            SelectedMedia = null;
+            await RunOnUiThreadAsync(() => SelectedMedia = null);
             return null;
         }
 
         var fallbackIndex = Math.Clamp(firstRemovedIndex, 0, FilteredMediaItems.Count - 1);
         var replacement = FilteredMediaItems[fallbackIndex];
-        SelectedMedia = replacement;
+        await RunOnUiThreadAsync(() => SelectedMedia = replacement);
         return replacement;
     }
 
@@ -355,7 +362,7 @@ public sealed class MainViewModel : ObservableObject
     {
         var refreshVersion = Interlocked.Increment(ref _refreshVersion);
         var selectedId = preserveSelection ? SelectedMedia?.Id : null;
-        IsLoading = true;
+        await RunOnUiThreadAsync(() => IsLoading = true);
         try
         {
             await FilteredMediaItems.RefreshAsync();
@@ -368,7 +375,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (refreshVersion == _refreshVersion)
             {
-                IsLoading = false;
+                await RunOnUiThreadAsync(() => IsLoading = false);
             }
         }
     }
@@ -561,26 +568,33 @@ public sealed class MainViewModel : ObservableObject
     private async Task AddMediaInternalAsync(Func<Task<int>> loader, string successMessage)
     {
         IsLoading = true;
-        IsScanning = true;
-        ScanProgressValue = 0;
-        ScanProgressMaximum = 0;
-        ScanCurrentPath = string.Empty;
+        await RunOnUiThreadAsync(() =>
+        {
+            IsLoading = true;
+            IsScanning = true;
+            ScanProgressValue = 0;
+            ScanProgressMaximum = 0;
+            ScanCurrentPath = string.Empty;
+        });
 
         try
         {
             var added = await loader();
             await RefreshMediaAsync(true);
-            StatusMessage = $"{successMessage} 新增或更新 {added} 个媒体。";
+            await RunOnUiThreadAsync(() => StatusMessage = $"{successMessage} 新增或更新 {added} 个媒体。");
         }
         finally
         {
-            IsLoading = false;
-            IsScanning = false;
-            ScanCurrentPath = string.Empty;
-            if (ScanProgressMaximum > 0)
+            await RunOnUiThreadAsync(() =>
             {
-                ScanProgressValue = ScanProgressMaximum;
-            }
+                IsLoading = false;
+                IsScanning = false;
+                ScanCurrentPath = string.Empty;
+                if (ScanProgressMaximum > 0)
+                {
+                    ScanProgressValue = ScanProgressMaximum;
+                }
+            });
         }
     }
 
@@ -601,20 +615,23 @@ public sealed class MainViewModel : ObservableObject
 
     private void OnScanProgress(ScanProgress progress)
     {
-        IsScanning = !progress.IsComplete;
-        ScanProgressMaximum = progress.Total;
-        ScanProgressValue = progress.Scanned;
-        ScanCurrentPath = progress.CurrentPath;
-
-        if (progress.Total > 0)
+        _ = RunOnUiThreadAsync(() =>
         {
-            StatusMessage = progress.IsComplete
-                ? $"扫描完成 {progress.Scanned}/{progress.Total}"
-                : $"正在扫描 {progress.Scanned}/{progress.Total}";
-            return;
-        }
+            IsScanning = !progress.IsComplete;
+            ScanProgressMaximum = progress.Total;
+            ScanProgressValue = progress.Scanned;
+            ScanCurrentPath = progress.CurrentPath;
 
-        StatusMessage = progress.IsComplete ? "扫描完成。" : "准备扫描...";
+            if (progress.Total > 0)
+            {
+                StatusMessage = progress.IsComplete
+                    ? $"扫描完成 {progress.Scanned}/{progress.Total}"
+                    : $"正在扫描 {progress.Scanned}/{progress.Total}";
+                return;
+            }
+
+            StatusMessage = progress.IsComplete ? "扫描完成。" : "准备扫描...";
+        });
     }
 
     private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source)
@@ -656,22 +673,25 @@ public sealed class MainViewModel : ObservableObject
         var preferredId = selectedPlaylistId ?? SelectedPlaylist?.Id;
         var playlists = _db.GetPlaylists();
 
-        Playlists.Clear();
-        foreach (var playlist in playlists)
+        RunOnUiThread(() =>
         {
-            Playlists.Add(playlist);
-        }
+            Playlists.Clear();
+            foreach (var playlist in playlists)
+            {
+                Playlists.Add(playlist);
+            }
 
-        SelectedPlaylist = string.IsNullOrWhiteSpace(preferredId)
-            ? null
-            : Playlists.FirstOrDefault(item => string.Equals(item.Id, preferredId, StringComparison.Ordinal));
+            SelectedPlaylist = string.IsNullOrWhiteSpace(preferredId)
+                ? null
+                : Playlists.FirstOrDefault(item => string.Equals(item.Id, preferredId, StringComparison.Ordinal));
+        });
     }
 
     private async Task RestoreSelectionAsync(int refreshVersion, string? selectedId)
     {
         if (string.IsNullOrWhiteSpace(selectedId))
         {
-            SelectedMedia = null;
+            await RunOnUiThreadAsync(() => SelectedMedia = null);
             return;
         }
 
@@ -681,7 +701,7 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        SelectedMedia = restored;
+        await RunOnUiThreadAsync(() => SelectedMedia = restored);
     }
 
     private async Task<MediaItemViewModel?> FindMediaByIdAsync(string mediaId, int refreshVersion)
@@ -708,5 +728,44 @@ public sealed class MainViewModel : ObservableObject
         }
 
         return null;
+    }
+
+    private Task RunOnUiThreadAsync(Action action)
+    {
+        if (_dispatcher == null || _dispatcher.HasThreadAccess)
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    action();
+                    tcs.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            }))
+        {
+            tcs.SetException(new InvalidOperationException("无法切换到 UI 线程更新主视图模型。"));
+        }
+
+        return tcs.Task;
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (_dispatcher == null || _dispatcher.HasThreadAccess)
+        {
+            action();
+            return;
+        }
+
+        _dispatcher.TryEnqueue(() => action());
     }
 }
