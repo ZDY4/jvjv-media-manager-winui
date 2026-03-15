@@ -9,14 +9,22 @@
     mc:Ignorable="d"
     Background="{ThemeResource SurfaceBrush}">
 
+    <Page.KeyboardAccelerators>
+        <KeyboardAccelerator Key="Space" Invoked="PlayPauseKeyboardAccelerator_Invoked" />
+        <KeyboardAccelerator Key="Delete" Invoked="DeleteKeyboardAccelerator_Invoked" />
+    </Page.KeyboardAccelerators>
+
     <Page.Resources>
         <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
             <Grid Padding="8" ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="72" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Border Width="72" Height="48" Background="#2D2D2D" CornerRadius="6">
+                <Border Width="72"
+                        Height="72"
+                        Background="#2D2D2D"
+                        CornerRadius="6">
                     <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
                 </Border>
                 <StackPanel Grid.Column="1" Spacing="2">
@@ -39,7 +47,10 @@
                 <Border Background="#99000000" VerticalAlignment="Bottom" CornerRadius="0,0,8,8" Padding="6">
                     <StackPanel Spacing="2">
                         <TextBlock Text="{x:Bind FileName}" Foreground="{ThemeResource TextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+                            <TextBlock Text="{x:Bind ResolutionText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+                        </StackPanel>
                         <TextBlock Text="{x:Bind TagsText}" Foreground="#60CDFF" FontSize="10" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                 </Border>
@@ -53,7 +64,7 @@
         </DataTemplate>
     </Page.Resources>
 
-    <Grid>
+    <Grid x:Name="RootLayout" PointerMoved="RootLayout_PointerMoved">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -71,119 +82,157 @@
             <AppBarButton Icon="Setting" Label="设置" Click="Settings_Click" />
         </CommandBar>
 
-        <SplitView Grid.Row="1" DisplayMode="Inline" IsPaneOpen="True" OpenPaneLength="420" Background="{ThemeResource SurfaceBrush}">
+        <SplitView x:Name="LibrarySplitView"
+                   Grid.Row="1"
+                   DisplayMode="Inline"
+                   IsPaneOpen="True"
+                   CompactPaneLength="0"
+                   OpenPaneLength="420"
+                   Background="{ThemeResource SurfaceBrush}">
             <SplitView.Pane>
-                <Grid Background="{ThemeResource SurfaceAltBrush}" AllowDrop="True" DragOver="LibraryPanel_DragOver" Drop="LibraryPanel_Drop">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
+                <Grid x:Name="LibraryPaneRoot" Background="{ThemeResource SurfaceAltBrush}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="8" />
+                    </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Row="0" Padding="12" Spacing="8">
-                        <TextBox x:Name="SearchBox"
-                                 PlaceholderText="搜索文件名或输入 #标签"
-                                 TextChanged="SearchBox_TextChanged"
-                                 KeyDown="SearchBox_KeyDown" />
-                        <TextBlock Text="{Binding CurrentScopeTitle}" Foreground="{ThemeResource TextBrush}" FontSize="13" FontWeight="SemiBold" />
-                        <ItemsControl x:Name="SelectedTagsControl" Visibility="Collapsed">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="x:String">
-                                    <Button Click="SelectedTagRemove_Click"
-                                            Tag="{Binding}"
-                                            Margin="0,0,6,6"
-                                            Padding="8,3"
-                                            Background="#1F005FB8"
-                                            Foreground="#60CDFF"
-                                            BorderThickness="0"
-                                            CornerRadius="6"
-                                            Content="{Binding}" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <WrapGrid />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                        </ItemsControl>
-                    </StackPanel>
+                    <Grid Grid.Column="0" AllowDrop="True" DragOver="LibraryPanel_DragOver" Drop="LibraryPanel_Drop">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="1" Padding="12,0,12,12" Spacing="6">
-                        <ProgressBar x:Name="ScanProgressBar"
-                                     Minimum="0"
-                                     Maximum="{Binding ScanProgressMaximum}"
-                                     Value="{Binding ScanProgressValue}" />
-                        <TextBlock x:Name="ScanPathText"
-                                   Text="{Binding ScanCurrentPath}"
-                                   Foreground="{ThemeResource MutedTextBrush}"
-                                   FontSize="11"
-                                   TextTrimming="CharacterEllipsis" />
-                        <TextBlock Foreground="{ThemeResource MutedTextBrush}" Text="{Binding StatusMessage}" />
-                    </StackPanel>
+                        <Grid Grid.Row="0" Padding="12,12,12,0" ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Row="2" Padding="12,0,12,12" Spacing="8">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="全部媒体" Click="AllMedia_Click" />
-                            <Button Content="新建列表" Click="CreatePlaylist_Click" />
-                            <Button Content="重命名" Click="RenamePlaylist_Click" />
-                            <Button Content="删除" Click="DeletePlaylist_Click" />
+                            <StackPanel Grid.Column="0" Spacing="8">
+                                <TextBox x:Name="SearchBox"
+                                         PlaceholderText="搜索文件名或输入 #标签"
+                                         TextChanged="SearchBox_TextChanged"
+                                         KeyDown="SearchBox_KeyDown" />
+                                <TextBlock Text="{Binding CurrentScopeTitle}" Foreground="{ThemeResource TextBrush}" FontSize="13" FontWeight="SemiBold" />
+                                <ItemsControl x:Name="SelectedTagsControl" Visibility="Collapsed">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <Button Click="SelectedTagRemove_Click"
+                                                    Tag="{Binding}"
+                                                    Margin="0,0,6,6"
+                                                    Padding="8,3"
+                                                    Background="#1F005FB8"
+                                                    Foreground="#60CDFF"
+                                                    BorderThickness="0"
+                                                    CornerRadius="6"
+                                                    Content="{Binding}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapGrid />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl>
+                            </StackPanel>
+
+                            <Button x:Name="LibraryPinButton"
+                                    Grid.Column="1"
+                                    Width="36"
+                                    Height="36"
+                                    Margin="0,0,0,8"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Click="LibraryPinButton_Click"
+                                    ToolTipService.ToolTip="固定媒体库">
+                                <SymbolIcon Symbol="Pin" />
+                            </Button>
+                        </Grid>
+
+                        <StackPanel Grid.Row="1" Padding="12,0,12,12" Spacing="6">
+                            <ProgressBar x:Name="ScanProgressBar"
+                                         Minimum="0"
+                                         Maximum="{Binding ScanProgressMaximum}"
+                                         Value="{Binding ScanProgressValue}" />
+                            <TextBlock x:Name="ScanPathText"
+                                       Text="{Binding ScanCurrentPath}"
+                                       Foreground="{ThemeResource MutedTextBrush}"
+                                       FontSize="11"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Foreground="{ThemeResource MutedTextBrush}" Text="{Binding StatusMessage}" />
                         </StackPanel>
-                        <ListView x:Name="PlaylistListView"
-                                  ItemsSource="{Binding Playlists}"
-                                  ItemTemplate="{StaticResource PlaylistTemplate}"
-                                  SelectionMode="Single"
-                                  MaxHeight="164"
-                                  SelectionChanged="PlaylistListView_SelectionChanged"
-                                  CanDragItems="True"
-                                  CanReorderItems="True"
-                                  AllowDrop="True"
-                                  DragItemsCompleted="PlaylistListView_DragItemsCompleted" />
-                    </StackPanel>
 
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" Padding="12,0,12,12" Spacing="8">
-                        <Button Content="列表" Click="ListViewMode_Click" />
-                        <Button Content="网格" Click="GridViewMode_Click" />
-                        <Button Content="排序" Click="Sort_Click" />
-                    </StackPanel>
+                        <StackPanel Grid.Row="2" Padding="12,0,12,12" Spacing="8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Content="全部媒体" Click="AllMedia_Click" />
+                                <Button Content="新建列表" Click="CreatePlaylist_Click" />
+                                <Button Content="重命名" Click="RenamePlaylist_Click" />
+                                <Button Content="删除" Click="DeletePlaylist_Click" />
+                            </StackPanel>
+                            <ListView x:Name="PlaylistListView"
+                                      ItemsSource="{Binding Playlists}"
+                                      ItemTemplate="{StaticResource PlaylistTemplate}"
+                                      SelectionMode="Single"
+                                      MaxHeight="164"
+                                      SelectionChanged="PlaylistListView_SelectionChanged"
+                                      CanDragItems="True"
+                                      CanReorderItems="True"
+                                      AllowDrop="True"
+                                      DragItemsCompleted="PlaylistListView_DragItemsCompleted" />
+                        </StackPanel>
 
-                    <Grid Grid.Row="4">
-                        <ListView x:Name="ListView"
-                                  ItemsSource="{Binding FilteredMediaItems}"
-                                  ItemTemplate="{StaticResource ListItemTemplate}"
-                                  IncrementalLoadingTrigger="Edge"
-                                  IncrementalLoadingThreshold="2"
-                                  DataFetchSize="1"
-                                  SelectionMode="Extended"
-                                  IsItemClickEnabled="True"
-                                  ItemClick="Media_ItemClick"
-                                  ContainerContentChanging="Media_ContainerContentChanging"
-                                  SelectionChanged="Media_SelectionChanged"
-                                  RightTapped="MediaView_RightTapped" />
+                        <StackPanel Grid.Row="3" Orientation="Horizontal" Padding="12,0,12,12" Spacing="8">
+                            <Button x:Name="ViewModeToggleButton" Content="切换到网格" Click="ToggleViewMode_Click" />
+                            <Button Content="排序" Click="Sort_Click" />
+                        </StackPanel>
 
-                        <GridView x:Name="GridView"
-                                  Tag="140"
-                                  Visibility="Collapsed"
-                                  ItemsSource="{Binding FilteredMediaItems}"
-                                  ItemTemplate="{StaticResource GridItemTemplate}"
-                                  IncrementalLoadingTrigger="Edge"
-                                  IncrementalLoadingThreshold="2"
-                                  DataFetchSize="1"
-                                  SelectionMode="Extended"
-                                  IsItemClickEnabled="True"
-                                  ItemClick="Media_ItemClick"
-                                  ContainerContentChanging="Media_ContainerContentChanging"
-                                  SelectionChanged="Media_SelectionChanged"
-                                  RightTapped="MediaView_RightTapped"
-                                  PointerWheelChanged="GridView_PointerWheelChanged">
-                            <GridView.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <ItemsWrapGrid ItemWidth="140" ItemHeight="140" />
-                                </ItemsPanelTemplate>
-                            </GridView.ItemsPanel>
-                        </GridView>
+                        <Grid Grid.Row="4">
+                            <ListView x:Name="ListView"
+                                      ItemsSource="{Binding FilteredMediaItems}"
+                                      ItemTemplate="{StaticResource ListItemTemplate}"
+                                      IncrementalLoadingTrigger="Edge"
+                                      IncrementalLoadingThreshold="2"
+                                      DataFetchSize="1"
+                                      SelectionMode="Extended"
+                                      IsItemClickEnabled="True"
+                                      ItemClick="Media_ItemClick"
+                                      ContainerContentChanging="Media_ContainerContentChanging"
+                                      SelectionChanged="Media_SelectionChanged"
+                                      RightTapped="MediaView_RightTapped" />
+
+                            <GridView x:Name="GridView"
+                                      Tag="140"
+                                      Visibility="Collapsed"
+                                      ItemsSource="{Binding FilteredMediaItems}"
+                                      ItemTemplate="{StaticResource GridItemTemplate}"
+                                      IncrementalLoadingTrigger="Edge"
+                                      IncrementalLoadingThreshold="2"
+                                      DataFetchSize="1"
+                                      SelectionMode="Extended"
+                                      IsItemClickEnabled="True"
+                                      ItemClick="Media_ItemClick"
+                                      ContainerContentChanging="Media_ContainerContentChanging"
+                                      SelectionChanged="Media_SelectionChanged"
+                                      RightTapped="MediaView_RightTapped">
+                                <GridView.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <ItemsWrapGrid Orientation="Horizontal" ItemWidth="140" ItemHeight="140" />
+                                    </ItemsPanelTemplate>
+                                </GridView.ItemsPanel>
+                            </GridView>
+                        </Grid>
                     </Grid>
+
+                    <Thumb x:Name="LibraryPaneResizer"
+                           Grid.Column="1"
+                           Background="#18FFFFFF"
+                           DragStarted="LibraryPaneResizer_DragStarted"
+                           DragDelta="LibraryPaneResizer_DragDelta"
+                           DragCompleted="LibraryPaneResizer_DragCompleted"
+                           ToolTipService.ToolTip="拖拽调整媒体库宽度" />
                 </Grid>
             </SplitView.Pane>
 
@@ -204,12 +253,34 @@
                                   HorizontalScrollMode="Enabled"
                                   VerticalScrollMode="Enabled"
                                   MinZoomFactor="0.2"
-                                  MaxZoomFactor="6"
-                                  PointerWheelChanged="ImageScrollViewer_PointerWheelChanged">
-                        <Image x:Name="ImageViewer" Stretch="Uniform" />
+                                  MaxZoomFactor="6">
+                        <Border HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <Image x:Name="PreviewImageElement"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   ImageOpened="PreviewImageElement_ImageOpened" />
+                        </Border>
                     </ScrollViewer>
 
                     <Grid x:Name="PlayerOverlay" Background="Transparent">
+                        <Border x:Name="ImageZoomBadge"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Margin="16"
+                                Padding="10,6"
+                                Background="#99000000"
+                                CornerRadius="999"
+                                Visibility="Collapsed"
+                                IsHitTestVisible="False">
+                            <TextBlock x:Name="ImageZoomText"
+                                       Text="100%"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="12"
+                                       FontWeight="SemiBold" />
+                        </Border>
+
                         <Grid x:Name="ControlBar"
                               VerticalAlignment="Bottom"
                               Margin="16"
@@ -230,9 +301,7 @@
                                     Value="0"
                                     SmallChange="1"
                                     LargeChange="10"
-                                    ValueChanged="ProgressSlider_ValueChanged"
-                                    PointerPressed="ProgressSlider_PointerPressed"
-                                    PointerReleased="ProgressSlider_PointerReleased" />
+                                    ValueChanged="ProgressSlider_ValueChanged" />
 
                             <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,8,0,0">
                                 <Grid.ColumnDefinitions>
@@ -246,7 +315,7 @@
 
                                 <AppBarButton x:Name="PlayPauseButton" Grid.Column="0" Click="PlayPause_Click">
                                     <AppBarButton.Icon>
-                                        <SymbolIcon x:Name="PlayPauseIcon" Symbol="Play" />
+                                        <SymbolIcon Symbol="Play" />
                                     </AppBarButton.Icon>
                                 </AppBarButton>
 

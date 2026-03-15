@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Media.Core;
@@ -25,6 +26,12 @@ namespace JvJvMediaManager.Views;
 
 public sealed partial class MainPage : Page
 {
+    private const double DefaultLibraryPaneWidth = 420;
+    private const double MinLibraryPaneWidth = 280;
+    private const double MaxLibraryPaneWidth = 760;
+    private const double LibraryRevealHotZoneWidth = 28;
+    private const double LibraryHideBufferWidth = 24;
+    private const double GridViewWidthPadding = 24;
     private enum PlaybackMode
     {
         ListLoop,
@@ -42,6 +49,7 @@ public sealed partial class MainPage : Page
 
     private MediaPlayer? _player;
     private AppWindow? _appWindow;
+    private int _imageLoadVersion;
 
     private bool _isSeeking;
     private bool _controlsVisible = true;
@@ -56,6 +64,22 @@ public sealed partial class MainPage : Page
     private readonly ObservableCollection<VideoClipSegment> _clipSegments = new();
     private VideoClipMode _clipMode = VideoClipMode.Keep;
     private string? _clipOutputDirectory;
+    private ScrollViewer? _gridViewScrollViewer;
+    private bool _progressSliderHandlersAttached;
+    private bool _isImageDragging;
+    private bool _isLibraryPinned = true;
+    private bool _isResizingLibraryPane;
+    private string? _pendingImageFitMediaId;
+    private Windows.Foundation.Point _imageDragStartPoint;
+    private double _imageDragStartHorizontalOffset;
+    private double _imageDragStartVerticalOffset;
+    private double _imageSourceWidth;
+    private double _imageSourceHeight;
+    private double _libraryPaneWidth = DefaultLibraryPaneWidth;
+
+    private Image? PreviewImage => PreviewImageElement;
+    private SymbolIcon? LibraryPinSymbolIcon => LibraryPinButton.Content as SymbolIcon;
+    private SymbolIcon? PlayPauseSymbolIcon => PlayPauseButton.Icon as SymbolIcon;
 
     public MainPage()
     {
@@ -66,8 +90,26 @@ public sealed partial class MainPage : Page
         ViewModel.SetDispatcher(DispatcherQueue);
         Loaded += MainPage_Loaded;
         Unloaded += MainPage_Unloaded;
+        GridView.Loaded += GridView_Loaded;
+        GridView.SizeChanged += GridView_SizeChanged;
+        ImageScrollViewer.SizeChanged += ImageScrollViewer_SizeChanged;
+        ImageScrollViewer.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(ImageScrollViewer_PointerPressed), true);
+        ImageScrollViewer.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(ImageScrollViewer_PointerMoved), true);
+        ImageScrollViewer.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(ImageScrollViewer_PointerReleased), true);
+        ImageScrollViewer.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(ImageScrollViewer_PointerCaptureLost), true);
+        ImageScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(ImageScrollViewer_PointerWheelChanged), true);
+        ImageScrollViewer.AddHandler(UIElement.DoubleTappedEvent, new DoubleTappedEventHandler(ImageScrollViewer_DoubleTapped), true);
+        ImageScrollViewer.ViewChanged += ImageScrollViewer_ViewChanged;
+        ProgressSlider.Loaded += ProgressSlider_Loaded;
+        LibraryPaneRoot.SizeChanged += LibraryPaneRoot_SizeChanged;
+        PlayerRoot.AddHandler(UIElement.RightTappedEvent, new RightTappedEventHandler(PlayerRoot_RightTapped), true);
+        ListView.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(MediaLibraryView_PointerWheelChanged), true);
+        GridView.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(MediaLibraryView_PointerWheelChanged), true);
         SelectedTagsControl.ItemsSource = ViewModel.SelectedTags;
         KeyDown += MainPage_KeyDown;
+        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
+        UpdateLibraryPinButtonUi();
+        UpdateLibraryPanePresentation();
 
         _playbackTimer.Interval = TimeSpan.FromMilliseconds(250);
         _playbackTimer.Tick += PlaybackTimer_Tick;
@@ -76,6 +118,7 @@ public sealed partial class MainPage : Page
         _controlsHideTimer.Tick += ControlsHideTimer_Tick;
 
         UpdatePlaybackModeUi();
+        UpdateViewModeButtonUi();
         UpdateControlBarState(false);
         UpdateClipUi();
         RefreshScanProgressVisibility();
@@ -83,17 +126,29 @@ public sealed partial class MainPage : Page
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
-        await ViewModel.InitializeAsync();
-        RefreshTagChips();
-        RefreshPlaylistSelection();
-        RefreshScanProgressVisibility();
-        UpdateGridItemSize();
+        await ExecuteUiActionAsync(async () =>
+        {
+            await ViewModel.InitializeAsync();
+            RefreshTagChips();
+            RefreshPlaylistSelection();
+            RefreshScanProgressVisibility();
+            UpdateMediaItemSize();
+            ConfigureGridViewScrolling();
+            EnsureProgressSliderHandlers();
+            UpdateLibraryPaneState(preferOpen: true);
+        }, "初始化失败");
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
         ViewModel.SelectedTags.CollectionChanged -= SelectedTags_CollectionChanged;
+        GridView.Loaded -= GridView_Loaded;
+        GridView.SizeChanged -= GridView_SizeChanged;
+        ImageScrollViewer.SizeChanged -= ImageScrollViewer_SizeChanged;
+        ImageScrollViewer.ViewChanged -= ImageScrollViewer_ViewChanged;
+        ProgressSlider.Loaded -= ProgressSlider_Loaded;
+        LibraryPaneRoot.SizeChanged -= LibraryPaneRoot_SizeChanged;
         _playbackTimer.Stop();
         _controlsHideTimer.Stop();
 
@@ -131,48 +186,57 @@ public sealed partial class MainPage : Page
 
     private async void AddFiles_Click(object sender, RoutedEventArgs e)
     {
-        var window = App.MainWindow;
-        if (window == null)
+        await ExecuteUiActionAsync(async () =>
         {
-            return;
-        }
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
 
-        var paths = await PickerHelpers.PickFilesAsync(window);
-        if (paths.Count == 0)
-        {
-            return;
-        }
+            var paths = await PickerHelpers.PickFilesAsync(window);
+            if (paths.Count == 0)
+            {
+                return;
+            }
 
-        await ViewModel.AddFilesAsync(paths);
-        UpdateWatchedFolders(paths);
+            await ViewModel.AddFilesAsync(paths);
+            UpdateWatchedFolders(paths, refreshMedia: false);
+        }, "导入文件失败");
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {
-        var window = App.MainWindow;
-        if (window == null)
+        await ExecuteUiActionAsync(async () =>
         {
-            return;
-        }
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
 
-        var folder = await PickerHelpers.PickFolderAsync(window);
-        if (string.IsNullOrWhiteSpace(folder))
-        {
-            return;
-        }
+            var folder = await PickerHelpers.PickFolderAsync(window);
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                return;
+            }
 
-        await ViewModel.AddFolderAsync(folder);
-        UpdateWatchedFolders(new[] { folder });
+            await ViewModel.AddFolderAsync(folder);
+            UpdateWatchedFolders(new[] { folder }, refreshMedia: false);
+        }, "导入文件夹失败");
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
-        if (ViewModel.WatchedFolders.Count == 0)
+        await ExecuteUiActionAsync(async () =>
         {
-            return;
-        }
+            if (ViewModel.WatchedFolders.Count == 0)
+            {
+                return;
+            }
 
-        await ViewModel.RescanFoldersAsync();
+            await ViewModel.RescanFoldersAsync();
+        }, "刷新媒体库失败");
     }
 
     private async void EditTags_Click(object sender, RoutedEventArgs e)
@@ -329,21 +393,38 @@ public sealed partial class MainPage : Page
         ViewModel.UpdatePlaylistOrder(ViewModel.Playlists.ToList());
     }
 
-    private void ListViewMode_Click(object sender, RoutedEventArgs e)
+    private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
     {
-        ViewModel.ViewMode = MediaViewMode.List;
-        ListView.Visibility = Visibility.Visible;
-        GridView.Visibility = Visibility.Collapsed;
+        SetMediaViewMode(ViewModel.ViewMode == MediaViewMode.List
+            ? MediaViewMode.Grid
+            : MediaViewMode.List);
+    }
+
+    private void SetMediaViewMode(MediaViewMode viewMode)
+    {
+        ViewModel.ViewMode = viewMode;
+        ListView.Visibility = viewMode == MediaViewMode.List ? Visibility.Visible : Visibility.Collapsed;
+        GridView.Visibility = viewMode == MediaViewMode.Grid ? Visibility.Visible : Visibility.Collapsed;
+        UpdateMediaItemSize();
+        UpdateViewModeButtonUi();
+        if (viewMode == MediaViewMode.Grid)
+        {
+            ConfigureGridViewScrolling();
+            DispatcherQueue.TryEnqueue(ConfigureGridViewScrolling);
+        }
         DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
     }
 
-    private void GridViewMode_Click(object sender, RoutedEventArgs e)
+    private void UpdateViewModeButtonUi()
     {
-        ViewModel.ViewMode = MediaViewMode.Grid;
-        ListView.Visibility = Visibility.Collapsed;
-        GridView.Visibility = Visibility.Visible;
-        UpdateGridItemSize();
-        DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
+        if (ViewModeToggleButton == null)
+        {
+            return;
+        }
+
+        ViewModeToggleButton.Content = ViewModel.ViewMode == MediaViewMode.List
+            ? "切换到网格"
+            : "切换到列表";
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -422,6 +503,34 @@ public sealed partial class MainPage : Page
         e.Handled = true;
     }
 
+    private void PlayerRoot_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (ViewModel.SelectedMedia == null)
+        {
+            return;
+        }
+
+        var selected = GetSelectedItems().ToList();
+        if (selected.Count == 0)
+        {
+            selected.Add(ViewModel.SelectedMedia);
+        }
+
+        selected = selected
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        ShowControls();
+        var flyout = BuildMediaContextFlyout(selected);
+        flyout.ShowAt(PlayerRoot, e.GetPosition(PlayerRoot));
+        e.Handled = true;
+    }
+
     private void SelectMedia(MediaItemViewModel media)
     {
         ViewModel.SelectedMedia = media;
@@ -437,24 +546,32 @@ public sealed partial class MainPage : Page
             ImageScrollViewer.Visibility = Visibility.Collapsed;
             VideoPlayer.Visibility = Visibility.Visible;
             var player = EnsureMediaPlayer();
-            player.Source = MediaSource.CreateFromUri(new Uri(media.Media.Path));
+            player.Source = MediaSource.CreateFromUri(new Uri(media.FileSystemPath));
             UpdateControlBarState(true);
             ShowControls();
+            Focus(FocusState.Programmatic);
         }
         else
         {
             VideoPlayer.Visibility = Visibility.Collapsed;
             ImageScrollViewer.Visibility = Visibility.Visible;
+            Interlocked.Increment(ref _imageLoadVersion);
             if (_player != null)
             {
                 _player.Pause();
                 _player.Source = null;
             }
 
-            ImageViewer.Source = media.Thumbnail ?? new BitmapImage(new Uri(media.Media.Path));
-            ResetImageZoom();
+            if (PreviewImage != null)
+            {
+                PreviewImage.Source = media.Thumbnail;
+            }
+            BeginImagePreviewSession(media);
             UpdateControlBarState(false);
+            _ = LoadImagePreviewAsync(media, Volatile.Read(ref _imageLoadVersion));
         }
+
+        UpdateLibraryPaneState();
     }
 
     private void ClearPlayerSelection()
@@ -462,7 +579,16 @@ public sealed partial class MainPage : Page
         EmptyState.Visibility = Visibility.Visible;
         VideoPlayer.Visibility = Visibility.Collapsed;
         ImageScrollViewer.Visibility = Visibility.Collapsed;
-        ImageViewer.Source = null;
+        Interlocked.Increment(ref _imageLoadVersion);
+        _pendingImageFitMediaId = null;
+        _imageSourceWidth = 0;
+        _imageSourceHeight = 0;
+        if (PreviewImage != null)
+        {
+            PreviewImage.Width = double.NaN;
+            PreviewImage.Height = double.NaN;
+            PreviewImage.Source = null;
+        }
         ResetClipState(null);
         if (_player != null)
         {
@@ -471,6 +597,57 @@ public sealed partial class MainPage : Page
         }
 
         UpdateControlBarState(false);
+        UpdateLibraryPaneState(preferOpen: true);
+    }
+
+    private async Task LoadImagePreviewAsync(MediaItemViewModel media, int loadVersion)
+    {
+        try
+        {
+            var file = await StorageFile.GetFileFromPathAsync(media.FileSystemPath);
+            using var stream = await file.OpenReadAsync();
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+
+            if (loadVersion != Volatile.Read(ref _imageLoadVersion))
+            {
+                return;
+            }
+
+            if (!string.Equals(ViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (PreviewImage != null)
+            {
+                PreviewImage.Source = bitmap;
+            }
+
+            UpdatePreviewImageSourceSize(bitmap.PixelWidth, bitmap.PixelHeight);
+            if (media.Media.Width is not > 0 || media.Media.Height is not > 0)
+            {
+                _pendingImageFitMediaId = media.Id;
+            }
+            TryApplyPendingImageFit();
+        }
+        catch
+        {
+            if (loadVersion != Volatile.Read(ref _imageLoadVersion))
+            {
+                return;
+            }
+
+            if (string.Equals(ViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            {
+                if (PreviewImage != null)
+                {
+                    PreviewImage.Source = media.Thumbnail;
+                }
+
+                TryApplyPendingImageFit();
+            }
+        }
     }
 
     private void SyncSelectionFromViewModel()
@@ -535,7 +712,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        if (FocusManager.GetFocusedElement(XamlRoot) is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or ComboBox)
+        if (IsTextInputFocused())
         {
             return;
         }
@@ -545,12 +722,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        if (e.Key == Windows.System.VirtualKey.Space && ViewModel.SelectedMedia.Type == MediaType.Video)
-        {
-            TogglePlayPause();
-            e.Handled = true;
-        }
-        else if (e.Key == Windows.System.VirtualKey.Left && ViewModel.SelectedMedia.Type == MediaType.Video)
+        if (e.Key == Windows.System.VirtualKey.Left && ViewModel.SelectedMedia.Type == MediaType.Video)
         {
             SeekRelative(-5);
             e.Handled = true;
@@ -568,11 +740,6 @@ public sealed partial class MainPage : Page
         else if (e.Key == Windows.System.VirtualKey.PageDown)
         {
             await NavigateRelativeAsync(1);
-            e.Handled = true;
-        }
-        else if (e.Key == Windows.System.VirtualKey.Delete)
-        {
-            await DeleteSelectedAsync();
             e.Handled = true;
         }
         else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.I)
@@ -613,6 +780,63 @@ public sealed partial class MainPage : Page
         {
             ShowControls();
         }
+    }
+
+    private void PlayPauseKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (!TryTogglePlaybackFromShortcut())
+        {
+            return;
+        }
+
+        args.Handled = true;
+    }
+
+    private async void DeleteKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (!await TryDeleteSelectedFromShortcutAsync())
+        {
+            return;
+        }
+
+        args.Handled = true;
+    }
+
+    private bool TryTogglePlaybackFromShortcut()
+    {
+        if (IsTextInputFocused())
+        {
+            return false;
+        }
+
+        if (ViewModel.SelectedMedia?.Type != MediaType.Video)
+        {
+            return false;
+        }
+
+        TogglePlayPause();
+        return true;
+    }
+
+    private async Task<bool> TryDeleteSelectedFromShortcutAsync()
+    {
+        if (IsTextInputFocused())
+        {
+            return false;
+        }
+
+        if (ViewModel.SelectedMedia == null)
+        {
+            return false;
+        }
+
+        await DeleteSelectedAsync();
+        return true;
+    }
+
+    private bool IsTextInputFocused()
+    {
+        return FocusManager.GetFocusedElement(XamlRoot) is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or ComboBox;
     }
 
     private void PlayPause_Click(object sender, RoutedEventArgs e)
@@ -685,9 +909,7 @@ public sealed partial class MainPage : Page
 
     private void ProgressSlider_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        SeekToSlider();
-        _isSeeking = false;
-        ShowControls();
+        CompleteSliderSeek();
     }
 
     private void ProgressSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -718,6 +940,7 @@ public sealed partial class MainPage : Page
     private void PlayerRoot_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         ShowControls();
+        Focus(FocusState.Programmatic);
     }
 
     private void PlayerRoot_PointerExited(object sender, PointerRoutedEventArgs e)
@@ -790,9 +1013,12 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        PlayPauseIcon.Symbol = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing
-            ? Symbol.Pause
-            : Symbol.Play;
+        if (PlayPauseSymbolIcon != null)
+        {
+            PlayPauseSymbolIcon.Symbol = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing
+                ? Symbol.Pause
+                : Symbol.Play;
+        }
     }
 
     private void HandlePlaybackEnded()
@@ -868,7 +1094,9 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        _player.PlaybackSession.Position = TimeSpan.FromSeconds(ProgressSlider.Value);
+        var target = TimeSpan.FromSeconds(ProgressSlider.Value);
+        _player.PlaybackSession.Position = target;
+        CurrentTimeText.Text = FormatTime(target);
     }
 
     private async Task NavigateRelativeAsync(int offset)
@@ -900,7 +1128,7 @@ public sealed partial class MainPage : Page
         ViewModel.SelectedMedia = list[nextIndex];
     }
 
-    private void UpdateWatchedFolders(IEnumerable<string> paths)
+    private void UpdateWatchedFolders(IEnumerable<string> paths, bool refreshMedia = true)
     {
         var folderPaths = paths
             .Select(path => Directory.Exists(path) ? path : Path.GetDirectoryName(path))
@@ -923,7 +1151,7 @@ public sealed partial class MainPage : Page
             }
         }
 
-        ViewModel.UpdateWatchedFolders(current);
+        ViewModel.UpdateWatchedFolders(current, refreshMedia);
     }
 
     private void RefreshTagChips()
@@ -953,17 +1181,20 @@ public sealed partial class MainPage : Page
         ScanProgressBar.Value = ViewModel.ScanProgressValue;
     }
 
-    private void UpdateGridItemSize()
+    private void UpdateMediaItemSize()
     {
-        GridView.Tag = ViewModel.IconSize;
+        var gridItemSize = CalculateAdaptiveGridItemSize();
+        GridView.Tag = gridItemSize;
+        UpdateVisibleListItemSizes();
         if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
         {
-            panel.ItemWidth = ViewModel.IconSize;
-            panel.ItemHeight = ViewModel.IconSize;
+            panel.Orientation = Orientation.Horizontal;
+            panel.ItemWidth = gridItemSize;
+            panel.ItemHeight = gridItemSize;
         }
     }
 
-    private void GridView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
         var ctrlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
         if (!ctrlDown)
@@ -971,15 +1202,113 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var delta = e.GetCurrentPoint(GridView).Properties.MouseWheelDelta;
+        var source = sender as UIElement ?? ListView;
+        var delta = e.GetCurrentPoint(source).Properties.MouseWheelDelta;
         if (delta == 0)
         {
             return;
         }
 
-        ViewModel.IconSize = Math.Clamp(ViewModel.IconSize + (delta > 0 ? 12 : -12), 96, 260);
-        UpdateGridItemSize();
+        ViewModel.IconSize = Math.Clamp(ViewModel.IconSize + (delta > 0 ? 12 : -12), 72, 260);
+        UpdateMediaItemSize();
+        ConfigureGridViewScrolling();
         e.Handled = true;
+    }
+
+    private void GridView_Loaded(object sender, RoutedEventArgs e)
+    {
+        ConfigureGridViewScrolling();
+    }
+
+    private void GridView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width <= 0)
+        {
+            return;
+        }
+
+        UpdateMediaItemSize();
+    }
+
+    private void LibraryPaneRoot_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width <= 0)
+        {
+            return;
+        }
+
+        UpdateMediaItemSize();
+    }
+
+    private void ProgressSlider_Loaded(object sender, RoutedEventArgs e)
+    {
+        EnsureProgressSliderHandlers();
+    }
+
+    private void EnsureProgressSliderHandlers()
+    {
+        if (_progressSliderHandlersAttached)
+        {
+            return;
+        }
+
+        ProgressSlider.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(ProgressSlider_PointerPressed), true);
+        ProgressSlider.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(ProgressSlider_PointerReleased), true);
+        ProgressSlider.PointerCaptureLost += ProgressSlider_PointerCaptureLost;
+        _progressSliderHandlersAttached = true;
+    }
+
+    private void ProgressSlider_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        if (_isSeeking)
+        {
+            CompleteSliderSeek();
+        }
+    }
+
+    private void CompleteSliderSeek()
+    {
+        if (!_isSeeking)
+        {
+            return;
+        }
+
+        SeekToSlider();
+        _isSeeking = false;
+        UpdatePlayPauseState();
+        ShowControls();
+    }
+
+    private void ConfigureGridViewScrolling()
+    {
+        ScrollViewer.SetHorizontalScrollMode(GridView, ScrollMode.Disabled);
+        ScrollViewer.SetHorizontalScrollBarVisibility(GridView, ScrollBarVisibility.Disabled);
+        ScrollViewer.SetVerticalScrollMode(GridView, ScrollMode.Enabled);
+        ScrollViewer.SetVerticalScrollBarVisibility(GridView, ScrollBarVisibility.Visible);
+
+        GridView.ApplyTemplate();
+        GridView.UpdateLayout();
+
+        if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
+        {
+            panel.Orientation = Orientation.Horizontal;
+            var gridItemSize = CalculateAdaptiveGridItemSize();
+            panel.ItemWidth = gridItemSize;
+            panel.ItemHeight = gridItemSize;
+        }
+
+        var scrollViewer = FindDescendant<ScrollViewer>(GridView);
+        if (scrollViewer == null)
+        {
+            return;
+        }
+
+        _gridViewScrollViewer = scrollViewer;
+        _gridViewScrollViewer.VerticalScrollMode = ScrollMode.Enabled;
+        _gridViewScrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Visible;
+        _gridViewScrollViewer.HorizontalScrollMode = ScrollMode.Disabled;
+        _gridViewScrollViewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+        _gridViewScrollViewer.ZoomMode = ZoomMode.Disabled;
     }
 
     private void SetClipStart_Click(object sender, RoutedEventArgs e)
@@ -1080,7 +1409,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var outputPath = _clipService.CreateOutputPath(media.Path, _clipOutputDirectory, _clipMode, segments);
+        var outputPath = _clipService.CreateOutputPath(media.FileSystemPath, _clipOutputDirectory, _clipMode, segments);
         _isExportingClip = true;
         _clipStatusMessage = $"正在导出到 {Path.GetFileName(outputPath)}";
         ClipExportProgressBar.Value = 0;
@@ -1099,7 +1428,7 @@ public sealed partial class MainPage : Page
 
             var result = await _clipService.ExportClipAsync(new VideoClipRequest
             {
-                InputPath = media.Path,
+                InputPath = media.FileSystemPath,
                 Segments = segments,
                 Mode = _clipMode,
                 SourceDuration = GetBestKnownVideoDuration(media),
@@ -1131,6 +1460,11 @@ public sealed partial class MainPage : Page
             return;
         }
 
+        if (sender == ListView)
+        {
+            ApplyListItemSize(args.ItemContainer as SelectorItem);
+        }
+
         if (args.Item is MediaItemViewModel media)
         {
             _ = ViewModel.EnsureThumbnailAsync(media);
@@ -1140,21 +1474,104 @@ public sealed partial class MainPage : Page
     private async Task DeleteSelectedAsync()
     {
         var selected = GetSelectedItems().ToList();
+        if (selected.Count == 0 && ViewModel.SelectedMedia != null)
+        {
+            selected.Add(ViewModel.SelectedMedia);
+        }
+
+        selected = selected
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+
         if (selected.Count == 0)
         {
             return;
         }
 
-        var confirmed = await ConfirmAsync("确认删除", $"确定要删除选中的 {selected.Count} 个媒体记录吗？\n这不会删除原始文件。", "删除");
-        if (!confirmed)
+        var currentMediaId = ViewModel.SelectedMedia?.Id;
+        var isDeletingCurrent = !string.IsNullOrWhiteSpace(currentMediaId)
+            && selected.Any(item => string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
+
+        if (isDeletingCurrent)
+        {
+            ReleasePreviewHandles();
+        }
+
+        var deleted = new List<MediaItemViewModel>();
+        var failed = new List<string>();
+
+        foreach (var media in selected)
+        {
+            try
+            {
+                MoveMediaFileToRecycleBin(media);
+                deleted.Add(media);
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{media.FileName}: {ex.Message}");
+            }
+        }
+
+        MediaItemViewModel? nextSelection = null;
+        if (deleted.Count > 0)
+        {
+            nextSelection = await ViewModel.DeleteMediaAsync(deleted);
+            ViewModel.StatusMessage = $"已将 {deleted.Count} 个文件移到回收站。";
+        }
+
+        if (nextSelection == null && deleted.Count > 0)
+        {
+            ClearPlayerSelection();
+        }
+
+        var currentDeleteFailed = !string.IsNullOrWhiteSpace(currentMediaId)
+            && selected.Any(item => string.Equals(item.Id, currentMediaId, StringComparison.Ordinal))
+            && deleted.All(item => !string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
+        if (currentDeleteFailed && ViewModel.SelectedMedia != null)
+        {
+            UpdatePlayer(ViewModel.SelectedMedia);
+        }
+
+        if (failed.Count > 0)
+        {
+            var detail = string.Join(Environment.NewLine, failed.Take(5));
+            var suffix = failed.Count > 5 ? $"{Environment.NewLine}... 另有 {failed.Count - 5} 个文件移到回收站失败。" : string.Empty;
+            await ShowInfoDialogAsync("部分文件移到回收站失败", $"{detail}{suffix}");
+        }
+    }
+
+    private void MoveMediaFileToRecycleBin(MediaItemViewModel media)
+    {
+        var path = media.FileSystemPath;
+        if (!File.Exists(path))
         {
             return;
         }
 
-        var nextSelection = await ViewModel.DeleteMediaAsync(selected);
-        if (nextSelection == null)
+        RecycleBinHelper.SendToRecycleBin(path);
+    }
+
+    private void ReleasePreviewHandles()
+    {
+        Interlocked.Increment(ref _imageLoadVersion);
+        _pendingImageFitMediaId = null;
+        _imageSourceWidth = 0;
+        _imageSourceHeight = 0;
+        if (PreviewImage != null)
         {
-            ClearPlayerSelection();
+            PreviewImage.Width = double.NaN;
+            PreviewImage.Height = double.NaN;
+            PreviewImage.Source = null;
+        }
+        VideoPlayer.Visibility = Visibility.Collapsed;
+        ImageScrollViewer.Visibility = Visibility.Collapsed;
+
+        if (_player != null)
+        {
+            _player.Pause();
+            _player.Source = null;
         }
     }
 
@@ -1200,6 +1617,9 @@ public sealed partial class MainPage : Page
         ControlBar.Visibility = showForVideo ? Visibility.Visible : Visibility.Collapsed;
         ControlBar.IsHitTestVisible = showForVideo;
         ControlBar.Opacity = showForVideo ? 1 : 0;
+        ImageZoomBadge.Visibility = !showForVideo && ViewModel.SelectedMedia?.Type == MediaType.Image
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         _controlsVisible = showForVideo;
 
         if (!showForVideo)
@@ -1218,54 +1638,306 @@ public sealed partial class MainPage : Page
         ControlBar.Opacity = 1;
         ControlBar.IsHitTestVisible = true;
         _controlsVisible = true;
-
         _controlsHideTimer.Stop();
-        _controlsHideTimer.Start();
     }
 
     private void HideControls()
     {
-        if (!_controlsVisible)
+        ControlBar.Opacity = 1;
+        ControlBar.IsHitTestVisible = true;
+        _controlsVisible = true;
+    }
+
+    private void BeginImagePreviewSession(MediaItemViewModel media)
+    {
+        EndImageDrag();
+        _pendingImageFitMediaId = media.Id;
+        UpdatePreviewImageSourceSize(media.Media.Width, media.Media.Height);
+        ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
+        UpdateImageZoomUi();
+        DispatcherQueue.TryEnqueue(TryApplyPendingImageFit);
+    }
+
+    private void UpdatePreviewImageSourceSize(int? width, int? height)
+    {
+        if (width is > 0 && height is > 0)
+        {
+            SetPreviewImageSourceSize(width.Value, height.Value);
+            return;
+        }
+
+        _imageSourceWidth = 0;
+        _imageSourceHeight = 0;
+        if (PreviewImage != null)
+        {
+            PreviewImage.Width = double.NaN;
+            PreviewImage.Height = double.NaN;
+        }
+    }
+
+    private void SetPreviewImageSourceSize(double width, double height)
+    {
+        if (width <= 0 || height <= 0)
         {
             return;
         }
 
-        ControlBar.Opacity = 0;
-        ControlBar.IsHitTestVisible = false;
-        _controlsVisible = false;
+        _imageSourceWidth = width;
+        _imageSourceHeight = height;
+        if (PreviewImage != null)
+        {
+            PreviewImage.Width = width;
+            PreviewImage.Height = height;
+        }
+    }
+
+    private void PreviewImageElement_ImageOpened(object sender, RoutedEventArgs e)
+    {
+        if (_imageSourceWidth <= 0 || _imageSourceHeight <= 0)
+        {
+            if (PreviewImage?.Source is BitmapImage bitmap && bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0)
+            {
+                SetPreviewImageSourceSize(bitmap.PixelWidth, bitmap.PixelHeight);
+            }
+        }
+
+        TryApplyPendingImageFit();
+    }
+
+    private void ImageScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width <= 0 || e.NewSize.Height <= 0)
+        {
+            return;
+        }
+
+        TryApplyPendingImageFit();
+    }
+
+    private void TryApplyPendingImageFit()
+    {
+        var selectedMedia = ViewModel.SelectedMedia;
+        if (selectedMedia?.Type != MediaType.Image)
+        {
+            return;
+        }
+
+        if (!string.Equals(_pendingImageFitMediaId, selectedMedia.Id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (FitImageToViewport())
+        {
+            _pendingImageFitMediaId = null;
+        }
+    }
+
+    private bool FitImageToViewport()
+    {
+        if (ImageScrollViewer.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        if (!TryGetImageViewportSize(out var viewportWidth, out var viewportHeight)
+            || !TryGetImageSourceSize(out var imageWidth, out var imageHeight))
+        {
+            return false;
+        }
+
+        var targetZoom = Math.Min(viewportWidth / imageWidth, viewportHeight / imageHeight);
+        if (double.IsNaN(targetZoom) || double.IsInfinity(targetZoom) || targetZoom <= 0)
+        {
+            return false;
+        }
+
+        targetZoom = Math.Clamp(targetZoom, ImageScrollViewer.MinZoomFactor, ImageScrollViewer.MaxZoomFactor);
+        ImageScrollViewer.ChangeView(0, 0, (float)targetZoom, true);
+        UpdateImageZoomUi(targetZoom);
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            ImageScrollViewer.ChangeView(ImageScrollViewer.ScrollableWidth / 2, ImageScrollViewer.ScrollableHeight / 2, null, true);
+        });
+
+        return true;
+    }
+
+    private bool TryGetImageViewportSize(out double viewportWidth, out double viewportHeight)
+    {
+        viewportWidth = ImageScrollViewer.ViewportWidth > 0 ? ImageScrollViewer.ViewportWidth : ImageScrollViewer.ActualWidth;
+        viewportHeight = ImageScrollViewer.ViewportHeight > 0 ? ImageScrollViewer.ViewportHeight : ImageScrollViewer.ActualHeight;
+        return viewportWidth > 0 && viewportHeight > 0;
+    }
+
+    private bool TryGetImageSourceSize(out double imageWidth, out double imageHeight)
+    {
+        imageWidth = _imageSourceWidth;
+        imageHeight = _imageSourceHeight;
+        if (imageWidth > 0 && imageHeight > 0)
+        {
+            return true;
+        }
+
+        if (PreviewImage?.Source is BitmapImage bitmap && bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0)
+        {
+            imageWidth = bitmap.PixelWidth;
+            imageHeight = bitmap.PixelHeight;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ZoomImage(double delta, Windows.Foundation.Point anchorPoint)
+    {
+        if (ImageScrollViewer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        if (!TryGetImageViewportSize(out var viewportWidth, out var viewportHeight)
+            || !TryGetImageSourceSize(out var imageWidth, out var imageHeight))
+        {
+            return;
+        }
+
+        _pendingImageFitMediaId = null;
+        var currentZoom = Math.Max((double)ImageScrollViewer.ZoomFactor, 0.01);
+        var targetZoom = Math.Clamp(currentZoom + delta, ImageScrollViewer.MinZoomFactor, ImageScrollViewer.MaxZoomFactor);
+        if (Math.Abs(targetZoom - currentZoom) < 0.001)
+        {
+            return;
+        }
+
+        var contentX = (ImageScrollViewer.HorizontalOffset + anchorPoint.X) / currentZoom;
+        var contentY = (ImageScrollViewer.VerticalOffset + anchorPoint.Y) / currentZoom;
+        var targetHorizontalOffset = contentX * targetZoom - anchorPoint.X;
+        var targetVerticalOffset = contentY * targetZoom - anchorPoint.Y;
+        var maxHorizontalOffset = Math.Max(0, imageWidth * targetZoom - viewportWidth);
+        var maxVerticalOffset = Math.Max(0, imageHeight * targetZoom - viewportHeight);
+
+        ImageScrollViewer.ChangeView(
+            Math.Clamp(targetHorizontalOffset, 0, maxHorizontalOffset),
+            Math.Clamp(targetVerticalOffset, 0, maxVerticalOffset),
+            (float)targetZoom,
+            true);
     }
 
     private void ZoomImage(double delta)
     {
-        if (ImageScrollViewer.Visibility != Visibility.Visible)
+        if (!TryGetImageViewportSize(out var viewportWidth, out var viewportHeight))
         {
             return;
         }
 
-        var target = Math.Clamp(ImageScrollViewer.ZoomFactor + delta, ImageScrollViewer.MinZoomFactor, ImageScrollViewer.MaxZoomFactor);
-        ImageScrollViewer.ChangeView(null, null, (float)target, true);
+        ZoomImage(delta, new Windows.Foundation.Point(viewportWidth / 2, viewportHeight / 2));
     }
 
     private void ResetImageZoom()
     {
-        if (ImageScrollViewer.Visibility != Visibility.Visible)
+        _pendingImageFitMediaId = null;
+        if (!FitImageToViewport())
+        {
+            ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
+            UpdateImageZoomUi(1.0);
+        }
+    }
+
+    private void ImageScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        UpdateImageZoomUi();
+    }
+
+    private void UpdateImageZoomUi(double? zoomFactor = null)
+    {
+        if (ImageZoomText == null)
         {
             return;
         }
 
-        ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
+        var effectiveZoom = zoomFactor ?? ImageScrollViewer.ZoomFactor;
+        var percentage = Math.Max(1, (int)Math.Round(effectiveZoom * 100));
+        ImageZoomText.Text = $"{percentage}%";
+    }
+
+    private void ImageScrollViewer_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(ImageScrollViewer).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        _pendingImageFitMediaId = null;
+        _isImageDragging = true;
+        _imageDragStartPoint = e.GetCurrentPoint(ImageScrollViewer).Position;
+        _imageDragStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
+        _imageDragStartVerticalOffset = ImageScrollViewer.VerticalOffset;
+        ImageScrollViewer.CapturePointer(e.Pointer);
+        e.Handled = true;
+    }
+
+    private void ImageScrollViewer_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_isImageDragging)
+        {
+            return;
+        }
+
+        var position = e.GetCurrentPoint(ImageScrollViewer).Position;
+        var horizontalOffset = Math.Clamp(
+            _imageDragStartHorizontalOffset - (position.X - _imageDragStartPoint.X),
+            0,
+            ImageScrollViewer.ScrollableWidth);
+        var verticalOffset = Math.Clamp(
+            _imageDragStartVerticalOffset - (position.Y - _imageDragStartPoint.Y),
+            0,
+            ImageScrollViewer.ScrollableHeight);
+
+        ImageScrollViewer.ChangeView(horizontalOffset, verticalOffset, null, true);
+        e.Handled = true;
+    }
+
+    private void ImageScrollViewer_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        EndImageDrag();
+        e.Handled = true;
+    }
+
+    private void ImageScrollViewer_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        EndImageDrag();
+    }
+
+    private void ImageScrollViewer_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        ResetImageZoom();
+        e.Handled = true;
     }
 
     private void ImageScrollViewer_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
-        var delta = e.GetCurrentPoint(ImageScrollViewer).Properties.MouseWheelDelta;
+        var point = e.GetCurrentPoint(ImageScrollViewer);
+        var delta = point.Properties.MouseWheelDelta;
         if (delta == 0)
         {
             return;
         }
 
-        ZoomImage(delta > 0 ? 0.1 : -0.1);
+        ZoomImage(delta > 0 ? 0.1 : -0.1, point.Position);
         e.Handled = true;
+    }
+
+    private void EndImageDrag()
+    {
+        if (!_isImageDragging)
+        {
+            return;
+        }
+
+        _isImageDragging = false;
+        ImageScrollViewer.ReleasePointerCaptures();
     }
 
     private void ResetClipState(MediaItemViewModel? media)
@@ -1293,7 +1965,7 @@ public sealed partial class MainPage : Page
         _clipStart = TimeSpan.Zero;
         _clipEnd = null;
         _clipSegments.Clear();
-        _clipOutputDirectory = Path.GetDirectoryName(media.Path);
+        _clipOutputDirectory = Path.GetDirectoryName(media.FileSystemPath);
         _clipMode = VideoClipMode.Keep;
         _clipStatusMessage = _clipService.IsAvailable
             ? "使用 I / O 标记区间，或打开“片段方案...”配置多段剪辑。"
@@ -1400,7 +2072,7 @@ public sealed partial class MainPage : Page
         };
         var outputDirBox = new TextBox
         {
-            Text = _clipOutputDirectory ?? Path.GetDirectoryName(media.Path) ?? string.Empty,
+            Text = _clipOutputDirectory ?? Path.GetDirectoryName(media.FileSystemPath) ?? string.Empty,
             PlaceholderText = "输出目录"
         };
         var summaryText = new TextBlock { TextWrapping = TextWrapping.Wrap };
@@ -1533,7 +2205,7 @@ public sealed partial class MainPage : Page
 
         _clipMode = (VideoClipMode?)((modeBox.SelectedItem as ComboBoxItem)?.Tag ?? VideoClipMode.Keep) ?? VideoClipMode.Keep;
         _clipOutputDirectory = string.IsNullOrWhiteSpace(outputDirBox.Text)
-            ? Path.GetDirectoryName(media.Path)
+                ? Path.GetDirectoryName(media.FileSystemPath)
             : outputDirBox.Text.Trim();
         _clipStatusMessage = normalized.Count == 0
             ? "片段方案已清空，导出时将使用当前入点/出点。"
@@ -1926,7 +2598,7 @@ public sealed partial class MainPage : Page
 
         flyout.Items.Add(new MenuFlyoutSeparator());
 
-        var delete = new MenuFlyoutItem { Text = "从媒体库删除" };
+        var delete = new MenuFlyoutItem { Text = "删除文件" };
         delete.Click += async (_, _) => await DeleteSelectedAsync();
         flyout.Items.Add(delete);
 
@@ -1940,7 +2612,7 @@ public sealed partial class MainPage : Page
             Process.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",
-                Arguments = $"/select,\"{media.Path}\"",
+                Arguments = $"/select,\"{media.FileSystemPath}\"",
                 UseShellExecute = true
             });
         }
@@ -1976,6 +2648,229 @@ public sealed partial class MainPage : Page
         }
 
         return null;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject? root) where T : DependencyObject
+    {
+        if (root == null)
+        {
+            return null;
+        }
+
+        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, index);
+            if (child is T typed)
+            {
+                return typed;
+            }
+
+            var nested = FindDescendant<T>(child);
+            if (nested != null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private static FrameworkElement? FindDescendantByName(DependencyObject? root, string name)
+    {
+        if (root == null)
+        {
+            return null;
+        }
+
+        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, index);
+            if (child is FrameworkElement element && string.Equals(element.Name, name, StringComparison.Ordinal))
+            {
+                return element;
+            }
+
+            var nested = FindDescendantByName(child, name);
+            if (nested != null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private void UpdateVisibleListItemSizes()
+    {
+        for (var index = 0; index < ListView.Items.Count; index++)
+        {
+            if (ListView.ContainerFromIndex(index) is SelectorItem container)
+            {
+                ApplyListItemSize(container);
+            }
+        }
+    }
+
+    private void ApplyListItemSize(SelectorItem? container)
+    {
+        if (container == null)
+        {
+            return;
+        }
+
+        if (FindDescendantByName(container, "ListThumbnailHost") is not FrameworkElement thumbnailHost)
+        {
+            return;
+        }
+
+        var size = Math.Clamp((int)Math.Round(ViewModel.IconSize * 0.6), 48, 180);
+        thumbnailHost.Width = size;
+        thumbnailHost.Height = size;
+    }
+
+    private double CalculateAdaptiveGridItemSize()
+    {
+        var desiredSize = Math.Clamp((double)ViewModel.IconSize, 72, 260);
+        var availableWidth = GetGridViewAvailableWidth();
+        if (availableWidth <= desiredSize)
+        {
+            return desiredSize;
+        }
+
+        var columns = Math.Max(1, (int)Math.Floor(availableWidth / desiredSize));
+        var adjustedSize = Math.Floor(availableWidth / columns);
+        return Math.Clamp(adjustedSize, 72, 320);
+    }
+
+    private double GetGridViewAvailableWidth()
+    {
+        var width = _gridViewScrollViewer?.ActualWidth ?? 0;
+        if (width <= 0)
+        {
+            width = GridView.ActualWidth;
+        }
+
+        if (width <= 0)
+        {
+            width = _libraryPaneWidth;
+        }
+
+        return Math.Max(72, width - GridViewWidthPadding);
+    }
+
+    private void RootLayout_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        HandleLibraryAutoVisibility(e.GetCurrentPoint(RootLayout).Position.X);
+    }
+
+    private void LibraryPinButton_Click(object sender, RoutedEventArgs e)
+    {
+        _isLibraryPinned = !_isLibraryPinned;
+        UpdateLibraryPinButtonUi();
+        UpdateLibraryPaneState(preferOpen: _isLibraryPinned || ViewModel.SelectedMedia == null);
+    }
+
+    private void LibraryPaneResizer_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        _isResizingLibraryPane = true;
+        SetLibraryPaneOpen(true);
+    }
+
+    private void LibraryPaneResizer_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var maxWidth = RootLayout.ActualWidth > 0
+            ? Math.Min(MaxLibraryPaneWidth, Math.Max(MinLibraryPaneWidth, RootLayout.ActualWidth - 200))
+            : MaxLibraryPaneWidth;
+        _libraryPaneWidth = Math.Clamp(_libraryPaneWidth + e.HorizontalChange, MinLibraryPaneWidth, maxWidth);
+        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
+    }
+
+    private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        _isResizingLibraryPane = false;
+        UpdateLibraryPaneState(preferOpen: true);
+    }
+
+    private void UpdateLibraryPaneState(bool preferOpen = false)
+    {
+        UpdateLibraryPanePresentation();
+        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
+
+        var shouldOpen = preferOpen || _isLibraryPinned || ViewModel.SelectedMedia == null;
+        SetLibraryPaneOpen(shouldOpen);
+        UpdateLibraryPinButtonUi();
+    }
+
+    private void HandleLibraryAutoVisibility(double pointerX)
+    {
+        if (_isLibraryPinned || _isResizingLibraryPane)
+        {
+            return;
+        }
+
+        if (ViewModel.SelectedMedia == null)
+        {
+            SetLibraryPaneOpen(true);
+            return;
+        }
+
+        if (pointerX <= LibraryRevealHotZoneWidth)
+        {
+            SetLibraryPaneOpen(true);
+            return;
+        }
+
+        if (LibrarySplitView.IsPaneOpen && pointerX > _libraryPaneWidth + LibraryHideBufferWidth)
+        {
+            SetLibraryPaneOpen(false);
+        }
+    }
+
+    private void SetLibraryPaneOpen(bool isOpen)
+    {
+        if (LibrarySplitView.IsPaneOpen == isOpen)
+        {
+            return;
+        }
+
+        LibrarySplitView.IsPaneOpen = isOpen;
+    }
+
+    private void UpdateLibraryPinButtonUi()
+    {
+        if (LibraryPinButton == null)
+        {
+            return;
+        }
+
+        LibraryPinButton.Opacity = _isLibraryPinned ? 1 : 0.7;
+        LibraryPinButton.Foreground = new SolidColorBrush(_isLibraryPinned
+            ? Microsoft.UI.Colors.White
+            : Microsoft.UI.ColorHelper.FromArgb(204, 255, 255, 255));
+        ToolTipService.SetToolTip(LibraryPinButton, _isLibraryPinned ? "固定媒体库" : "媒体库自动隐藏");
+
+        if (LibraryPinSymbolIcon != null)
+        {
+            LibraryPinSymbolIcon.Symbol = _isLibraryPinned ? Symbol.Pin : Symbol.UnPin;
+        }
+    }
+
+    private void UpdateLibraryPanePresentation()
+    {
+        if (LibrarySplitView == null || LibraryPaneRoot == null)
+        {
+            return;
+        }
+
+        LibrarySplitView.DisplayMode = _isLibraryPinned
+            ? SplitViewDisplayMode.Inline
+            : SplitViewDisplayMode.Overlay;
+        LibraryPaneRoot.Background = _isLibraryPinned
+            ? Application.Current.Resources["SurfaceAltBrush"] as Brush ?? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 45, 45, 45))
+            : new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(214, 32, 32, 32));
+        LibraryPaneResizer.Opacity = _isLibraryPinned ? 1 : 0.55;
     }
 
     private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)
@@ -2415,6 +3310,18 @@ public sealed partial class MainPage : Page
         };
 
         await dialog.ShowAsync();
+    }
+
+    private async Task ExecuteUiActionAsync(Func<Task> action, string failureTitle)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            await ShowInfoDialogAsync(failureTitle, ex.Message);
+        }
     }
 
     private AppWindow? GetAppWindow()

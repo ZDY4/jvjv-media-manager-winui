@@ -18,6 +18,40 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-VsMsBuildPath {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path $vswhere)) {
+        throw "vswhere.exe was not found at '$vswhere'."
+    }
+
+    $vsJson = & $vswhere -latest -products * -format json
+    if (-not $vsJson) {
+        throw 'vswhere.exe did not return any Visual Studio installations.'
+    }
+
+    $instances = $vsJson | ConvertFrom-Json
+    if ($instances -isnot [System.Array]) {
+        $instances = @($instances)
+    }
+
+    $instance = $instances | Select-Object -First 1
+    if (-not $instance) {
+        throw 'No Visual Studio installation was found.'
+    }
+
+    $installationPath = $instance.installationPath
+    if (-not $installationPath) {
+        throw 'Visual Studio installation metadata is incomplete.'
+    }
+
+    $msbuildPath = Join-Path $installationPath 'MSBuild\Current\Bin\MSBuild.exe'
+    if (-not (Test-Path $msbuildPath)) {
+        throw "MSBuild.exe was not found under '$installationPath'."
+    }
+
+    return $msbuildPath
+}
+
 function Get-AppxMsBuildToolsPath {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path $vswhere)) {
@@ -56,6 +90,24 @@ function Get-AppxMsBuildToolsPath {
 }
 
 $appxMsBuildToolsPath = Get-AppxMsBuildToolsPath
+
+if ($Action -eq 'Build') {
+    $msbuildPath = Get-VsMsBuildPath
+    $msbuildArgs = @(
+        $Target
+        '/t:Build'
+        "/p:Configuration=$Configuration"
+        "/p:AppxMSBuildToolsPath=$appxMsBuildToolsPath"
+        '/nologo'
+    )
+
+    if ($AdditionalArgs) {
+        $msbuildArgs += $AdditionalArgs
+    }
+
+    & $msbuildPath @msbuildArgs
+    exit $LASTEXITCODE
+}
 
 $dotnetArgs = @(
     $Action.ToLowerInvariant()
