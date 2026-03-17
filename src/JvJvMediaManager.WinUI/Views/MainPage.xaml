@@ -15,6 +15,12 @@
     </Page.KeyboardAccelerators>
 
     <Page.Resources>
+        <AcrylicBrush x:Key="PlayerEdgeNavigationBrush"
+                      TintColor="#1C1C1C"
+                      TintOpacity="0.58"
+                      TintLuminosityOpacity="0.12"
+                      FallbackColor="#8C1C1C1C" />
+
         <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
             <Grid Padding="8" ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
@@ -264,7 +270,61 @@
                         </Border>
                     </ScrollViewer>
 
-                    <Grid x:Name="PlayerOverlay" Background="Transparent">
+                    <Grid x:Name="PlayerOverlay">
+                        <Grid>
+                            <Border x:Name="PreviousMediaHotspot"
+                                    HorizontalAlignment="Left"
+                                    Width="96"
+                                    Background="Transparent"
+                                    Visibility="Collapsed"
+                                    PointerEntered="PreviousMediaHotspot_PointerEntered"
+                                    Tapped="PreviousMediaHotspot_Tapped">
+                                <Grid>
+                                    <Border x:Name="PreviousMediaCue"
+                                            Width="56"
+                                            Height="176"
+                                            Margin="14,0,0,0"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Background="{StaticResource PlayerEdgeNavigationBrush}"
+                                            CornerRadius="28"
+                                            Opacity="0"
+                                            IsHitTestVisible="False">
+                                        <SymbolIcon Symbol="Back"
+                                                    Foreground="{ThemeResource TextBrush}"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+
+                            <Border x:Name="NextMediaHotspot"
+                                    HorizontalAlignment="Right"
+                                    Width="96"
+                                    Background="Transparent"
+                                    Visibility="Collapsed"
+                                    PointerEntered="NextMediaHotspot_PointerEntered"
+                                    Tapped="NextMediaHotspot_Tapped">
+                                <Grid>
+                                    <Border x:Name="NextMediaCue"
+                                            Width="56"
+                                            Height="176"
+                                            Margin="0,0,14,0"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center"
+                                            Background="{StaticResource PlayerEdgeNavigationBrush}"
+                                            CornerRadius="28"
+                                            Opacity="0"
+                                            IsHitTestVisible="False">
+                                        <SymbolIcon Symbol="Forward"
+                                                    Foreground="{ThemeResource TextBrush}"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </Grid>
+
                         <Border x:Name="ImageZoomBadge"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Top"

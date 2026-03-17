@@ -32,11 +32,19 @@ public sealed partial class MainPage : Page
     private const double LibraryRevealHotZoneWidth = 28;
     private const double LibraryHideBufferWidth = 24;
     private const double GridViewWidthPadding = 24;
+    private const double PlayerEdgeNavigationRevealWidth = 96;
     private enum PlaybackMode
     {
         ListLoop,
         SingleLoop,
         Shuffle
+    }
+
+    private enum PlayerNavigationEdge
+    {
+        None,
+        Left,
+        Right
     }
 
     public MainViewModel ViewModel { get; } = new();
@@ -76,6 +84,7 @@ public sealed partial class MainPage : Page
     private double _imageSourceWidth;
     private double _imageSourceHeight;
     private double _libraryPaneWidth = DefaultLibraryPaneWidth;
+    private PlayerNavigationEdge _activePlayerNavigationEdge;
 
     private Image? PreviewImage => PreviewImageElement;
     private SymbolIcon? LibraryPinSymbolIcon => LibraryPinButton.Content as SymbolIcon;
@@ -935,17 +944,20 @@ public sealed partial class MainPage : Page
     private void PlayerRoot_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         ShowControls();
+        UpdatePlayerNavigationCue(e.GetCurrentPoint(PlayerRoot).Position);
     }
 
     private void PlayerRoot_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         ShowControls();
+        UpdatePlayerNavigationCue(e.GetCurrentPoint(PlayerRoot).Position);
         Focus(FocusState.Programmatic);
     }
 
     private void PlayerRoot_PointerExited(object sender, PointerRoutedEventArgs e)
     {
         ShowControls();
+        SetPlayerNavigationEdge(PlayerNavigationEdge.None);
     }
 
     private void ControlBar_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -1126,6 +1138,42 @@ public sealed partial class MainPage : Page
 
         nextIndex = ((nextIndex % list.Count) + list.Count) % list.Count;
         ViewModel.SelectedMedia = list[nextIndex];
+    }
+
+    private void PreviousMediaHotspot_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        SetPlayerNavigationEdge(PlayerNavigationEdge.Left);
+    }
+
+    private void NextMediaHotspot_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        SetPlayerNavigationEdge(PlayerNavigationEdge.Right);
+    }
+
+    private async void PreviousMediaHotspot_Tapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (!CanShowPlayerNavigationHotspots())
+        {
+            return;
+        }
+
+        await NavigateRelativeAsync(-1);
+        ShowControls();
+        SetPlayerNavigationEdge(PlayerNavigationEdge.Left);
+        e.Handled = true;
+    }
+
+    private async void NextMediaHotspot_Tapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (!CanShowPlayerNavigationHotspots())
+        {
+            return;
+        }
+
+        await NavigateRelativeAsync(1);
+        ShowControls();
+        SetPlayerNavigationEdge(PlayerNavigationEdge.Right);
+        e.Handled = true;
     }
 
     private void UpdateWatchedFolders(IEnumerable<string> paths, bool refreshMedia = true)
@@ -1621,6 +1669,7 @@ public sealed partial class MainPage : Page
             ? Visibility.Visible
             : Visibility.Collapsed;
         _controlsVisible = showForVideo;
+        RefreshPlayerNavigationHotspots();
 
         if (!showForVideo)
         {
@@ -1646,6 +1695,62 @@ public sealed partial class MainPage : Page
         ControlBar.Opacity = 1;
         ControlBar.IsHitTestVisible = true;
         _controlsVisible = true;
+    }
+
+    private bool CanShowPlayerNavigationHotspots()
+    {
+        return ViewModel.SelectedMedia != null
+            && ViewModel.FilteredMediaItems.Count > 1
+            && EmptyState.Visibility != Visibility.Visible;
+    }
+
+    private void RefreshPlayerNavigationHotspots()
+    {
+        var canShow = CanShowPlayerNavigationHotspots();
+        PreviousMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
+        NextMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
+        if (!canShow)
+        {
+            _activePlayerNavigationEdge = PlayerNavigationEdge.None;
+        }
+
+        PreviousMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0;
+        NextMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0;
+    }
+
+    private void UpdatePlayerNavigationCue(Windows.Foundation.Point pointerPosition)
+    {
+        if (!CanShowPlayerNavigationHotspots())
+        {
+            SetPlayerNavigationEdge(PlayerNavigationEdge.None);
+            return;
+        }
+
+        var playerWidth = PlayerRoot.ActualWidth;
+        if (playerWidth <= 0)
+        {
+            SetPlayerNavigationEdge(PlayerNavigationEdge.None);
+            return;
+        }
+
+        if (pointerPosition.X <= PlayerEdgeNavigationRevealWidth)
+        {
+            SetPlayerNavigationEdge(PlayerNavigationEdge.Left);
+        }
+        else if (pointerPosition.X >= playerWidth - PlayerEdgeNavigationRevealWidth)
+        {
+            SetPlayerNavigationEdge(PlayerNavigationEdge.Right);
+        }
+        else
+        {
+            SetPlayerNavigationEdge(PlayerNavigationEdge.None);
+        }
+    }
+
+    private void SetPlayerNavigationEdge(PlayerNavigationEdge edge)
+    {
+        _activePlayerNavigationEdge = edge;
+        RefreshPlayerNavigationHotspots();
     }
 
     private void BeginImagePreviewSession(MediaItemViewModel media)
