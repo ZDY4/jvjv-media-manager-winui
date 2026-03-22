@@ -3,7 +3,7 @@ setlocal
 
 set ROOT=%~dp0
 set PROJECT=%ROOT%src\JvJvMediaManager.WinUI\JvJvMediaManager.WinUI.csproj
-set OUTDIR=%ROOT%artifacts\publish
+set OUTROOT=%ROOT%artifacts\publish
 set TOOL=%ROOT%tools\Invoke-WindowsAppSdkDotNet.ps1
 
 set RID=win-x64
@@ -17,6 +17,8 @@ if /I "%~2"=="framework-dependent" (
     set SELF_CONTAINED=false
     set WINDOWS_APP_SDK_SELF_CONTAINED=false
 )
+set OUTDIR=%OUTROOT%\self-contained
+if /I "%SELF_CONTAINED%"=="false" set OUTDIR=%OUTROOT%\framework-dependent
 
 if exist "%OUTDIR%" rmdir /s /q "%OUTDIR%"
 
@@ -25,7 +27,10 @@ echo Output: %OUTDIR%
 echo Runtime: %RID%
 echo Platform: %PLATFORM%
 echo Self-contained: %SELF_CONTAINED%
-if /I "%SELF_CONTAINED%"=="false" echo Requires Windows App Runtime on target machine.
+if /I "%SELF_CONTAINED%"=="false" (
+    echo Requires .NET 10 runtime and Windows App Runtime on target machine.
+    echo For a portable output, run: package.bat %RID% self-contained
+)
 
 pwsh -NoLogo -NoProfile -Command "& '%TOOL%' -Action Publish -Target '%PROJECT%' -Configuration Release -RuntimeIdentifier '%RID%' -Output '%OUTDIR%' -AdditionalArgs @('--self-contained','%SELF_CONTAINED%','-p:WindowsAppSDKSelfContained=%WINDOWS_APP_SDK_SELF_CONTAINED%','-p:Platform=%PLATFORM%','-p:PublishSingleFile=false','-p:PublishTrimmed=false')"
 if errorlevel 1 exit /b 1

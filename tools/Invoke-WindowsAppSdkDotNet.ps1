@@ -91,24 +91,6 @@ function Get-AppxMsBuildToolsPath {
 
 $appxMsBuildToolsPath = Get-AppxMsBuildToolsPath
 
-if ($Action -eq 'Build') {
-    $msbuildPath = Get-VsMsBuildPath
-    $msbuildArgs = @(
-        $Target
-        '/t:Build'
-        "/p:Configuration=$Configuration"
-        "/p:AppxMSBuildToolsPath=$appxMsBuildToolsPath"
-        '/nologo'
-    )
-
-    if ($AdditionalArgs) {
-        $msbuildArgs += $AdditionalArgs
-    }
-
-    & $msbuildPath @msbuildArgs
-    exit $LASTEXITCODE
-}
-
 $dotnetArgs = @(
     $Action.ToLowerInvariant()
     $Target
@@ -127,6 +109,28 @@ if ($Output) {
 
 if ($AdditionalArgs) {
     $dotnetArgs += $AdditionalArgs
+}
+
+if ($Action -eq 'Build') {
+    $msbuildPath = Get-VsMsBuildPath
+    $msbuildArgs = @(
+        $Target
+        '/t:Build'
+        "/p:Configuration=$Configuration"
+        "/p:AppxMSBuildToolsPath=$appxMsBuildToolsPath"
+        '/nologo'
+    )
+
+    if ($AdditionalArgs) {
+        $msbuildArgs += $AdditionalArgs
+    }
+
+    & $msbuildPath @msbuildArgs
+    if ($LASTEXITCODE -eq 0) {
+        exit 0
+    }
+
+    Write-Warning "MSBuild exited with code $LASTEXITCODE. Falling back to 'dotnet build'."
 }
 
 & dotnet @dotnetArgs

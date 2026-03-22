@@ -20,11 +20,12 @@ pwsh -NoLogo -NoProfile -File .\build.ps1
 说明：
 
 - `build.ps1` 会优先使用 Visual Studio 自带的 `MSBuild.exe`
-- 这样可以避免部分环境下 `dotnet build` 缺少 `Pri.Tasks.dll` 的问题
+- 如果当前机器上的 `MSBuild.exe` 出现 WinUI 项目评估异常，会自动回退到 `dotnet build`
+- 脚本会自动补上 `AppxMSBuildToolsPath`，避免部分环境下 `dotnet build` 缺少 `Pri.Tasks.dll`
 
 ### 发布
 
-默认发布 `win-x64` 自包含版本到 `artifacts\publish`：
+默认发布 `win-x64` 自包含版本到 `artifacts\publish\self-contained`：
 
 ```bat
 package.bat
@@ -35,6 +36,16 @@ package.bat
 ```bat
 package.bat win-x64 framework-dependent
 ```
+
+说明：
+
+- framework-dependent 产物依赖目标机器已安装 `.NET 10 Runtime` 和 `Windows App Runtime`
+- 默认无参产物为自包含版本，更适合直接拷贝到未预装运行时的机器
+
+输出目录：
+
+- framework-dependent: `artifacts\publish\framework-dependent`
+- self-contained: `artifacts\publish\self-contained`
 
 可选运行时：
 
