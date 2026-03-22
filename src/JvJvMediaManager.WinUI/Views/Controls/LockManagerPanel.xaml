@@ -1,0 +1,50 @@
+<UserControl
+    x:Class="JvJvMediaManager.Views.Controls.LockManagerPanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Spacing="16">
+        <Border Style="{StaticResource GlassPanelStyle}">
+            <TextBlock Text="受保护文件夹默认隐藏。解锁只对当前会话生效，重新锁定后会再次隐藏。"
+                       Foreground="{ThemeResource MutedTextBrush}"
+                       TextWrapping="Wrap" />
+        </Border>
+
+        <Border Style="{StaticResource SectionCardStyle}">
+            <StackPanel Spacing="12">
+                <TextBlock Text="受保护文件夹"
+                           Foreground="{ThemeResource TextBrush}"
+                           FontSize="16"
+                           FontWeight="SemiBold" />
+
+                <ListView x:Name="FoldersListView"
+                          x:FieldModifier="public"
+                          MaxHeight="240"
+                          SelectionMode="Single" />
+
+                <TextBlock x:Name="StatusText"
+                           x:FieldModifier="public"
+                           Foreground="{ThemeResource MutedTextBrush}"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="UnlockButton"
+                    x:FieldModifier="public"
+                    Content="解锁选中"
+                    Style="{StaticResource PrimaryToolbarButtonStyle}" />
+            <Button x:Name="RelockButton"
+                    x:FieldModifier="public"
+                    Content="重新锁定选中"
+                    Style="{StaticResource SecondaryToolbarButtonStyle}" />
+            <Button x:Name="RelockAllButton"
+                    x:FieldModifier="public"
+                    Content="全部重新锁定"
+                    Style="{StaticResource SecondaryToolbarButtonStyle}" />
+        </StackPanel>
+    </StackPanel>
+</UserControl>

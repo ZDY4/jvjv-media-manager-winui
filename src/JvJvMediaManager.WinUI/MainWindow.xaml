@@ -8,5 +8,64 @@
     mc:Ignorable="d"
     Title="媒体管理器">
 
-    <Frame x:Name="RootFrame" />
+    <Grid x:Name="WindowRoot"
+          Background="{ThemeResource WindowBackdropBrush}">
+        <Rectangle Fill="{ThemeResource WindowAmbientBrush}"
+                   IsHitTestVisible="False" />
+
+        <Grid RowDefinitions="Auto,*">
+            <Grid x:Name="AppTitleBar"
+                  Height="48"
+                  Padding="0,0,0,8"
+                  VerticalAlignment="Top">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="LeftInsetColumn" Width="0" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition x:Name="RightInsetColumn" Width="160" />
+                </Grid.ColumnDefinitions>
+
+                <Grid Grid.Column="1"
+                      Margin="16,8,12,0"
+                      Padding="14,8"
+                      Background="{ThemeResource ShellTopBarBrush}"
+                      BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                      BorderThickness="1"
+                      CornerRadius="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="28"
+                            Height="28"
+                            Background="{ThemeResource AppIconBadgeBrush}"
+                            CornerRadius="14"
+                            VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE8A5;"
+                                  FontSize="14"
+                                  Foreground="{ThemeResource AccentBrush}"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center" />
+                    </Border>
+
+                    <StackPanel Grid.Column="2"
+                                VerticalAlignment="Center"
+                                Spacing="1">
+                        <TextBlock x:Name="WindowTitleText"
+                                   Text="JvJv Media Manager"
+                                   Foreground="{ThemeResource TextBrush}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="Windows 11 native media library, playback and clipping"
+                                   Foreground="{ThemeResource SubtleTextBrush}"
+                                   FontSize="11" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <Frame x:Name="RootFrame"
+                   Grid.Row="1" />
+        </Grid>
+    </Grid>
 </Window>

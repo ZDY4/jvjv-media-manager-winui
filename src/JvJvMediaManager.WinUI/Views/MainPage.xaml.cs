@@ -20,6 +20,7 @@ using JvJvMediaManager.Models;
 using JvJvMediaManager.Services;
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
+using JvJvMediaManager.Views.Controls;
 using WinRT.Interop;
 
 namespace JvJvMediaManager.Views;
@@ -486,6 +487,8 @@ public sealed partial class MainPage : Page
         {
             ViewModel.SelectedMedia = null;
         }
+
+        UpdateSelectedStateFlags();
     }
 
     private async void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
@@ -667,6 +670,7 @@ public sealed partial class MainPage : Page
             var selected = ViewModel.SelectedMedia;
             ListView.SelectedItem = selected;
             GridView.SelectedItem = selected;
+            UpdateSelectedStateFlags();
 
             if (selected == null)
             {
@@ -1588,6 +1592,8 @@ public sealed partial class MainPage : Page
             var suffix = failed.Count > 5 ? $"{Environment.NewLine}... 另有 {failed.Count - 5} 个文件移到回收站失败。" : string.Empty;
             await ShowInfoDialogAsync("部分文件移到回收站失败", $"{detail}{suffix}");
         }
+
+        UpdateSelectedStateFlags();
     }
 
     private void MoveMediaFileToRecycleBin(MediaItemViewModel media)
@@ -1631,6 +1637,20 @@ public sealed partial class MainPage : Page
         }
 
         return ListView.SelectedItems.OfType<MediaItemViewModel>();
+    }
+
+    private void UpdateSelectedStateFlags()
+    {
+        var selectedIds = new HashSet<string>(GetSelectedItems().Select(item => item.Id), StringComparer.Ordinal);
+        if (ViewModel.SelectedMedia != null)
+        {
+            selectedIds.Add(ViewModel.SelectedMedia.Id);
+        }
+
+        foreach (var item in ViewModel.FilteredMediaItems)
+        {
+            item.IsSelected = selectedIds.Contains(item.Id);
+        }
     }
 
     private MediaPlayer EnsureMediaPlayer()
@@ -2156,68 +2176,42 @@ public sealed partial class MainPage : Page
 
         var workingSegments = new ObservableCollection<ClipSegmentDisplayItem>(
             _clipSegments.Select(segment => new ClipSegmentDisplayItem(segment.Start, segment.End)));
-        var modeBox = new ComboBox
-        {
-            ItemsSource = new[]
-            {
-                new ComboBoxItem { Content = "保留片段", Tag = VideoClipMode.Keep },
-                new ComboBoxItem { Content = "删除片段", Tag = VideoClipMode.Delete }
-            },
-            SelectedIndex = _clipMode == VideoClipMode.Keep ? 0 : 1
-        };
-        var startBox = new TextBox
-        {
-            PlaceholderText = "开始时间，如 00:01:23.500",
-            Text = FormatEditableTime(_clipStart ?? TimeSpan.Zero)
-        };
-        var endBox = new TextBox
-        {
-            PlaceholderText = "结束时间，如 00:02:10.000",
-            Text = FormatEditableTime(_clipEnd ?? duration)
-        };
-        var outputDirBox = new TextBox
-        {
-            Text = _clipOutputDirectory ?? Path.GetDirectoryName(media.FileSystemPath) ?? string.Empty,
-            PlaceholderText = "输出目录"
-        };
-        var summaryText = new TextBlock { TextWrapping = TextWrapping.Wrap };
-        var listView = new ListView
-        {
-            ItemsSource = workingSegments,
-            DisplayMemberPath = nameof(ClipSegmentDisplayItem.DisplayText),
-            SelectionMode = ListViewSelectionMode.Single,
-            MaxHeight = 180
-        };
+        var panel = new ClipPlanPanel(
+            duration,
+            _clipMode,
+            FormatEditableTime(_clipStart ?? TimeSpan.Zero),
+            FormatEditableTime(_clipEnd ?? duration),
+            _clipOutputDirectory ?? Path.GetDirectoryName(media.FileSystemPath) ?? string.Empty);
+        panel.SegmentsListView.ItemsSource = workingSegments;
+        panel.SegmentsListView.DisplayMemberPath = nameof(ClipSegmentDisplayItem.DisplayText);
 
         void RefreshSummary()
         {
             var segments = NormalizeSegments(workingSegments.Select(item => item.ToSegment()), duration);
-            var mode = (VideoClipMode?)((modeBox.SelectedItem as ComboBoxItem)?.Tag ?? VideoClipMode.Keep) ?? VideoClipMode.Keep;
+            var mode = (VideoClipMode?)((panel.ModeComboBox.SelectedItem as ComboBoxItem)?.Tag ?? VideoClipMode.Keep) ?? VideoClipMode.Keep;
             var outputDuration = CalculateEffectiveOutputDuration(segments, duration, mode);
-            summaryText.Text = segments.Count == 0
+            panel.SummaryText.Text = segments.Count == 0
                 ? $"总时长：{FormatTime(duration)}。请先添加至少一个片段。"
                 : $"共 {segments.Count} 段，模式：{(mode == VideoClipMode.Keep ? "保留片段" : "删除片段")}，导出后预计时长：{FormatTime(outputDuration)}";
         }
 
-        var useCurrentButton = new Button { Content = "使用当前入/出点" };
-        useCurrentButton.Click += (_, _) =>
+        panel.UseCurrentButton.Click += (_, _) =>
         {
-            startBox.Text = FormatEditableTime(_clipStart ?? TimeSpan.Zero);
-            endBox.Text = FormatEditableTime(_clipEnd ?? duration);
+            panel.StartBox.Text = FormatEditableTime(_clipStart ?? TimeSpan.Zero);
+            panel.EndBox.Text = FormatEditableTime(_clipEnd ?? duration);
         };
 
-        var addButton = new Button { Content = "添加片段" };
-        addButton.Click += (_, _) =>
+        panel.AddButton.Click += (_, _) =>
         {
-            if (!TryParseTimeInput(startBox.Text, out var start) || !TryParseTimeInput(endBox.Text, out var end))
+            if (!TryParseTimeInput(panel.StartBox.Text, out var start) || !TryParseTimeInput(panel.EndBox.Text, out var end))
             {
-                summaryText.Text = "时间格式无效，请使用 mm:ss、hh:mm:ss 或 hh:mm:ss.fff。";
+                panel.SummaryText.Text = "时间格式无效，请使用 mm:ss、hh:mm:ss 或 hh:mm:ss.fff。";
                 return;
             }
 
             if (end <= start)
             {
-                summaryText.Text = "结束时间必须晚于开始时间。";
+                panel.SummaryText.Text = "结束时间必须晚于开始时间。";
                 return;
             }
 
@@ -2225,25 +2219,22 @@ public sealed partial class MainPage : Page
             RefreshSummary();
         };
 
-        var removeButton = new Button { Content = "移除选中" };
-        removeButton.Click += (_, _) =>
+        panel.RemoveButton.Click += (_, _) =>
         {
-            if (listView.SelectedItem is ClipSegmentDisplayItem selected)
+            if (panel.SegmentsListView.SelectedItem is ClipSegmentDisplayItem selected)
             {
                 workingSegments.Remove(selected);
                 RefreshSummary();
             }
         };
 
-        var clearButton = new Button { Content = "清空片段" };
-        clearButton.Click += (_, _) =>
+        panel.ClearButton.Click += (_, _) =>
         {
             workingSegments.Clear();
             RefreshSummary();
         };
 
-        var pickOutputButton = new Button { Content = "选择输出目录" };
-        pickOutputButton.Click += async (_, _) =>
+        panel.PickOutputButton.Click += async (_, _) =>
         {
             var window = App.MainWindow;
             if (window == null)
@@ -2254,42 +2245,18 @@ public sealed partial class MainPage : Page
             var folder = await PickerHelpers.PickFolderAsync(window);
             if (!string.IsNullOrWhiteSpace(folder))
             {
-                outputDirBox.Text = folder;
+                panel.OutputDirBox.Text = folder;
             }
         };
 
-        modeBox.SelectionChanged += (_, _) => RefreshSummary();
+        panel.ModeComboBox.SelectionChanged += (_, _) => RefreshSummary();
         workingSegments.CollectionChanged += (_, _) => RefreshSummary();
-
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(useCurrentButton);
-        actions.Children.Add(addButton);
-        actions.Children.Add(removeButton);
-        actions.Children.Add(clearButton);
-
-        var outputActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        outputActions.Children.Add(outputDirBox);
-        outputActions.Children.Add(pickOutputButton);
-
-        var content = new StackPanel { Spacing = 10 };
-        content.Children.Add(new TextBlock
-        {
-            Text = $"源视频时长：{FormatTime(duration)}",
-            Foreground = Application.Current.Resources["MutedTextBrush"] as Microsoft.UI.Xaml.Media.Brush
-        });
-        content.Children.Add(modeBox);
-        content.Children.Add(startBox);
-        content.Children.Add(endBox);
-        content.Children.Add(actions);
-        content.Children.Add(listView);
-        content.Children.Add(outputActions);
-        content.Children.Add(summaryText);
         RefreshSummary();
 
         var dialog = new ContentDialog
         {
             Title = "片段方案",
-            Content = new ScrollViewer { Content = content, MaxHeight = 520 },
+            Content = panel,
             PrimaryButtonText = "保存方案",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
@@ -2308,10 +2275,10 @@ public sealed partial class MainPage : Page
             _clipSegments.Add(segment);
         }
 
-        _clipMode = (VideoClipMode?)((modeBox.SelectedItem as ComboBoxItem)?.Tag ?? VideoClipMode.Keep) ?? VideoClipMode.Keep;
-        _clipOutputDirectory = string.IsNullOrWhiteSpace(outputDirBox.Text)
+        _clipMode = (VideoClipMode?)((panel.ModeComboBox.SelectedItem as ComboBoxItem)?.Tag ?? VideoClipMode.Keep) ?? VideoClipMode.Keep;
+        _clipOutputDirectory = string.IsNullOrWhiteSpace(panel.OutputDirBox.Text)
                 ? Path.GetDirectoryName(media.FileSystemPath)
-            : outputDirBox.Text.Trim();
+            : panel.OutputDirBox.Text.Trim();
         _clipStatusMessage = normalized.Count == 0
             ? "片段方案已清空，导出时将使用当前入点/出点。"
             : $"片段方案已保存，共 {normalized.Count} 段。";
@@ -2584,43 +2551,15 @@ public sealed partial class MainPage : Page
     private async Task ShowTagEditorAsync(IReadOnlyList<MediaItemViewModel> items)
     {
         var isSingle = items.Count == 1;
-        var tagTextBox = new TextBox
-        {
-            AcceptsReturn = true,
-            MinHeight = 120,
-            TextWrapping = TextWrapping.Wrap,
-            PlaceholderText = "输入标签，支持逗号、分号或换行分隔",
-            Text = isSingle ? string.Join(", ", items[0].Tags) : string.Empty
-        };
-
-        var modeBox = new ComboBox
-        {
-            ItemsSource = new[]
-            {
-                new ComboBoxItem { Content = "覆盖标签", Tag = TagUpdateMode.Replace },
-                new ComboBoxItem { Content = "追加标签", Tag = TagUpdateMode.Append }
-            },
-            SelectedIndex = isSingle ? 0 : 1
-        };
-
-        var content = new StackPanel { Spacing = 10 };
-        content.Children.Add(new TextBlock
-        {
-            Text = isSingle ? "编辑当前媒体的标签。" : $"将对选中的 {items.Count} 个媒体统一编辑标签。",
-            TextWrapping = TextWrapping.Wrap
-        });
-
-        if (!isSingle)
-        {
-            content.Children.Add(modeBox);
-        }
-
-        content.Children.Add(tagTextBox);
+        var panel = new TagEditorPanel(
+            isSingle,
+            items.Count,
+            isSingle ? string.Join(", ", items[0].Tags) : string.Empty);
 
         var dialog = new ContentDialog
         {
             Title = isSingle ? "编辑标签" : "批量编辑标签",
-            Content = content,
+            Content = panel,
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
@@ -2633,10 +2572,10 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var tags = ParseTags(tagTextBox.Text);
+        var tags = ParseTags(panel.TagTextBox.Text);
         var mode = isSingle
             ? TagUpdateMode.Replace
-            : (TagUpdateMode?)((modeBox.SelectedItem as ComboBoxItem)?.Tag ?? TagUpdateMode.Append) ?? TagUpdateMode.Append;
+            : (TagUpdateMode?)((panel.ModeComboBox.SelectedItem as ComboBoxItem)?.Tag ?? TagUpdateMode.Append) ?? TagUpdateMode.Append;
         await ViewModel.UpdateTagsAsync(items, tags, mode);
     }
 
@@ -2647,7 +2586,8 @@ public sealed partial class MainPage : Page
             DisplayMemberPath = nameof(Playlist.Name),
             ItemsSource = ViewModel.Playlists,
             SelectedIndex = 0,
-            MinWidth = 260
+            MinWidth = 260,
+            Style = Application.Current.Resources["GlassComboBoxStyle"] as Style
         };
 
         var dialog = new ContentDialog
@@ -2992,65 +2932,9 @@ public sealed partial class MainPage : Page
 
     private async Task ShowSettingsDialogAsync()
     {
-        var dataDirTextBox = new TextBox
-        {
-            Text = ViewModel.ConfiguredDataDir ?? ViewModel.DataDir,
-            PlaceholderText = "留空时使用默认目录"
-        };
-        var passwordBox = new PasswordBox
-        {
-            Password = ViewModel.LockPassword,
-            PlaceholderText = "为受保护文件夹设置全局密码"
-        };
+        var panel = new SettingsPanel(ViewModel);
 
-        var portableToggle = new ToggleSwitch
-        {
-            Header = "便携模式（数据保存在程序目录 data）",
-            IsOn = ViewModel.PortableMode
-        };
-
-        var watchedFolders = new ObservableCollection<WatchedFolder>(
-            ViewModel.WatchedFolders.Select(item => new WatchedFolder
-            {
-                Path = item.Path,
-                Locked = item.Locked
-            }));
-        var watchedFoldersList = new ListView
-        {
-            ItemsSource = watchedFolders,
-            DisplayMemberPath = nameof(WatchedFolder.Path),
-            SelectionMode = ListViewSelectionMode.Single,
-            MaxHeight = 180
-        };
-        var watchedFolderStatusText = new TextBlock
-        {
-            Foreground = Application.Current.Resources["MutedTextBrush"] as Microsoft.UI.Xaml.Media.Brush,
-            TextWrapping = TextWrapping.Wrap
-        };
-        var validationText = new TextBlock
-        {
-            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Orange),
-            TextWrapping = TextWrapping.Wrap
-        };
-
-        void RefreshWatchedFolderStatus()
-        {
-            if (watchedFoldersList.SelectedItem is not WatchedFolder folder)
-            {
-                watchedFolderStatusText.Text = "选中文件夹后，可设置是否受密码保护。";
-                return;
-            }
-
-            watchedFolderStatusText.Text = folder.Locked
-                ? $"当前状态：受保护。运行时可在“锁定管理”里输入密码解锁 {Path.GetFileName(folder.Path)}。"
-                : "当前状态：未受保护。该文件夹中的媒体始终可见。";
-        }
-
-        watchedFoldersList.SelectionChanged += (_, _) => RefreshWatchedFolderStatus();
-        RefreshWatchedFolderStatus();
-
-        var chooseDataDirButton = new Button { Content = "选择数据目录" };
-        chooseDataDirButton.Click += async (_, _) =>
+        panel.ChooseDataDirButton.Click += async (_, _) =>
         {
             var window = App.MainWindow;
             if (window == null)
@@ -3061,12 +2945,11 @@ public sealed partial class MainPage : Page
             var folder = await PickerHelpers.PickFolderAsync(window);
             if (!string.IsNullOrWhiteSpace(folder))
             {
-                dataDirTextBox.Text = folder;
+                panel.SetDataDirectory(folder);
             }
         };
 
-        var addWatchedFolderButton = new Button { Content = "添加监控文件夹" };
-        addWatchedFolderButton.Click += async (_, _) =>
+        panel.AddWatchedFolderButton.Click += async (_, _) =>
         {
             var window = App.MainWindow;
             if (window == null)
@@ -3075,78 +2958,18 @@ public sealed partial class MainPage : Page
             }
 
             var folder = await PickerHelpers.PickFolderAsync(window);
-            if (!string.IsNullOrWhiteSpace(folder)
-                && !watchedFolders.Any(item => string.Equals(item.Path, folder, StringComparison.OrdinalIgnoreCase)))
+            if (!string.IsNullOrWhiteSpace(folder))
             {
-                watchedFolders.Add(new WatchedFolder { Path = folder, Locked = false });
-                RefreshWatchedFolderStatus();
+                panel.TryAddWatchedFolder(folder);
             }
         };
 
-        var removeWatchedFolderButton = new Button { Content = "移除选中" };
-        removeWatchedFolderButton.Click += (_, _) =>
-        {
-            if (watchedFoldersList.SelectedItem is WatchedFolder folder)
-            {
-                watchedFolders.Remove(folder);
-                RefreshWatchedFolderStatus();
-            }
-        };
-
-        var clearWatchedFoldersButton = new Button { Content = "清空监控列表" };
-        clearWatchedFoldersButton.Click += (_, _) =>
-        {
-            watchedFolders.Clear();
-            RefreshWatchedFolderStatus();
-        };
-
-        var protectFolderButton = new Button { Content = "设为受保护" };
-        protectFolderButton.Click += (_, _) =>
-        {
-            if (watchedFoldersList.SelectedItem is not WatchedFolder folder)
-            {
-                validationText.Text = "请先选择一个监控文件夹。";
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(passwordBox.Password))
-            {
-                validationText.Text = "要保护文件夹，请先填写全局密码。";
-                return;
-            }
-
-            folder.Locked = true;
-            watchedFoldersList.ItemsSource = null;
-            watchedFoldersList.ItemsSource = watchedFolders;
-            watchedFoldersList.DisplayMemberPath = nameof(WatchedFolder.Path);
-            watchedFoldersList.SelectedItem = folder;
-            validationText.Text = string.Empty;
-            RefreshWatchedFolderStatus();
-        };
-
-        var unprotectFolderButton = new Button { Content = "取消保护" };
-        unprotectFolderButton.Click += (_, _) =>
-        {
-            if (watchedFoldersList.SelectedItem is not WatchedFolder folder)
-            {
-                validationText.Text = "请先选择一个监控文件夹。";
-                return;
-            }
-
-            folder.Locked = false;
-            watchedFoldersList.ItemsSource = null;
-            watchedFoldersList.ItemsSource = watchedFolders;
-            watchedFoldersList.DisplayMemberPath = nameof(WatchedFolder.Path);
-            watchedFoldersList.SelectedItem = folder;
-            validationText.Text = string.Empty;
-            RefreshWatchedFolderStatus();
-        };
-
-        var clearCacheButton = new Button { Content = "清理缩略图缓存" };
-        clearCacheButton.Click += (_, _) => ViewModel.ClearThumbnailCache();
-
-        var resetLibraryButton = new Button { Content = "清理缓存并重置库" };
-        resetLibraryButton.Click += async (_, _) =>
+        panel.RemoveWatchedFolderButton.Click += (_, _) => panel.RemoveSelectedWatchedFolder();
+        panel.ClearWatchedFoldersButton.Click += (_, _) => panel.ClearWatchedFolders();
+        panel.ProtectFolderButton.Click += (_, _) => panel.ProtectSelectedFolder();
+        panel.UnprotectFolderButton.Click += (_, _) => panel.UnprotectSelectedFolder();
+        panel.ClearCacheButton.Click += (_, _) => ViewModel.ClearThumbnailCache();
+        panel.ResetLibraryButton.Click += async (_, _) =>
         {
             var confirmed = await ConfirmAsync("清理缓存并重置库", "这会清空媒体记录与标签，但保留播放列表名称。是否继续？", "继续");
             if (confirmed)
@@ -3154,50 +2977,20 @@ public sealed partial class MainPage : Page
                 await ViewModel.ResetLibraryAsync(false);
             }
         };
-
-        var clearAllButton = new Button { Content = "清理全部应用数据" };
-        clearAllButton.Click += async (_, _) =>
+        panel.ClearAllButton.Click += async (_, _) =>
         {
             var confirmed = await ConfirmAsync("清理全部应用数据", "这会清空媒体库、标签、播放列表和监控文件夹配置。是否继续？", "清空");
             if (confirmed)
             {
                 await ViewModel.ResetLibraryAsync(true);
-                watchedFolders.Clear();
+                panel.ClearWatchedFolders();
             }
         };
-
-        var actions = new StackPanel { Spacing = 8 };
-        actions.Children.Add(chooseDataDirButton);
-        actions.Children.Add(addWatchedFolderButton);
-        actions.Children.Add(removeWatchedFolderButton);
-        actions.Children.Add(clearWatchedFoldersButton);
-        actions.Children.Add(protectFolderButton);
-        actions.Children.Add(unprotectFolderButton);
-        actions.Children.Add(clearCacheButton);
-        actions.Children.Add(resetLibraryButton);
-        actions.Children.Add(clearAllButton);
-
-        var content = new StackPanel { Spacing = 12 };
-        content.Children.Add(portableToggle);
-        content.Children.Add(dataDirTextBox);
-        content.Children.Add(new TextBlock { Text = "全局锁定密码", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        content.Children.Add(passwordBox);
-        content.Children.Add(actions);
-        content.Children.Add(new TextBlock { Text = "监控文件夹", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        content.Children.Add(watchedFoldersList);
-        content.Children.Add(watchedFolderStatusText);
-        content.Children.Add(validationText);
-        content.Children.Add(new TextBlock
-        {
-            Text = "修改数据目录或便携模式后，建议重启应用以切换到新的数据库位置。受保护文件夹需要在“锁定管理”里输入密码后才会显示媒体。",
-            Foreground = Application.Current.Resources["MutedTextBrush"] as Microsoft.UI.Xaml.Media.Brush,
-            TextWrapping = TextWrapping.Wrap
-        });
 
         var dialog = new ContentDialog
         {
             Title = "设置",
-            Content = new ScrollViewer { Content = content, MaxHeight = 520 },
+            Content = panel,
             PrimaryButtonText = "保存",
             CloseButtonText = "关闭",
             DefaultButton = ContentDialogButton.Primary,
@@ -3210,20 +3003,22 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        if (watchedFolders.Any(folder => folder.Locked) && string.IsNullOrWhiteSpace(passwordBox.Password))
+        if (panel.HasProtectedFoldersWithoutPassword())
         {
             await ShowInfoDialogAsync("设置未保存", "存在受保护文件夹时必须设置全局密码。");
             return;
         }
 
-        ViewModel.SetPortableMode(portableToggle.IsOn);
-        if (!string.IsNullOrWhiteSpace(dataDirTextBox.Text))
+        ViewModel.SetThemeMode(panel.SelectedThemeMode);
+        App.ApplyThemeMode(panel.SelectedThemeMode);
+        ViewModel.SetPortableMode(panel.PortableModeEnabled);
+        if (!string.IsNullOrWhiteSpace(panel.DataDirectory))
         {
-            ViewModel.SetDataDir(dataDirTextBox.Text.Trim());
+            ViewModel.SetDataDir(panel.DataDirectory);
         }
 
-        ViewModel.SetLockPassword(passwordBox.Password);
-        ViewModel.UpdateWatchedFolders(watchedFolders);
+        ViewModel.SetLockPassword(panel.GlobalPassword);
+        ViewModel.UpdateWatchedFolders(panel.GetWatchedFolders());
         await ShowInfoDialogAsync("设置已保存", "设置已写入。若切换了数据目录或便携模式，重启后会使用新的数据位置。");
     }
 
@@ -3236,40 +3031,28 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var listView = new ListView
-        {
-            ItemsSource = protectedFolders,
-            DisplayMemberPath = nameof(WatchedFolder.Path),
-            SelectionMode = ListViewSelectionMode.Single,
-            SelectedIndex = 0,
-            MaxHeight = 220
-        };
-        var statusText = new TextBlock
-        {
-            Foreground = Application.Current.Resources["MutedTextBrush"] as Microsoft.UI.Xaml.Media.Brush,
-            TextWrapping = TextWrapping.Wrap
-        };
+        var panel = new LockManagerPanel(protectedFolders);
+        panel.FoldersListView.DisplayMemberPath = nameof(WatchedFolder.Path);
 
         void RefreshStatus()
         {
-            if (listView.SelectedItem is not WatchedFolder selected)
+            if (panel.SelectedFolder is not WatchedFolder selected)
             {
-                statusText.Text = "请选择一个受保护文件夹。";
+                panel.StatusText.Text = "请选择一个受保护文件夹。";
                 return;
             }
 
-            statusText.Text = ViewModel.IsFolderUnlocked(selected.Path)
+            panel.StatusText.Text = ViewModel.IsFolderUnlocked(selected.Path)
                 ? $"当前状态：已解锁。{Path.GetFileName(selected.Path)} 中的媒体现在可见。"
                 : $"当前状态：已锁定。输入全局密码后可解锁 {Path.GetFileName(selected.Path)}。";
         }
 
-        listView.SelectionChanged += (_, _) => RefreshStatus();
+        panel.FoldersListView.SelectionChanged += (_, _) => RefreshStatus();
         RefreshStatus();
 
-        var unlockButton = new Button { Content = "解锁选中" };
-        unlockButton.Click += async (_, _) =>
+        panel.UnlockButton.Click += async (_, _) =>
         {
-            if (listView.SelectedItem is not WatchedFolder selected)
+            if (panel.SelectedFolder is not WatchedFolder selected)
             {
                 return;
             }
@@ -3283,17 +3066,16 @@ public sealed partial class MainPage : Page
             var unlocked = await ViewModel.UnlockFolderAsync(selected.Path, password);
             if (!unlocked)
             {
-                statusText.Text = "密码错误，未能解锁文件夹。";
+                panel.StatusText.Text = "密码错误，未能解锁文件夹。";
                 return;
             }
 
             RefreshStatus();
         };
 
-        var relockButton = new Button { Content = "重新锁定选中" };
-        relockButton.Click += async (_, _) =>
+        panel.RelockButton.Click += async (_, _) =>
         {
-            if (listView.SelectedItem is not WatchedFolder selected)
+            if (panel.SelectedFolder is not WatchedFolder selected)
             {
                 return;
             }
@@ -3302,32 +3084,16 @@ public sealed partial class MainPage : Page
             RefreshStatus();
         };
 
-        var relockAllButton = new Button { Content = "全部重新锁定" };
-        relockAllButton.Click += async (_, _) =>
+        panel.RelockAllButton.Click += async (_, _) =>
         {
             await ViewModel.RelockAllFoldersAsync();
             RefreshStatus();
         };
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        actions.Children.Add(unlockButton);
-        actions.Children.Add(relockButton);
-        actions.Children.Add(relockAllButton);
-
-        var content = new StackPanel { Spacing = 12 };
-        content.Children.Add(new TextBlock
-        {
-            Text = "受保护文件夹默认隐藏。解锁只对当前会话生效，重新锁定后会再次隐藏。",
-            TextWrapping = TextWrapping.Wrap
-        });
-        content.Children.Add(listView);
-        content.Children.Add(statusText);
-        content.Children.Add(actions);
-
         var dialog = new ContentDialog
         {
             Title = "锁定管理",
-            Content = content,
+            Content = panel,
             CloseButtonText = "关闭",
             XamlRoot = XamlRoot
         };
@@ -3350,7 +3116,8 @@ public sealed partial class MainPage : Page
         {
             Text = initialValue,
             PlaceholderText = placeholder,
-            MinWidth = 280
+            MinWidth = 280,
+            Style = Application.Current.Resources["GlassTextBoxStyle"] as Style
         };
 
         var dialog = new ContentDialog
@@ -3372,7 +3139,8 @@ public sealed partial class MainPage : Page
         var passwordBox = new PasswordBox
         {
             PlaceholderText = placeholder,
-            MinWidth = 280
+            MinWidth = 280,
+            Style = Application.Current.Resources["GlassPasswordBoxStyle"] as Style
         };
 
         var dialog = new ContentDialog

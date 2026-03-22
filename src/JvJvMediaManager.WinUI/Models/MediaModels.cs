@@ -6,6 +6,13 @@ public enum MediaType
     Image
 }
 
+public enum AppThemeMode
+{
+    System,
+    Light,
+    Dark
+}
+
 public sealed class WatchedFolder
 {
     public string Path { get; set; } = string.Empty;

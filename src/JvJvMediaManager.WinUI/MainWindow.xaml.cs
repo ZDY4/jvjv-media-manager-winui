@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ConfigureWindowChrome();
         ConfigureInitialWindowBounds();
         try
         {
@@ -28,6 +29,44 @@ public partial class MainWindow : Window
         {
             RootFrame.Content = CreateStartupErrorView(ex);
         }
+    }
+
+    private void ConfigureWindowChrome()
+    {
+        try
+        {
+            SystemBackdrop = new MicaBackdrop();
+        }
+        catch
+        {
+            // Fallback to the app-defined background brush when Mica is unavailable.
+        }
+
+        var hWnd = WindowNative.GetWindowHandle(this);
+        var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
+        var appWindow = AppWindow.GetFromWindowId(windowId);
+
+        if (!AppWindowTitleBar.IsCustomizationSupported())
+        {
+            return;
+        }
+
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+
+        var titleBar = appWindow.TitleBar;
+        titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        titleBar.ButtonBackgroundColor = Colors.Transparent;
+        titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+        titleBar.ButtonForegroundColor = Colors.White;
+        titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(180, 225, 233, 240);
+        titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(48, 255, 255, 255);
+        titleBar.ButtonHoverForegroundColor = Colors.White;
+        titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(72, 255, 255, 255);
+        titleBar.ButtonPressedForegroundColor = Colors.White;
+
+        SyncTitleBarInsets(titleBar);
+        WindowTitleText.Text = Title;
     }
 
     private static UIElement CreateStartupErrorView(Exception ex)
@@ -102,5 +141,21 @@ public partial class MainWindow : Window
         var y = workArea.Y + Math.Max(0, (workArea.Height - height) / 2);
 
         appWindow.MoveAndResize(new RectInt32(x, y, width, height));
+    }
+    private void SyncTitleBarInsets(AppWindowTitleBar titleBar)
+    {
+        LeftInsetColumn.Width = new GridLength(Math.Max(0, titleBar.LeftInset));
+        RightInsetColumn.Width = new GridLength(Math.Max(0, titleBar.RightInset));
+    }
+
+    public void ApplyTheme(ElementTheme theme)
+    {
+        WindowRoot.RequestedTheme = theme;
+        RootFrame.RequestedTheme = theme;
+
+        if (RootFrame.Content is FrameworkElement element)
+        {
+            element.RequestedTheme = theme;
+        }
     }
 }

@@ -178,6 +178,8 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasLockPassword => !string.IsNullOrWhiteSpace(LockPassword);
 
+    public AppThemeMode ThemeMode => _settings.ThemeMode;
+
     public string CurrentScopeTitle => SelectedPlaylist?.Name ?? "全部媒体";
 
     public void SetDispatcher(DispatcherQueue dispatcher)
@@ -482,6 +484,12 @@ public sealed class MainViewModel : ObservableObject
         _settings.SetLockPassword(password.Trim());
         OnPropertyChanged(nameof(LockPassword));
         OnPropertyChanged(nameof(HasLockPassword));
+    }
+
+    public void SetThemeMode(AppThemeMode themeMode)
+    {
+        _settings.SetThemeMode(themeMode);
+        OnPropertyChanged(nameof(ThemeMode));
     }
 
     public IReadOnlyList<WatchedFolder> GetProtectedFolders()

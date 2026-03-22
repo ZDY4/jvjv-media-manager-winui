@@ -7,86 +7,342 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d"
-    Background="{ThemeResource SurfaceBrush}">
+    Background="Transparent">
 
     <Page.KeyboardAccelerators>
         <KeyboardAccelerator Key="Space" Invoked="PlayPauseKeyboardAccelerator_Invoked" />
         <KeyboardAccelerator Key="Delete" Invoked="DeleteKeyboardAccelerator_Invoked" />
     </Page.KeyboardAccelerators>
 
+    <Page.Transitions>
+        <TransitionCollection>
+            <NavigationThemeTransition />
+        </TransitionCollection>
+    </Page.Transitions>
+
     <Page.Resources>
         <AcrylicBrush x:Key="PlayerEdgeNavigationBrush"
-                      TintColor="#1C1C1C"
-                      TintOpacity="0.58"
-                      TintLuminosityOpacity="0.12"
-                      FallbackColor="#8C1C1C1C" />
+                      TintColor="{ThemeResource PlayerEdgeTintColor}"
+                      TintOpacity="0.72"
+                      TintLuminosityOpacity="0.18"
+                      FallbackColor="{ThemeResource PlayerEdgeFallbackColor}" />
+
+        <LinearGradientBrush x:Key="MediaThumbOverlayBrush" StartPoint="0.5,0" EndPoint="0.5,1">
+            <GradientStop Color="{ThemeResource ThumbOverlayStartColor}" Offset="0" />
+            <GradientStop Color="{ThemeResource ThumbOverlayMiddleColor}" Offset="0.65" />
+            <GradientStop Color="{ThemeResource ThumbOverlayEndColor}" Offset="1" />
+        </LinearGradientBrush>
+
+        <Style x:Key="MediaListItemContainerStyle" TargetType="ListViewItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
+        <Style x:Key="MediaGridItemContainerStyle" TargetType="GridViewItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,12,12" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
 
         <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
-            <Grid Padding="8" ColumnSpacing="12">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Border Width="72"
-                        Height="72"
-                        Background="#2D2D2D"
-                        CornerRadius="6">
-                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
-                </Border>
-                <StackPanel Grid.Column="1" Spacing="2">
-                    <TextBlock Text="{x:Bind FileName}" Foreground="{ThemeResource TextBrush}" FontSize="14" TextTrimming="CharacterEllipsis" />
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind ResolutionText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind DurationText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+            <Border
+                Padding="12"
+                Background="{ThemeResource MediaCardBrush}"
+                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="18">
+                <Grid ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="ListSelectionOverlay"
+                            Background="{ThemeResource SelectionOverlayBrush}"
+                            BorderBrush="{ThemeResource AccentBrush}"
+                            BorderThickness="1.5"
+                            CornerRadius="18"
+                            x:Load="{x:Bind IsSelected}" />
+
+                    <Border Width="86"
+                            Height="86"
+                            Background="{ThemeResource MediaCardPlaceholderBrush}"
+                            CornerRadius="14">
+                        <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1"
+                                Spacing="8"
+                                VerticalAlignment="Center">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="{x:Bind FileName}"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <TextBlock Text="{x:Bind SizeText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="12" />
+                                <TextBlock Text="{x:Bind ResolutionText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="12" />
+                                <TextBlock Text="{x:Bind DurationText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="12" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <Border HorizontalAlignment="Left"
+                                Padding="8,4"
+                                Background="{ThemeResource MediaTagChipBrush}"
+                                CornerRadius="999">
+                            <TextBlock Text="{x:Bind TagsText}"
+                                       Foreground="{ThemeResource AccentBrush}"
+                                       FontSize="11"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Border>
                     </StackPanel>
-                    <TextBlock Text="{x:Bind TagsText}" Foreground="#60CDFF" FontSize="11" TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-            </Grid>
+                </Grid>
+            </Border>
         </DataTemplate>
 
         <DataTemplate x:Key="GridItemTemplate" x:DataType="viewModels:MediaItemViewModel">
-            <Grid Width="{Binding ElementName=GridView, Path=Tag}" Height="{Binding ElementName=GridView, Path=Tag}">
-                <Border CornerRadius="8" Background="#2D2D2D">
-                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
-                </Border>
-                <Border Background="#99000000" VerticalAlignment="Bottom" CornerRadius="0,0,8,8" Padding="6">
-                    <StackPanel Spacing="2">
-                        <TextBlock Text="{x:Bind FileName}" Foreground="{ThemeResource TextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <TextBlock Text="{x:Bind SizeText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
-                            <TextBlock Text="{x:Bind ResolutionText}" Foreground="{ThemeResource MutedTextBrush}" FontSize="10" />
+            <Border
+                Width="{Binding ElementName=GridView, Path=Tag}"
+                Height="{Binding ElementName=GridView, Path=Tag}"
+                Background="{ThemeResource MediaCardBrush}"
+                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="20">
+                <Grid>
+                    <Border x:Name="GridSelectionOverlay"
+                            Margin="0"
+                            Background="{ThemeResource SelectionOverlayBrush}"
+                            BorderBrush="{ThemeResource AccentBrush}"
+                            BorderThickness="1.5"
+                            CornerRadius="20"
+                            x:Load="{x:Bind IsSelected}" />
+                    <Border Margin="10"
+                            CornerRadius="14"
+                            Background="{ThemeResource MediaCardPlaceholderBrush}">
+                        <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                    </Border>
+
+                    <Border Margin="10"
+                            VerticalAlignment="Bottom"
+                            Background="{StaticResource MediaThumbOverlayBrush}"
+                            CornerRadius="0,0,14,14"
+                            Padding="12,10">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="{x:Bind FileName}"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{x:Bind SizeText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="10" />
+                                <TextBlock Text="{x:Bind ResolutionText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="10" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind TagsText}"
+                                       Foreground="{ThemeResource AccentBrush}"
+                                       FontSize="10"
+                                       TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                        <TextBlock Text="{x:Bind TagsText}" Foreground="#60CDFF" FontSize="10" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                </Border>
-            </Grid>
+                    </Border>
+                </Grid>
+            </Border>
         </DataTemplate>
 
         <DataTemplate x:Key="PlaylistTemplate" x:DataType="models:Playlist">
-            <Grid Padding="8,6">
-                <TextBlock Text="{x:Bind Name}" Foreground="{ThemeResource TextBrush}" TextTrimming="CharacterEllipsis" />
-            </Grid>
+            <Border
+                Padding="10,8"
+                Background="{ThemeResource PlaylistItemBrush}"
+                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="14">
+                <TextBlock Text="{x:Bind Name}"
+                           Foreground="{ThemeResource TextBrush}"
+                           TextTrimming="CharacterEllipsis" />
+            </Border>
         </DataTemplate>
     </Page.Resources>
 
-    <Grid x:Name="RootLayout" PointerMoved="RootLayout_PointerMoved">
+    <Grid x:Name="RootLayout"
+          Padding="{ThemeResource PageOuterPadding}"
+          PointerMoved="RootLayout_PointerMoved"
+          RowSpacing="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <CommandBar Grid.Row="0" Background="{ThemeResource SurfaceAltBrush}" DefaultLabelPosition="Collapsed">
-            <AppBarButton Icon="Add" Label="添加文件" Click="AddFiles_Click" />
-            <AppBarButton Icon="Folder" Label="添加文件夹" Click="AddFolder_Click" />
-            <AppBarButton Icon="Sync" Label="刷新" Click="Refresh_Click" />
-            <AppBarSeparator />
-            <AppBarButton Icon="Tag" Label="编辑标签" Click="EditTags_Click" />
-            <AppBarButton Icon="Library" Label="加入播放列表" Click="AddToPlaylist_Click" />
-            <AppBarButton Label="锁定管理" Click="FolderLock_Click" />
-            <AppBarSeparator />
-            <AppBarButton Icon="Setting" Label="设置" Click="Settings_Click" />
-        </CommandBar>
+        <Border Grid.Row="0"
+                Padding="20"
+                Background="{ThemeResource HeroPanelBrush}"
+                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="28">
+            <Border.Transitions>
+                <TransitionCollection>
+                    <EntranceThemeTransition FromVerticalOffset="20" />
+                </TransitionCollection>
+            </Border.Transitions>
+            <Grid RowSpacing="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid ColumnSpacing="18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="你的媒体库，原生而流畅"
+                                   Foreground="{ThemeResource TextBrush}"
+                                   FontSize="28"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="用 Windows 原生界面浏览、播放、整理与剪辑媒体内容。"
+                                   Foreground="{ThemeResource MutedTextBrush}"
+                                   FontSize="14"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                Spacing="10"
+                                VerticalAlignment="Center">
+                        <Button Click="AddFiles_Click"
+                                Style="{StaticResource PrimaryToolbarButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE8B9;" />
+                                <TextBlock Text="添加文件" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button Click="AddFolder_Click"
+                                Style="{StaticResource SecondaryToolbarButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE8B7;" />
+                                <TextBlock Text="添加文件夹" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button Click="Refresh_Click"
+                                Style="{StaticResource SecondaryToolbarButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE72C;" />
+                                <TextBlock Text="刷新" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox x:Name="SearchBox"
+                             PlaceholderText="搜索文件名或输入 #标签"
+                             Style="{StaticResource GlassTextBoxStyle}"
+                             TextChanged="SearchBox_TextChanged"
+                             KeyDown="SearchBox_KeyDown" />
+
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                Spacing="8">
+                        <Button Click="EditTags_Click"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="编辑标签">
+                            <FontIcon Glyph="&#xE8EC;" />
+                        </Button>
+                        <Button Click="AddToPlaylist_Click"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="加入播放列表">
+                            <FontIcon Glyph="&#xE142;" />
+                        </Button>
+                        <Button Click="FolderLock_Click"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="锁定管理">
+                            <FontIcon Glyph="&#xE72E;" />
+                        </Button>
+                        <Button Click="Settings_Click"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="设置">
+                            <FontIcon Glyph="&#xE713;" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="2" ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ItemsControl x:Name="SelectedTagsControl"
+                                  Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <Button Click="SelectedTagRemove_Click"
+                                        Tag="{Binding}"
+                                        Margin="0,0,8,8"
+                                        Padding="10,4"
+                                        Background="{ThemeResource FilterChipBrush}"
+                                        Foreground="{ThemeResource AccentBrush}"
+                                        BorderThickness="0"
+                                        CornerRadius="999"
+                                        Content="{Binding}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapGrid />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                Spacing="8"
+                                VerticalAlignment="Top">
+                        <Border Padding="10,5"
+                                Background="{ThemeResource ScopeBadgeBrush}"
+                                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                BorderThickness="1"
+                                CornerRadius="999">
+                            <TextBlock Text="{Binding CurrentScopeTitle}"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="12"
+                                       FontWeight="SemiBold" />
+                        </Border>
+                        <Border Padding="10,5"
+                                Background="{ThemeResource StatusBadgeBrush}"
+                                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                BorderThickness="1"
+                                CornerRadius="999">
+                            <TextBlock Text="{Binding StatusMessage}"
+                                       Foreground="{ThemeResource MutedTextBrush}"
+                                       FontSize="12"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
 
         <SplitView x:Name="LibrarySplitView"
                    Grid.Row="1"
@@ -94,15 +350,20 @@
                    IsPaneOpen="True"
                    CompactPaneLength="0"
                    OpenPaneLength="420"
-                   Background="{ThemeResource SurfaceBrush}">
+                   Background="Transparent">
             <SplitView.Pane>
-                <Grid x:Name="LibraryPaneRoot" Background="{ThemeResource SurfaceAltBrush}">
+                <Grid x:Name="LibraryPaneRoot"
+                      Background="Transparent">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="10" />
                     </Grid.ColumnDefinitions>
 
-                    <Grid Grid.Column="0" AllowDrop="True" DragOver="LibraryPanel_DragOver" Drop="LibraryPanel_Drop">
+                    <Grid Grid.Column="0"
+                          AllowDrop="True"
+                          DragOver="LibraryPanel_DragOver"
+                          Drop="LibraryPanel_Drop"
+                          RowSpacing="16">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -111,130 +372,234 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <Grid Grid.Row="0" Padding="12,12,12,0" ColumnSpacing="10">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                        <Border Grid.Row="0"
+                                Style="{StaticResource SectionCardStyle}">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.Column="0" Spacing="8">
-                                <TextBox x:Name="SearchBox"
-                                         PlaceholderText="搜索文件名或输入 #标签"
-                                         TextChanged="SearchBox_TextChanged"
-                                         KeyDown="SearchBox_KeyDown" />
-                                <TextBlock Text="{Binding CurrentScopeTitle}" Foreground="{ThemeResource TextBrush}" FontSize="13" FontWeight="SemiBold" />
-                                <ItemsControl x:Name="SelectedTagsControl" Visibility="Collapsed">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="x:String">
-                                            <Button Click="SelectedTagRemove_Click"
-                                                    Tag="{Binding}"
-                                                    Margin="0,0,6,6"
-                                                    Padding="8,3"
-                                                    Background="#1F005FB8"
-                                                    Foreground="#60CDFF"
-                                                    BorderThickness="0"
-                                                    CornerRadius="6"
-                                                    Content="{Binding}" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapGrid />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                </ItemsControl>
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="媒体库"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="18"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding CurrentScopeTitle}"
+                                               Foreground="{ThemeResource MutedTextBrush}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="左侧负责整理与筛选，右侧保持沉浸式浏览与播放。"
+                                               Foreground="{ThemeResource SubtleTextBrush}"
+                                               FontSize="12"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+
+                                <Button x:Name="LibraryPinButton"
+                                        Grid.Column="1"
+                                        Click="LibraryPinButton_Click"
+                                        Style="{StaticResource PanelIconButtonStyle}"
+                                        ToolTipService.ToolTip="固定媒体库">
+                                    <SymbolIcon Symbol="Pin" />
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="1"
+                                Style="{StaticResource GlassPanelStyle}">
+                            <Border.Transitions>
+                                <TransitionCollection>
+                                    <EntranceThemeTransition FromVerticalOffset="28" />
+                                </TransitionCollection>
+                            </Border.Transitions>
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="扫描状态"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <ProgressBar x:Name="ScanProgressBar"
+                                             Minimum="0"
+                                             Maximum="{Binding ScanProgressMaximum}"
+                                             Value="{Binding ScanProgressValue}" />
+                                <TextBlock x:Name="ScanPathText"
+                                           Text="{Binding ScanCurrentPath}"
+                                           Foreground="{ThemeResource SubtleTextBrush}"
+                                           FontSize="11"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap" />
                             </StackPanel>
+                        </Border>
 
-                            <Button x:Name="LibraryPinButton"
-                                    Grid.Column="1"
-                                    Width="36"
-                                    Height="36"
-                                    Margin="0,0,0,8"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Top"
-                                    Click="LibraryPinButton_Click"
-                                    ToolTipService.ToolTip="固定媒体库">
-                                <SymbolIcon Symbol="Pin" />
-                            </Button>
-                        </Grid>
+                        <Border Grid.Row="2"
+                                Style="{StaticResource SectionCardStyle}">
+                            <Border.Transitions>
+                                <TransitionCollection>
+                                    <EntranceThemeTransition FromVerticalOffset="34" />
+                                </TransitionCollection>
+                            </Border.Transitions>
+                            <StackPanel Spacing="12">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Row="1" Padding="12,0,12,12" Spacing="6">
-                            <ProgressBar x:Name="ScanProgressBar"
-                                         Minimum="0"
-                                         Maximum="{Binding ScanProgressMaximum}"
-                                         Value="{Binding ScanProgressValue}" />
-                            <TextBlock x:Name="ScanPathText"
-                                       Text="{Binding ScanCurrentPath}"
-                                       Foreground="{ThemeResource MutedTextBrush}"
-                                       FontSize="11"
-                                       TextTrimming="CharacterEllipsis" />
-                            <TextBlock Foreground="{ThemeResource MutedTextBrush}" Text="{Binding StatusMessage}" />
-                        </StackPanel>
+                                    <TextBlock Text="播放列表"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="14"
+                                               FontWeight="SemiBold" />
+                                    <Button Content="新建列表"
+                                            Click="CreatePlaylist_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                </Grid>
 
-                        <StackPanel Grid.Row="2" Padding="12,0,12,12" Spacing="8">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button Content="全部媒体" Click="AllMedia_Click" />
-                                <Button Content="新建列表" Click="CreatePlaylist_Click" />
-                                <Button Content="重命名" Click="RenamePlaylist_Click" />
-                                <Button Content="删除" Click="DeletePlaylist_Click" />
+                                <StackPanel Orientation="Horizontal"
+                                            Spacing="8">
+                                    <Button Content="全部媒体"
+                                            Click="AllMedia_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                    <Button Content="重命名"
+                                            Click="RenamePlaylist_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                    <Button Content="删除"
+                                            Click="DeletePlaylist_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                </StackPanel>
+
+                                <ListView x:Name="PlaylistListView"
+                                          ItemsSource="{Binding Playlists}"
+                                          ItemTemplate="{StaticResource PlaylistTemplate}"
+                                          SelectionMode="Single"
+                                          MaxHeight="220"
+                                          SelectionChanged="PlaylistListView_SelectionChanged"
+                                          CanDragItems="True"
+                                          CanReorderItems="True"
+                                          AllowDrop="True"
+                                          DragItemsCompleted="PlaylistListView_DragItemsCompleted">
+                                    <ListView.ItemContainerTransitions>
+                                        <TransitionCollection>
+                                            <AddDeleteThemeTransition />
+                                            <RepositionThemeTransition />
+                                        </TransitionCollection>
+                                    </ListView.ItemContainerTransitions>
+                                </ListView>
                             </StackPanel>
-                            <ListView x:Name="PlaylistListView"
-                                      ItemsSource="{Binding Playlists}"
-                                      ItemTemplate="{StaticResource PlaylistTemplate}"
-                                      SelectionMode="Single"
-                                      MaxHeight="164"
-                                      SelectionChanged="PlaylistListView_SelectionChanged"
-                                      CanDragItems="True"
-                                      CanReorderItems="True"
-                                      AllowDrop="True"
-                                      DragItemsCompleted="PlaylistListView_DragItemsCompleted" />
-                        </StackPanel>
+                        </Border>
 
-                        <StackPanel Grid.Row="3" Orientation="Horizontal" Padding="12,0,12,12" Spacing="8">
-                            <Button x:Name="ViewModeToggleButton" Content="切换到网格" Click="ToggleViewMode_Click" />
-                            <Button Content="排序" Click="Sort_Click" />
-                        </StackPanel>
+                        <Border Grid.Row="3"
+                                Style="{StaticResource GlassPanelStyle}">
+                            <Border.Transitions>
+                                <TransitionCollection>
+                                    <EntranceThemeTransition FromVerticalOffset="40" />
+                                </TransitionCollection>
+                            </Border.Transitions>
+                            <StackPanel Spacing="12">
+                                <TextBlock Text="视图与排序"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <StackPanel Orientation="Horizontal"
+                                            Spacing="8">
+                                    <Button x:Name="ViewModeToggleButton"
+                                            Content="切换到网格"
+                                            Click="ToggleViewMode_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                    <Button Content="排序"
+                                            Click="Sort_Click"
+                                            Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
 
-                        <Grid Grid.Row="4">
-                            <ListView x:Name="ListView"
-                                      ItemsSource="{Binding FilteredMediaItems}"
-                                      ItemTemplate="{StaticResource ListItemTemplate}"
-                                      IncrementalLoadingTrigger="Edge"
-                                      IncrementalLoadingThreshold="2"
-                                      DataFetchSize="1"
-                                      SelectionMode="Extended"
-                                      IsItemClickEnabled="True"
-                                      ItemClick="Media_ItemClick"
-                                      ContainerContentChanging="Media_ContainerContentChanging"
-                                      SelectionChanged="Media_SelectionChanged"
-                                      RightTapped="MediaView_RightTapped" />
+                        <Border Grid.Row="4"
+                                Style="{StaticResource SectionCardStyle}"
+                                Padding="0">
+                            <Border.Transitions>
+                                <TransitionCollection>
+                                    <EntranceThemeTransition FromVerticalOffset="46" />
+                                </TransitionCollection>
+                            </Border.Transitions>
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
 
-                            <GridView x:Name="GridView"
-                                      Tag="140"
-                                      Visibility="Collapsed"
-                                      ItemsSource="{Binding FilteredMediaItems}"
-                                      ItemTemplate="{StaticResource GridItemTemplate}"
-                                      IncrementalLoadingTrigger="Edge"
-                                      IncrementalLoadingThreshold="2"
-                                      DataFetchSize="1"
-                                      SelectionMode="Extended"
-                                      IsItemClickEnabled="True"
-                                      ItemClick="Media_ItemClick"
-                                      ContainerContentChanging="Media_ContainerContentChanging"
-                                      SelectionChanged="Media_SelectionChanged"
-                                      RightTapped="MediaView_RightTapped">
-                                <GridView.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <ItemsWrapGrid Orientation="Horizontal" ItemWidth="140" ItemHeight="140" />
-                                    </ItemsPanelTemplate>
-                                </GridView.ItemsPanel>
-                            </GridView>
-                        </Grid>
+                                <Grid Padding="16,14,16,12">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="内容库"
+                                                   Foreground="{ThemeResource TextBrush}"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="支持列表与网格视图，滚动加载大批量媒体。"
+                                                   Foreground="{ThemeResource SubtleTextBrush}"
+                                                   FontSize="12" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid Grid.Row="1"
+                                      Padding="8,0,8,8">
+                                    <ListView x:Name="ListView"
+                                              Background="Transparent"
+                                              ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
+                                              ItemsSource="{Binding FilteredMediaItems}"
+                                              ItemTemplate="{StaticResource ListItemTemplate}"
+                                              IncrementalLoadingTrigger="Edge"
+                                              IncrementalLoadingThreshold="2"
+                                              DataFetchSize="1"
+                                              SelectionMode="Extended"
+                                              IsItemClickEnabled="True"
+                                              ItemClick="Media_ItemClick"
+                                              ContainerContentChanging="Media_ContainerContentChanging"
+                                              SelectionChanged="Media_SelectionChanged"
+                                              RightTapped="MediaView_RightTapped">
+                                        <ListView.ItemContainerTransitions>
+                                            <TransitionCollection>
+                                                <AddDeleteThemeTransition />
+                                                <RepositionThemeTransition />
+                                            </TransitionCollection>
+                                        </ListView.ItemContainerTransitions>
+                                    </ListView>
+
+                                    <GridView x:Name="GridView"
+                                              Tag="140"
+                                              Visibility="Collapsed"
+                                              Background="Transparent"
+                                              ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
+                                              ItemsSource="{Binding FilteredMediaItems}"
+                                              ItemTemplate="{StaticResource GridItemTemplate}"
+                                              IncrementalLoadingTrigger="Edge"
+                                              IncrementalLoadingThreshold="2"
+                                              DataFetchSize="1"
+                                              SelectionMode="Extended"
+                                              IsItemClickEnabled="True"
+                                              ItemClick="Media_ItemClick"
+                                              ContainerContentChanging="Media_ContainerContentChanging"
+                                              SelectionChanged="Media_SelectionChanged"
+                                              RightTapped="MediaView_RightTapped">
+                                        <GridView.ItemContainerTransitions>
+                                            <TransitionCollection>
+                                                <AddDeleteThemeTransition />
+                                                <RepositionThemeTransition />
+                                            </TransitionCollection>
+                                        </GridView.ItemContainerTransitions>
+                                        <GridView.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <ItemsWrapGrid Orientation="Horizontal" ItemWidth="140" ItemHeight="140" />
+                                            </ItemsPanelTemplate>
+                                        </GridView.ItemsPanel>
+                                    </GridView>
+                                </Grid>
+                            </Grid>
+                        </Border>
                     </Grid>
 
                     <Thumb x:Name="LibraryPaneResizer"
                            Grid.Column="1"
-                           Background="#18FFFFFF"
+                           Background="{ThemeResource ResizerBrush}"
                            DragStarted="LibraryPaneResizer_DragStarted"
                            DragDelta="LibraryPaneResizer_DragDelta"
                            DragCompleted="LibraryPaneResizer_DragCompleted"
@@ -243,202 +608,401 @@
             </SplitView.Pane>
 
             <SplitView.Content>
-                <Grid x:Name="PlayerRoot" Background="#202020" PointerMoved="PlayerRoot_PointerMoved" PointerPressed="PlayerRoot_PointerPressed" PointerExited="PlayerRoot_PointerExited">
-                    <Grid x:Name="EmptyState" Visibility="Visible">
-                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-                            <TextBlock Text="选择一个媒体文件开始播放" Foreground="{ThemeResource TextBrush}" FontSize="18" />
-                            <TextBlock Text="拖拽文件或文件夹到左侧即可导入" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                            <TextBlock Text="PageUp / PageDown 切换上一个/下一个" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                        </StackPanel>
-                    </Grid>
+                <Border Margin="16,0,0,0"
+                        Background="{ThemeResource PlayerSurfaceBrush}"
+                        BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                        BorderThickness="1"
+                        CornerRadius="28">
+                    <Border.Transitions>
+                        <TransitionCollection>
+                            <EntranceThemeTransition FromVerticalOffset="20" />
+                        </TransitionCollection>
+                    </Border.Transitions>
+                    <Grid x:Name="PlayerRoot"
+                          Background="Transparent"
+                          PointerMoved="PlayerRoot_PointerMoved"
+                          PointerPressed="PlayerRoot_PointerPressed"
+                          PointerExited="PlayerRoot_PointerExited">
+                        <Rectangle Fill="{ThemeResource WindowAmbientBrush}"
+                                   IsHitTestVisible="False" />
 
-                    <MediaPlayerElement x:Name="VideoPlayer" AreTransportControlsEnabled="False" AutoPlay="True" Visibility="Collapsed" Stretch="Uniform" />
-                    <ScrollViewer x:Name="ImageScrollViewer"
-                                  Visibility="Collapsed"
-                                  ZoomMode="Enabled"
-                                  HorizontalScrollMode="Enabled"
-                                  VerticalScrollMode="Enabled"
-                                  MinZoomFactor="0.2"
-                                  MaxZoomFactor="6">
-                        <Border HorizontalAlignment="Center"
-                                VerticalAlignment="Center">
-                            <Image x:Name="PreviewImageElement"
-                                   Stretch="Uniform"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   ImageOpened="PreviewImageElement_ImageOpened" />
-                        </Border>
-                    </ScrollViewer>
-
-                    <Grid x:Name="PlayerOverlay">
-                        <Grid>
-                            <Border x:Name="PreviousMediaHotspot"
-                                    HorizontalAlignment="Left"
-                                    Width="96"
-                                    Background="Transparent"
-                                    Visibility="Collapsed"
-                                    PointerEntered="PreviousMediaHotspot_PointerEntered"
-                                    Tapped="PreviousMediaHotspot_Tapped">
-                                <Grid>
-                                    <Border x:Name="PreviousMediaCue"
-                                            Width="56"
-                                            Height="176"
-                                            Margin="14,0,0,0"
-                                            HorizontalAlignment="Left"
-                                            VerticalAlignment="Center"
-                                            Background="{StaticResource PlayerEdgeNavigationBrush}"
-                                            CornerRadius="28"
-                                            Opacity="0"
-                                            IsHitTestVisible="False">
-                                        <SymbolIcon Symbol="Back"
-                                                    Foreground="{ThemeResource TextBrush}"
-                                                    HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center" />
+                        <Grid x:Name="EmptyState"
+                              Visibility="Visible">
+                            <Border HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Padding="28"
+                                    Background="{ThemeResource EmptyStateCardBrush}"
+                                    BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="24">
+                                <StackPanel HorizontalAlignment="Center"
+                                            Spacing="10">
+                                    <Border Width="64"
+                                            Height="64"
+                                            Background="{ThemeResource EmptyStateIconBrush}"
+                                            CornerRadius="32"
+                                            HorizontalAlignment="Center">
+                                        <FontIcon Glyph="&#xE8B9;"
+                                                  FontSize="26"
+                                                  Foreground="{ThemeResource AccentBrush}"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
                                     </Border>
-                                </Grid>
-                            </Border>
-
-                            <Border x:Name="NextMediaHotspot"
-                                    HorizontalAlignment="Right"
-                                    Width="96"
-                                    Background="Transparent"
-                                    Visibility="Collapsed"
-                                    PointerEntered="NextMediaHotspot_PointerEntered"
-                                    Tapped="NextMediaHotspot_Tapped">
-                                <Grid>
-                                    <Border x:Name="NextMediaCue"
-                                            Width="56"
-                                            Height="176"
-                                            Margin="0,0,14,0"
-                                            HorizontalAlignment="Right"
-                                            VerticalAlignment="Center"
-                                            Background="{StaticResource PlayerEdgeNavigationBrush}"
-                                            CornerRadius="28"
-                                            Opacity="0"
-                                            IsHitTestVisible="False">
-                                        <SymbolIcon Symbol="Forward"
-                                                    Foreground="{ThemeResource TextBrush}"
-                                                    HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center" />
-                                    </Border>
-                                </Grid>
+                                    <TextBlock Text="选择一个媒体文件开始播放"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="22"
+                                               FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" />
+                                    <TextBlock Text="拖拽文件或文件夹到左侧即可导入，也可以在顶部快速添加。"
+                                               Foreground="{ThemeResource MutedTextBrush}"
+                                               FontSize="13"
+                                               HorizontalAlignment="Center"
+                                               TextAlignment="Center"
+                                               TextWrapping="Wrap" />
+                                    <TextBlock Text="PageUp / PageDown 切换上一个/下一个"
+                                               Foreground="{ThemeResource SubtleTextBrush}"
+                                               FontSize="12"
+                                               HorizontalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal"
+                                                HorizontalAlignment="Center"
+                                                Spacing="8"
+                                                Margin="0,6,0,0">
+                                        <Border Padding="10,5"
+                                                Background="{ThemeResource FilterChipBrush}"
+                                                CornerRadius="999">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <FontIcon Glyph="&#xE8B7;"
+                                                          FontSize="11"
+                                                          Foreground="{ThemeResource AccentBrush}" />
+                                                <TextBlock Text="导入"
+                                                           Foreground="{ThemeResource AccentBrush}"
+                                                           FontSize="11" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Padding="10,5"
+                                                Background="{ThemeResource FilterChipBrush}"
+                                                CornerRadius="999">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <FontIcon Glyph="&#xE71D;"
+                                                          FontSize="11"
+                                                          Foreground="{ThemeResource AccentBrush}" />
+                                                <TextBlock Text="筛选"
+                                                           Foreground="{ThemeResource AccentBrush}"
+                                                           FontSize="11" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Padding="10,5"
+                                                Background="{ThemeResource FilterChipBrush}"
+                                                CornerRadius="999">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <FontIcon Glyph="&#xE7C8;"
+                                                          FontSize="11"
+                                                          Foreground="{ThemeResource AccentBrush}" />
+                                                <TextBlock Text="剪辑"
+                                                           Foreground="{ThemeResource AccentBrush}"
+                                                           FontSize="11" />
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </StackPanel>
                             </Border>
                         </Grid>
 
-                        <Border x:Name="ImageZoomBadge"
-                                HorizontalAlignment="Right"
-                                VerticalAlignment="Top"
-                                Margin="16"
-                                Padding="10,6"
-                                Background="#99000000"
-                                CornerRadius="999"
-                                Visibility="Collapsed"
-                                IsHitTestVisible="False">
-                            <TextBlock x:Name="ImageZoomText"
-                                       Text="100%"
-                                       Foreground="{ThemeResource TextBrush}"
-                                       FontSize="12"
-                                       FontWeight="SemiBold" />
-                        </Border>
+                        <MediaPlayerElement x:Name="VideoPlayer"
+                                            AreTransportControlsEnabled="False"
+                                            AutoPlay="True"
+                                            Visibility="Collapsed"
+                                            Stretch="Uniform" />
 
-                        <Grid x:Name="ControlBar"
-                              VerticalAlignment="Bottom"
-                              Margin="16"
-                              Padding="12"
-                              Background="#99000000"
-                              CornerRadius="10"
-                              PointerMoved="ControlBar_PointerMoved">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
+                        <ScrollViewer x:Name="ImageScrollViewer"
+                                      Visibility="Collapsed"
+                                      ZoomMode="Enabled"
+                                      HorizontalScrollMode="Enabled"
+                                      VerticalScrollMode="Enabled"
+                                      MinZoomFactor="0.2"
+                                      MaxZoomFactor="6">
+                            <Border HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                                <Image x:Name="PreviewImageElement"
+                                       Stretch="Uniform"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       ImageOpened="PreviewImageElement_ImageOpened" />
+                            </Border>
+                        </ScrollViewer>
 
-                            <Slider x:Name="ProgressSlider"
-                                    Grid.Row="0"
-                                    Minimum="0"
-                                    Maximum="1"
-                                    Value="0"
-                                    SmallChange="1"
-                                    LargeChange="10"
-                                    ValueChanged="ProgressSlider_ValueChanged" />
-
-                            <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,8,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-
-                                <AppBarButton x:Name="PlayPauseButton" Grid.Column="0" Click="PlayPause_Click">
-                                    <AppBarButton.Icon>
-                                        <SymbolIcon Symbol="Play" />
-                                    </AppBarButton.Icon>
-                                </AppBarButton>
-
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                    <TextBlock x:Name="CurrentTimeText" Text="0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                    <TextBlock Text="/" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                                    <TextBlock x:Name="TotalTimeText" Text="0:00" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
+                        <Grid x:Name="PlayerOverlay">
+                            <Border HorizontalAlignment="Left"
+                                    VerticalAlignment="Top"
+                                    Margin="18"
+                                    Padding="12,10"
+                                    Background="{ThemeResource PlayerInfoBrush}"
+                                    BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="18"
+                                    IsHitTestVisible="False">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Text="{Binding SelectedMedia.FileName}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="14"
+                                               FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding SelectedMedia.ResolutionText}"
+                                               Foreground="{ThemeResource MutedTextBrush}"
+                                               FontSize="12" />
                                 </StackPanel>
+                            </Border>
 
-                                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                    <TextBlock Text="音量" Foreground="{ThemeResource MutedTextBrush}" FontSize="12" />
-                                    <Slider x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="1" Value="0.8" ValueChanged="VolumeSlider_ValueChanged" />
-                                </StackPanel>
+                            <Grid>
+                                <Border x:Name="PreviousMediaHotspot"
+                                        HorizontalAlignment="Left"
+                                        Width="96"
+                                        Background="Transparent"
+                                        Visibility="Collapsed"
+                                        PointerEntered="PreviousMediaHotspot_PointerEntered"
+                                        Tapped="PreviousMediaHotspot_Tapped">
+                                    <Grid>
+                                        <Border x:Name="PreviousMediaCue"
+                                                Width="60"
+                                                Height="188"
+                                                Margin="16,0,0,0"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Center"
+                                                Background="{StaticResource PlayerEdgeNavigationBrush}"
+                                                BorderBrush="{ThemeResource SurfaceStrokeStrongBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="30"
+                                                Opacity="0"
+                                                IsHitTestVisible="False">
+                                            <SymbolIcon Symbol="Back"
+                                                        Foreground="{ThemeResource TextBrush}"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
 
-                                <Button x:Name="PlaybackModeButton" Grid.Column="4" Content="列表循环" Click="PlaybackMode_Click" />
-                                <Button x:Name="FullScreenButton" Grid.Column="5" Content="全屏" Click="FullScreen_Click" />
+                                <Border x:Name="NextMediaHotspot"
+                                        HorizontalAlignment="Right"
+                                        Width="96"
+                                        Background="Transparent"
+                                        Visibility="Collapsed"
+                                        PointerEntered="NextMediaHotspot_PointerEntered"
+                                        Tapped="NextMediaHotspot_Tapped">
+                                    <Grid>
+                                        <Border x:Name="NextMediaCue"
+                                                Width="60"
+                                                Height="188"
+                                                Margin="0,0,16,0"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center"
+                                                Background="{StaticResource PlayerEdgeNavigationBrush}"
+                                                BorderBrush="{ThemeResource SurfaceStrokeStrongBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="30"
+                                                Opacity="0"
+                                                IsHitTestVisible="False">
+                                            <SymbolIcon Symbol="Forward"
+                                                        Foreground="{ThemeResource TextBrush}"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
                             </Grid>
 
-                            <Border x:Name="ClipBar"
-                                    Grid.Row="2"
-                                    Margin="0,10,0,0"
-                                    Padding="10,8"
-                                    Background="#55000000"
-                                    CornerRadius="8"
-                                    Visibility="Collapsed">
-                                <StackPanel Spacing="8">
-                                    <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <Button x:Name="SetClipStartButton" Content="标记入点 (I)" Click="SetClipStart_Click" />
-                                        <Button x:Name="SetClipEndButton" Content="标记出点 (O)" Click="SetClipEnd_Click" />
-                                        <Button x:Name="ClipPlanButton" Content="片段方案..." Click="ClipPlan_Click" />
-                                        <Button x:Name="ClearClipButton" Content="重置区间" Click="ClearClip_Click" />
-                                        <Button x:Name="ExportClipButton" Content="导出剪辑 (E)" Click="ExportClip_Click" />
-                                    </StackPanel>
+                            <Border x:Name="ImageZoomBadge"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Margin="18"
+                                    Padding="11,6"
+                                    Background="{ThemeResource ZoomBadgeBrush}"
+                                    BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="999"
+                                    Visibility="Collapsed"
+                                    IsHitTestVisible="False">
+                                <TextBlock x:Name="ImageZoomText"
+                                           Text="100%"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold" />
+                            </Border>
 
-                                    <StackPanel Orientation="Horizontal" Spacing="16">
-                                        <TextBlock x:Name="ClipStartText" Text="入点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                        <TextBlock x:Name="ClipEndText" Text="出点：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                        <TextBlock x:Name="ClipDurationText" Text="时长：0:00" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                    </StackPanel>
+                            <Border x:Name="ControlBar"
+                                    VerticalAlignment="Bottom"
+                                    Margin="18"
+                                    Padding="16"
+                                    Background="{ThemeResource ControlBarBrush}"
+                                    BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="22"
+                                    PointerMoved="ControlBar_PointerMoved">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
 
-                                    <StackPanel Orientation="Horizontal" Spacing="16">
-                                        <TextBlock x:Name="ClipModeText" Text="模式：保留片段" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                        <TextBlock x:Name="ClipSegmentCountText" Text="片段：1" Foreground="{ThemeResource TextBrush}" FontSize="12" />
-                                        <TextBlock x:Name="ClipOutputText" Text="输出：原目录" Foreground="{ThemeResource TextBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
+                                    <Slider x:Name="ProgressSlider"
+                                            Grid.Row="0"
+                                            Minimum="0"
+                                            Maximum="1"
+                                            Value="0"
+                                            SmallChange="1"
+                                            LargeChange="10"
+                                            ValueChanged="ProgressSlider_ValueChanged" />
 
-                                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                                        <ProgressBar x:Name="ClipExportProgressBar"
-                                                     Width="180"
-                                                     Minimum="0"
-                                                     Maximum="100"
-                                                     Value="0"
-                                                     Visibility="Collapsed" />
-                                        <TextBlock x:Name="ClipStatusText"
-                                                   Foreground="{ThemeResource MutedTextBrush}"
-                                                   FontSize="12"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                </StackPanel>
+                                    <Grid Grid.Row="1"
+                                          ColumnSpacing="12"
+                                          Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <AppBarButton x:Name="PlayPauseButton"
+                                                      Grid.Column="0"
+                                                      Click="PlayPause_Click">
+                                            <AppBarButton.Icon>
+                                                <SymbolIcon Symbol="Play" />
+                                            </AppBarButton.Icon>
+                                        </AppBarButton>
+
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    Spacing="4"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock x:Name="CurrentTimeText"
+                                                       Text="0:00"
+                                                       Foreground="{ThemeResource TextBrush}"
+                                                       FontSize="12" />
+                                            <TextBlock Text="/"
+                                                       Foreground="{ThemeResource MutedTextBrush}"
+                                                       FontSize="12" />
+                                            <TextBlock x:Name="TotalTimeText"
+                                                       Text="0:00"
+                                                       Foreground="{ThemeResource MutedTextBrush}"
+                                                       FontSize="12" />
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Column="3"
+                                                    Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="音量"
+                                                       Foreground="{ThemeResource MutedTextBrush}"
+                                                       FontSize="12" />
+                                            <Slider x:Name="VolumeSlider"
+                                                    Width="110"
+                                                    Minimum="0"
+                                                    Maximum="1"
+                                                    Value="0.8"
+                                                    ValueChanged="VolumeSlider_ValueChanged" />
+                                        </StackPanel>
+
+                                        <Button x:Name="PlaybackModeButton"
+                                                Grid.Column="4"
+                                                Content="列表循环"
+                                                Click="PlaybackMode_Click"
+                                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                        <Button x:Name="FullScreenButton"
+                                                Grid.Column="5"
+                                                Content="全屏"
+                                                Click="FullScreen_Click"
+                                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                    </Grid>
+
+                                    <Border x:Name="ClipBar"
+                                            Grid.Row="2"
+                                            Margin="0,12,0,0"
+                                            Padding="12,10"
+                                            Background="{ThemeResource ClipBarBrush}"
+                                            BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="16"
+                                            Visibility="Collapsed">
+                                        <StackPanel Spacing="10">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="SetClipStartButton"
+                                                        Content="标记入点 (I)"
+                                                        Click="SetClipStart_Click"
+                                                        Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                                <Button x:Name="SetClipEndButton"
+                                                        Content="标记出点 (O)"
+                                                        Click="SetClipEnd_Click"
+                                                        Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                                <Button x:Name="ClipPlanButton"
+                                                        Content="片段方案..."
+                                                        Click="ClipPlan_Click"
+                                                        Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                                <Button x:Name="ClearClipButton"
+                                                        Content="重置区间"
+                                                        Click="ClearClip_Click"
+                                                        Style="{StaticResource SecondaryToolbarButtonStyle}" />
+                                                <Button x:Name="ExportClipButton"
+                                                        Content="导出剪辑 (E)"
+                                                        Click="ExportClip_Click"
+                                                        Style="{StaticResource PrimaryToolbarButtonStyle}" />
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Spacing="16">
+                                                <TextBlock x:Name="ClipStartText"
+                                                           Text="入点：0:00"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12" />
+                                                <TextBlock x:Name="ClipEndText"
+                                                           Text="出点：0:00"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12" />
+                                                <TextBlock x:Name="ClipDurationText"
+                                                           Text="时长：0:00"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12" />
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Spacing="16">
+                                                <TextBlock x:Name="ClipModeText"
+                                                           Text="模式：保留片段"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12" />
+                                                <TextBlock x:Name="ClipSegmentCountText"
+                                                           Text="片段：1"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12" />
+                                                <TextBlock x:Name="ClipOutputText"
+                                                           Text="输出：原目录"
+                                                           Foreground="{ThemeResource TextBrush}"
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal"
+                                                        Spacing="12"
+                                                        VerticalAlignment="Center">
+                                                <ProgressBar x:Name="ClipExportProgressBar"
+                                                             Width="180"
+                                                             Minimum="0"
+                                                             Maximum="100"
+                                                             Value="0"
+                                                             Visibility="Collapsed" />
+                                                <TextBlock x:Name="ClipStatusText"
+                                                           Foreground="{ThemeResource MutedTextBrush}"
+                                                           FontSize="12"
+                                                           TextWrapping="WrapWholeWords" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
                             </Border>
                         </Grid>
                     </Grid>
-                </Grid>
+                </Border>
             </SplitView.Content>
         </SplitView>
     </Grid>
