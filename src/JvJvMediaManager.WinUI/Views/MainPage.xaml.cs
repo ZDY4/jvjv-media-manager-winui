@@ -27,11 +27,9 @@ namespace JvJvMediaManager.Views;
 
 public sealed partial class MainPage : Page
 {
-    private const double DefaultLibraryPaneWidth = 420;
-    private const double MinLibraryPaneWidth = 280;
-    private const double MaxLibraryPaneWidth = 760;
-    private const double LibraryRevealHotZoneWidth = 28;
-    private const double LibraryHideBufferWidth = 24;
+    private const double DefaultLibraryPaneWidth = 360;
+    private const double MinLibraryPaneWidth = 240;
+    private const double MaxLibraryPaneWidth = 640;
     private const double GridViewWidthPadding = 24;
     private const double PlayerEdgeNavigationRevealWidth = 96;
     private enum PlaybackMode
@@ -64,6 +62,8 @@ public sealed partial class MainPage : Page
     private bool _controlsVisible = true;
     private bool _isFullScreen;
     private bool _isSyncingSelection;
+    private bool _isClipModeActive;
+    private double _lastNonZeroVolume = 0.8;
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
     private string? _clipMediaId;
     private TimeSpan? _clipStart;
@@ -76,7 +76,6 @@ public sealed partial class MainPage : Page
     private ScrollViewer? _gridViewScrollViewer;
     private bool _progressSliderHandlersAttached;
     private bool _isImageDragging;
-    private bool _isLibraryPinned = true;
     private bool _isResizingLibraryPane;
     private string? _pendingImageFitMediaId;
     private Windows.Foundation.Point _imageDragStartPoint;
@@ -88,14 +87,15 @@ public sealed partial class MainPage : Page
     private PlayerNavigationEdge _activePlayerNavigationEdge;
 
     private Image? PreviewImage => PreviewImageElement;
-    private SymbolIcon? LibraryPinSymbolIcon => LibraryPinButton.Content as SymbolIcon;
-    private SymbolIcon? PlayPauseSymbolIcon => PlayPauseButton.Icon as SymbolIcon;
+    private FontIcon? PlayPauseFontIcon => PlayPauseButton.Icon as FontIcon;
+    private FontIcon? VolumeFontIcon => VolumeButton.Content as FontIcon;
 
     public MainPage()
     {
         InitializeComponent();
         DataContext = ViewModel;
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+        ViewModel.Playlists.CollectionChanged += Playlists_CollectionChanged;
         ViewModel.SelectedTags.CollectionChanged += SelectedTags_CollectionChanged;
         ViewModel.SetDispatcher(DispatcherQueue);
         Loaded += MainPage_Loaded;
@@ -118,7 +118,8 @@ public sealed partial class MainPage : Page
         SelectedTagsControl.ItemsSource = ViewModel.SelectedTags;
         KeyDown += MainPage_KeyDown;
         LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-        UpdateLibraryPinButtonUi();
+        RefreshPlaylistSelection();
+        UpdateLibraryPaneUi();
         UpdateLibraryPanePresentation();
 
         _playbackTimer.Interval = TimeSpan.FromMilliseconds(250);
@@ -129,6 +130,9 @@ public sealed partial class MainPage : Page
 
         UpdatePlaybackModeUi();
         UpdateViewModeButtonUi();
+        UpdateSortButtonUi();
+        UpdateFullScreenButtonUi();
+        UpdateVolumeButtonUi();
         UpdateControlBarState(false);
         UpdateClipUi();
         RefreshScanProgressVisibility();
@@ -152,6 +156,7 @@ public sealed partial class MainPage : Page
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        ViewModel.Playlists.CollectionChanged -= Playlists_CollectionChanged;
         ViewModel.SelectedTags.CollectionChanged -= SelectedTags_CollectionChanged;
         GridView.Loaded -= GridView_Loaded;
         GridView.SizeChanged -= GridView_SizeChanged;
@@ -178,7 +183,11 @@ public sealed partial class MainPage : Page
         }
         else if (e.PropertyName == nameof(MainViewModel.SelectedPlaylist))
         {
-            DispatcherQueue.TryEnqueue(RefreshPlaylistSelection);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                RefreshPlaylistSelection();
+                UpdateLibraryPaneUi();
+            });
         }
         else if (e.PropertyName == nameof(MainViewModel.IsScanning)
             || e.PropertyName == nameof(MainViewModel.ScanCurrentPath)
@@ -194,46 +203,37 @@ public sealed partial class MainPage : Page
         RefreshTagChips();
     }
 
+    private void Playlists_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        RefreshPlaylistSelection();
+        UpdateLibraryPaneUi();
+    }
+
+    public Task HandleAddFolderFromTitleBarAsync()
+    {
+        ActivateMediaLibrary(openPane: true);
+        return AddFolderAsync();
+    }
+
+    public Task HandleAddFilesFromTitleBarAsync()
+    {
+        ActivateMediaLibrary(openPane: true);
+        return AddFilesAsync();
+    }
+
+    public Task HandleOpenSettingsFromTitleBarAsync()
+    {
+        return ShowSettingsDialogAsync();
+    }
+
     private async void AddFiles_Click(object sender, RoutedEventArgs e)
     {
-        await ExecuteUiActionAsync(async () =>
-        {
-            var window = App.MainWindow;
-            if (window == null)
-            {
-                return;
-            }
-
-            var paths = await PickerHelpers.PickFilesAsync(window);
-            if (paths.Count == 0)
-            {
-                return;
-            }
-
-            await ViewModel.AddFilesAsync(paths);
-            UpdateWatchedFolders(paths, refreshMedia: false);
-        }, "导入文件失败");
+        await AddFilesAsync();
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {
-        await ExecuteUiActionAsync(async () =>
-        {
-            var window = App.MainWindow;
-            if (window == null)
-            {
-                return;
-            }
-
-            var folder = await PickerHelpers.PickFolderAsync(window);
-            if (string.IsNullOrWhiteSpace(folder))
-            {
-                return;
-            }
-
-            await ViewModel.AddFolderAsync(folder);
-            UpdateWatchedFolders(new[] { folder }, refreshMedia: false);
-        }, "导入文件夹失败");
+        await AddFolderAsync();
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -261,12 +261,54 @@ public sealed partial class MainPage : Page
 
     private async void Settings_Click(object sender, RoutedEventArgs e)
     {
-        await ShowSettingsDialogAsync();
+        await HandleOpenSettingsFromTitleBarAsync();
     }
 
     private async void FolderLock_Click(object sender, RoutedEventArgs e)
     {
         await ShowFolderLockDialogAsync();
+    }
+
+    private Task AddFolderAsync()
+    {
+        return ExecuteUiActionAsync(async () =>
+        {
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
+
+            var folder = await PickerHelpers.PickFolderAsync(window);
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                return;
+            }
+
+            await ViewModel.AddFolderAsync(folder);
+            UpdateWatchedFolders(new[] { folder }, refreshMedia: false);
+        }, "导入文件夹失败");
+    }
+
+    private Task AddFilesAsync()
+    {
+        return ExecuteUiActionAsync(async () =>
+        {
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
+
+            var paths = await PickerHelpers.PickFilesAsync(window);
+            if (paths.Count == 0)
+            {
+                return;
+            }
+
+            await ViewModel.AddFilesAsync(paths);
+            UpdateWatchedFolders(paths, refreshMedia: false);
+        }, "导入文件失败");
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -321,10 +363,37 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void MediaTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (LibrarySplitView.IsPaneOpen && ViewModel.SelectedPlaylist == null)
+        {
+            SetLibraryPaneOpen(false);
+            return;
+        }
+
+        ActivateMediaLibrary(openPane: true);
+    }
+
+    private void PlaylistRailListView_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not Playlist playlist)
+        {
+            return;
+        }
+
+        var isCurrentPlaylist = string.Equals(ViewModel.SelectedPlaylist?.Id, playlist.Id, StringComparison.Ordinal);
+        if (LibrarySplitView.IsPaneOpen && isCurrentPlaylist)
+        {
+            SetLibraryPaneOpen(false);
+            return;
+        }
+
+        ActivatePlaylist(playlist, openPane: true);
+    }
+
     private void AllMedia_Click(object sender, RoutedEventArgs e)
     {
-        PlaylistListView.SelectedItem = null;
-        ViewModel.SelectedPlaylist = null;
+        ActivateMediaLibrary(openPane: true);
     }
 
     private async void CreatePlaylist_Click(object sender, RoutedEventArgs e)
@@ -338,6 +407,8 @@ public sealed partial class MainPage : Page
         try
         {
             ViewModel.CreatePlaylist(name);
+            SetLibraryPaneOpen(true);
+            UpdateLibraryPaneUi();
         }
         catch (Exception ex)
         {
@@ -354,20 +425,7 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var name = await ShowTextInputDialogAsync("重命名播放列表", "播放列表名称", playlist.Name, "保存");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
-
-        try
-        {
-            ViewModel.RenamePlaylist(playlist.Id, name);
-        }
-        catch (Exception ex)
-        {
-            await ShowInfoDialogAsync("重命名失败", ex.Message);
-        }
+        await RenamePlaylistAsync(playlist);
     }
 
     private async void DeletePlaylist_Click(object sender, RoutedEventArgs e)
@@ -379,28 +437,50 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var confirmed = await ConfirmAsync("删除播放列表", $"确定要删除“{playlist.Name}”吗？\n媒体文件本身不会被删除。", "删除");
-        if (!confirmed)
-        {
-            return;
-        }
-
-        await ViewModel.DeletePlaylistAsync(playlist.Id);
+        await DeletePlaylistAsync(playlist);
     }
 
-    private void PlaylistListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_isSyncingSelection)
-        {
-            return;
-        }
-
-        ViewModel.SelectedPlaylist = PlaylistListView.SelectedItem as Playlist;
-    }
-
-    private void PlaylistListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
+    private void PlaylistRailListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
     {
         ViewModel.UpdatePlaylistOrder(ViewModel.Playlists.ToList());
+        RefreshPlaylistSelection();
+    }
+
+    private async void SelectedPlaylistTitleButton_Click(object sender, RoutedEventArgs e)
+    {
+        var playlist = ViewModel.SelectedPlaylist;
+        if (playlist == null)
+        {
+            return;
+        }
+
+        await RenamePlaylistAsync(playlist);
+    }
+
+    private void PlaylistRailItem_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.DataContext is not Playlist playlist)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        var flyout = new MenuFlyout();
+
+        var renameItem = new MenuFlyoutItem { Text = "重命名" };
+        renameItem.Click += async (_, _) => await RenamePlaylistAsync(playlist);
+
+        var colorItem = new MenuFlyoutItem { Text = "更改颜色" };
+        colorItem.Click += async (_, _) => await ChangePlaylistColorAsync(playlist);
+
+        var deleteItem = new MenuFlyoutItem { Text = "删除" };
+        deleteItem.Click += async (_, _) => await DeletePlaylistAsync(playlist);
+
+        flyout.Items.Add(renameItem);
+        flyout.Items.Add(colorItem);
+        flyout.Items.Add(deleteItem);
+        flyout.ShowAt(element, e.GetPosition(element));
     }
 
     private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
@@ -432,9 +512,21 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        ViewModeToggleButton.Content = ViewModel.ViewMode == MediaViewMode.List
-            ? "切换到网格"
-            : "切换到列表";
+        var switchToGrid = ViewModel.ViewMode == MediaViewMode.List;
+        SetButtonGlyph(ViewModeToggleButton, switchToGrid ? "\uECA5" : "\uE8FD");
+        ToolTipService.SetToolTip(ViewModeToggleButton, switchToGrid ? "切换到网格" : "切换到列表");
+    }
+
+    private void UpdateSortButtonUi()
+    {
+        if (SortButton == null)
+        {
+            return;
+        }
+
+        var fieldLabel = ViewModel.SortField == MediaSortField.FileName ? "名称" : "时间";
+        var orderLabel = ViewModel.SortOrder == MediaSortOrder.Asc ? "升序" : "降序";
+        ToolTipService.SetToolTip(SortButton, $"排序：{fieldLabel} {orderLabel}");
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -442,22 +534,26 @@ public sealed partial class MainPage : Page
         if (ViewModel.SortField == MediaSortField.FileName && ViewModel.SortOrder == MediaSortOrder.Asc)
         {
             ViewModel.ToggleSort(MediaSortField.FileName);
+            UpdateSortButtonUi();
             return;
         }
 
         if (ViewModel.SortField == MediaSortField.FileName && ViewModel.SortOrder == MediaSortOrder.Desc)
         {
             ViewModel.ToggleSort(MediaSortField.ModifiedAt);
+            UpdateSortButtonUi();
             return;
         }
 
         if (ViewModel.SortField == MediaSortField.ModifiedAt && ViewModel.SortOrder == MediaSortOrder.Asc)
         {
             ViewModel.ToggleSort(MediaSortField.ModifiedAt);
+            UpdateSortButtonUi();
             return;
         }
 
         ViewModel.ToggleSort(MediaSortField.FileName);
+        UpdateSortButtonUi();
     }
 
     private void Media_ItemClick(object sender, ItemClickEventArgs e)
@@ -709,6 +805,7 @@ public sealed partial class MainPage : Page
             }
             else if (e.Key == Windows.System.VirtualKey.F)
             {
+                SetLibraryPaneOpen(true);
                 SearchBox.Focus(FocusState.Programmatic);
                 SearchBox.SelectAll();
                 e.Handled = true;
@@ -755,17 +852,17 @@ public sealed partial class MainPage : Page
             await NavigateRelativeAsync(1);
             e.Handled = true;
         }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.I)
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _isClipModeActive && e.Key == Windows.System.VirtualKey.I)
         {
             SetClipStartToCurrent();
             e.Handled = true;
         }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.O)
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _isClipModeActive && e.Key == Windows.System.VirtualKey.O)
         {
             SetClipEndToCurrent();
             e.Handled = true;
         }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && e.Key == Windows.System.VirtualKey.E)
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _isClipModeActive && e.Key == Windows.System.VirtualKey.E)
         {
             await ExportCurrentClipAsync();
             e.Handled = true;
@@ -902,15 +999,26 @@ public sealed partial class MainPage : Page
         {
             appWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
             _isFullScreen = false;
-            FullScreenButton.Content = "全屏";
         }
         else
         {
             appWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
             _isFullScreen = true;
-            FullScreenButton.Content = "退出全屏";
         }
 
+        UpdateFullScreenButtonUi();
+        ShowControls();
+    }
+
+    private void ToggleClipMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.SelectedMedia?.Type != MediaType.Video || _isExportingClip)
+        {
+            return;
+        }
+
+        _isClipModeActive = !_isClipModeActive;
+        UpdateClipUi();
         ShowControls();
     }
 
@@ -939,10 +1047,26 @@ public sealed partial class MainPage : Page
 
     private void VolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
+        if (VolumeSlider.Value > 0.001)
+        {
+            _lastNonZeroVolume = VolumeSlider.Value;
+        }
+
         if (_player != null)
         {
             _player.Volume = VolumeSlider.Value;
         }
+
+        UpdateVolumeButtonUi();
+    }
+
+    private void VolumeButton_Click(object sender, RoutedEventArgs e)
+    {
+        var isMuted = VolumeSlider.Value <= 0.001;
+        VolumeSlider.Value = isMuted
+            ? Math.Clamp(_lastNonZeroVolume, 0.05, 1.0)
+            : 0;
+        ShowControls();
     }
 
     private void PlayerRoot_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -960,8 +1084,8 @@ public sealed partial class MainPage : Page
 
     private void PlayerRoot_PointerExited(object sender, PointerRoutedEventArgs e)
     {
-        ShowControls();
         SetPlayerNavigationEdge(PlayerNavigationEdge.None);
+        RestartControlsHideTimer();
     }
 
     private void ControlBar_PointerMoved(object sender, PointerRoutedEventArgs e)
@@ -1029,12 +1153,13 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        if (PlayPauseSymbolIcon != null)
+        var isPlaying = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+        if (PlayPauseFontIcon != null)
         {
-            PlayPauseSymbolIcon.Symbol = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing
-                ? Symbol.Pause
-                : Symbol.Play;
+            PlayPauseFontIcon.Glyph = isPlaying ? "\uE769" : "\uE768";
         }
+
+        ToolTipService.SetToolTip(PlayPauseButton, isPlaying ? "暂停 (Space)" : "播放 (Space)");
     }
 
     private void HandlePlaybackEnded()
@@ -1216,7 +1341,7 @@ public sealed partial class MainPage : Page
         _isSyncingSelection = true;
         try
         {
-            PlaylistListView.SelectedItem = ViewModel.SelectedPlaylist;
+            PlaylistRailListView.SelectedItem = ViewModel.SelectedPlaylist;
         }
         finally
         {
@@ -1231,6 +1356,45 @@ public sealed partial class MainPage : Page
         ScanPathText.Visibility = !string.IsNullOrWhiteSpace(ViewModel.ScanCurrentPath) ? Visibility.Visible : Visibility.Collapsed;
         ScanProgressBar.Maximum = Math.Max(1, ViewModel.ScanProgressMaximum);
         ScanProgressBar.Value = ViewModel.ScanProgressValue;
+    }
+
+    private void ActivateMediaLibrary(bool openPane)
+    {
+        ViewModel.SelectedPlaylist = null;
+        RefreshPlaylistSelection();
+        UpdateLibraryPaneUi();
+        if (openPane)
+        {
+            SetLibraryPaneOpen(true);
+        }
+    }
+
+    private void ActivatePlaylist(Playlist playlist, bool openPane)
+    {
+        var targetPlaylist = ViewModel.Playlists.FirstOrDefault(item => string.Equals(item.Id, playlist.Id, StringComparison.Ordinal))
+            ?? playlist;
+        ViewModel.SelectedPlaylist = targetPlaylist;
+        RefreshPlaylistSelection();
+        UpdateLibraryPaneUi();
+        if (openPane)
+        {
+            SetLibraryPaneOpen(true);
+        }
+    }
+
+    private void UpdateLibraryPaneUi()
+    {
+        var hasSelectedPlaylist = ViewModel.SelectedPlaylist != null;
+        SelectedPlaylistTitleButton.Visibility = hasSelectedPlaylist ? Visibility.Visible : Visibility.Collapsed;
+        SelectedPlaylistTitleButton.Content = ViewModel.SelectedPlaylist?.Name ?? string.Empty;
+
+        var activeBackground = Application.Current.Resources["SurfaceMutedBrush"] as Brush;
+        var inactiveBackground = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        var activeForeground = Application.Current.Resources["TextBrush"] as Brush;
+        var inactiveForeground = Application.Current.Resources["MutedTextBrush"] as Brush;
+
+        MediaTabButton.Background = hasSelectedPlaylist ? inactiveBackground : activeBackground;
+        MediaTabButton.Foreground = hasSelectedPlaylist ? inactiveForeground : activeForeground;
     }
 
     private void UpdateMediaItemSize()
@@ -1289,6 +1453,30 @@ public sealed partial class MainPage : Page
             return;
         }
 
+        UpdateMediaItemSize();
+    }
+
+    private void LibraryPaneResizer_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        _isResizingLibraryPane = true;
+        SetLibraryPaneOpen(true);
+    }
+
+    private void LibraryPaneResizer_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var maxWidth = RootLayout.ActualWidth > 0
+            ? Math.Min(MaxLibraryPaneWidth, Math.Max(MinLibraryPaneWidth, RootLayout.ActualWidth - 200))
+            : MaxLibraryPaneWidth;
+
+        _libraryPaneWidth = Math.Clamp(_libraryPaneWidth + e.HorizontalChange, MinLibraryPaneWidth, maxWidth);
+        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
+        UpdateMediaItemSize();
+    }
+
+    private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        _isResizingLibraryPane = false;
+        UpdateLibraryPanePresentation();
         UpdateMediaItemSize();
     }
 
@@ -1672,28 +1860,60 @@ public sealed partial class MainPage : Page
 
     private void UpdatePlaybackModeUi()
     {
-        PlaybackModeButton.Content = _playbackMode switch
+        var (glyph, description) = _playbackMode switch
         {
-            PlaybackMode.ListLoop => "列表循环",
-            PlaybackMode.SingleLoop => "单曲循环",
-            _ => "随机播放"
+            PlaybackMode.ListLoop => ("\uE8EE", "播放模式：列表循环"),
+            PlaybackMode.SingleLoop => ("\uE8ED", "播放模式：单曲循环"),
+            _ => ("\uE8B1", "播放模式：随机播放")
         };
+
+        SetButtonGlyph(PlaybackModeButton, glyph);
+        ToolTipService.SetToolTip(PlaybackModeButton, description);
+    }
+
+    private void UpdateVolumeButtonUi()
+    {
+        if (VolumeButton == null)
+        {
+            return;
+        }
+
+        var volume = VolumeSlider?.Value ?? 0;
+        var isMuted = volume <= 0.001;
+        if (VolumeFontIcon != null)
+        {
+            VolumeFontIcon.Glyph = isMuted ? "\uE74F" : "\uE767";
+        }
+
+        var percentage = (int)Math.Round(volume * 100);
+        ToolTipService.SetToolTip(VolumeButton, isMuted ? "取消静音" : $"音量：{percentage}%");
+    }
+
+    private void UpdateFullScreenButtonUi()
+    {
+        SetButtonGlyph(FullScreenButton, _isFullScreen ? "\uE73F" : "\uE740");
+        ToolTipService.SetToolTip(FullScreenButton, _isFullScreen ? "退出全屏" : "全屏");
     }
 
     private void UpdateControlBarState(bool showForVideo)
     {
+        var showImageNavigation = !showForVideo && ViewModel.SelectedMedia?.Type == MediaType.Image;
         ControlBar.Visibility = showForVideo ? Visibility.Visible : Visibility.Collapsed;
         ControlBar.IsHitTestVisible = showForVideo;
         ControlBar.Opacity = showForVideo ? 1 : 0;
         ImageZoomBadge.Visibility = !showForVideo && ViewModel.SelectedMedia?.Type == MediaType.Image
             ? Visibility.Visible
             : Visibility.Collapsed;
-        _controlsVisible = showForVideo;
+        _controlsVisible = showForVideo || showImageNavigation;
         RefreshPlayerNavigationHotspots();
 
         if (!showForVideo)
         {
             _controlsHideTimer.Stop();
+        }
+        else
+        {
+            RestartControlsHideTimer();
         }
     }
 
@@ -1707,14 +1927,41 @@ public sealed partial class MainPage : Page
         ControlBar.Opacity = 1;
         ControlBar.IsHitTestVisible = true;
         _controlsVisible = true;
-        _controlsHideTimer.Stop();
+        RefreshPlayerNavigationHotspots();
+        RestartControlsHideTimer();
     }
 
     private void HideControls()
     {
-        ControlBar.Opacity = 1;
-        ControlBar.IsHitTestVisible = true;
-        _controlsVisible = true;
+        if (!ShouldAutoHideControls())
+        {
+            return;
+        }
+
+        ControlBar.Opacity = 0;
+        ControlBar.IsHitTestVisible = false;
+        _controlsVisible = false;
+        SetPlayerNavigationEdge(PlayerNavigationEdge.None);
+        RefreshPlayerNavigationHotspots();
+    }
+
+    private bool ShouldAutoHideControls()
+    {
+        return ControlBar.Visibility == Visibility.Visible
+            && ViewModel.SelectedMedia?.Type == MediaType.Video
+            && EmptyState.Visibility != Visibility.Visible
+            && !_isSeeking;
+    }
+
+    private void RestartControlsHideTimer()
+    {
+        _controlsHideTimer.Stop();
+        if (!ShouldAutoHideControls())
+        {
+            return;
+        }
+
+        _controlsHideTimer.Start();
     }
 
     private bool CanShowPlayerNavigationHotspots()
@@ -1726,7 +1973,7 @@ public sealed partial class MainPage : Page
 
     private void RefreshPlayerNavigationHotspots()
     {
-        var canShow = CanShowPlayerNavigationHotspots();
+        var canShow = CanShowPlayerNavigationHotspots() && _controlsVisible;
         PreviousMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
         NextMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
         if (!canShow)
@@ -1777,6 +2024,11 @@ public sealed partial class MainPage : Page
     {
         EndImageDrag();
         _pendingImageFitMediaId = media.Id;
+        if (PreviewImage != null)
+        {
+            PreviewImage.Width = double.NaN;
+            PreviewImage.Height = double.NaN;
+        }
         UpdatePreviewImageSourceSize(media.Media.Width, media.Media.Height);
         ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
         UpdateImageZoomUi();
@@ -1809,11 +2061,17 @@ public sealed partial class MainPage : Page
 
         _imageSourceWidth = width;
         _imageSourceHeight = height;
-        if (PreviewImage != null)
+    }
+
+    private void ApplyPreviewImageDisplaySize(double width, double height)
+    {
+        if (PreviewImage == null || width <= 0 || height <= 0)
         {
-            PreviewImage.Width = width;
-            PreviewImage.Height = height;
+            return;
         }
+
+        PreviewImage.Width = width;
+        PreviewImage.Height = height;
     }
 
     private void PreviewImageElement_ImageOpened(object sender, RoutedEventArgs e)
@@ -1871,20 +2129,15 @@ public sealed partial class MainPage : Page
             return false;
         }
 
-        var targetZoom = Math.Min(viewportWidth / imageWidth, viewportHeight / imageHeight);
-        if (double.IsNaN(targetZoom) || double.IsInfinity(targetZoom) || targetZoom <= 0)
+        var fitScale = Math.Min(viewportWidth / imageWidth, viewportHeight / imageHeight);
+        if (double.IsNaN(fitScale) || double.IsInfinity(fitScale) || fitScale <= 0)
         {
             return false;
         }
 
-        targetZoom = Math.Clamp(targetZoom, ImageScrollViewer.MinZoomFactor, ImageScrollViewer.MaxZoomFactor);
-        ImageScrollViewer.ChangeView(0, 0, (float)targetZoom, true);
-        UpdateImageZoomUi(targetZoom);
-
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            ImageScrollViewer.ChangeView(ImageScrollViewer.ScrollableWidth / 2, ImageScrollViewer.ScrollableHeight / 2, null, true);
-        });
+        ApplyPreviewImageDisplaySize(imageWidth * fitScale, imageHeight * fitScale);
+        ImageScrollViewer.ChangeView(0, 0, 1.0f, true);
+        UpdateImageZoomUi(1.0);
 
         return true;
     }
@@ -1898,6 +2151,19 @@ public sealed partial class MainPage : Page
 
     private bool TryGetImageSourceSize(out double imageWidth, out double imageHeight)
     {
+        imageWidth = 0;
+        imageHeight = 0;
+        if (PreviewImage != null
+            && !double.IsNaN(PreviewImage.Width)
+            && !double.IsNaN(PreviewImage.Height)
+            && PreviewImage.Width > 0
+            && PreviewImage.Height > 0)
+        {
+            imageWidth = PreviewImage.Width;
+            imageHeight = PreviewImage.Height;
+            return true;
+        }
+
         imageWidth = _imageSourceWidth;
         imageHeight = _imageSourceHeight;
         if (imageWidth > 0 && imageHeight > 0)
@@ -1936,8 +2202,8 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        var contentX = (ImageScrollViewer.HorizontalOffset + anchorPoint.X) / currentZoom;
-        var contentY = (ImageScrollViewer.VerticalOffset + anchorPoint.Y) / currentZoom;
+        var contentX = GetImageContentCoordinate(anchorPoint.X, isHorizontal: true, currentZoom);
+        var contentY = GetImageContentCoordinate(anchorPoint.Y, isHorizontal: false, currentZoom);
         var targetHorizontalOffset = contentX * targetZoom - anchorPoint.X;
         var targetVerticalOffset = contentY * targetZoom - anchorPoint.Y;
         var maxHorizontalOffset = Math.Max(0, imageWidth * targetZoom - viewportWidth);
@@ -1948,6 +2214,18 @@ public sealed partial class MainPage : Page
             Math.Clamp(targetVerticalOffset, 0, maxVerticalOffset),
             (float)targetZoom,
             true);
+    }
+
+    private double GetImageContentCoordinate(double pointerAxis, bool isHorizontal, double currentZoom)
+    {
+        if (PreviewImage == null)
+        {
+            return (isHorizontal ? ImageScrollViewer.HorizontalOffset : ImageScrollViewer.VerticalOffset) + pointerAxis;
+        }
+
+        var imageTopLeft = PreviewImage.TransformToVisual(ImageScrollViewer).TransformPoint(new Windows.Foundation.Point(0, 0));
+        var imageOriginAxis = isHorizontal ? imageTopLeft.X : imageTopLeft.Y;
+        return Math.Max(0, (pointerAxis - imageOriginAxis) / currentZoom);
     }
 
     private void ZoomImage(double delta)
@@ -2069,6 +2347,7 @@ public sealed partial class MainPage : Page
     {
         if (media?.Type != MediaType.Video)
         {
+            _isClipModeActive = false;
             _clipMediaId = null;
             _clipStart = null;
             _clipEnd = null;
@@ -2087,6 +2366,7 @@ public sealed partial class MainPage : Page
         }
 
         _clipMediaId = media.Id;
+        _isClipModeActive = false;
         _clipStart = TimeSpan.Zero;
         _clipEnd = null;
         _clipSegments.Clear();
@@ -2121,7 +2401,12 @@ public sealed partial class MainPage : Page
 
     private void UpdateClipUi()
     {
-        var showClipBar = ViewModel.SelectedMedia?.Type == MediaType.Video;
+        var isVideo = ViewModel.SelectedMedia?.Type == MediaType.Video;
+        SetButtonGlyph(ClipModeToggleButton, _isClipModeActive ? "\uE711" : "\uE7C8");
+        ToolTipService.SetToolTip(ClipModeToggleButton, _isClipModeActive ? "退出剪辑" : "进入剪辑");
+        ClipModeToggleButton.IsEnabled = isVideo && !_isExportingClip;
+
+        var showClipBar = isVideo && _isClipModeActive;
         ClipBar.Visibility = showClipBar ? Visibility.Visible : Visibility.Collapsed;
         if (!showClipBar)
         {
@@ -2156,7 +2441,26 @@ public sealed partial class MainPage : Page
         ClipPlanButton.IsEnabled = !_isExportingClip && duration > TimeSpan.Zero;
         ClearClipButton.IsEnabled = !_isExportingClip;
         ExportClipButton.IsEnabled = !_isExportingClip && _clipService.IsAvailable && configuredSegments.Count > 0;
-        ExportClipButton.Content = _isExportingClip ? "导出中..." : "导出剪辑 (E)";
+        ToolTipService.SetToolTip(ExportClipButton, _isExportingClip ? "导出中..." : "导出剪辑 (E)");
+    }
+
+    private static void SetButtonGlyph(Button? button, string glyph)
+    {
+        if (button == null)
+        {
+            return;
+        }
+
+        if (button.Content is FontIcon icon)
+        {
+            icon.Glyph = glyph;
+            return;
+        }
+
+        button.Content = new FontIcon
+        {
+            Glyph = glyph
+        };
     }
 
     private async Task ShowClipPlanDialogAsync()
@@ -2805,72 +3109,15 @@ public sealed partial class MainPage : Page
         return Math.Max(72, width - GridViewWidthPadding);
     }
 
-    private void RootLayout_PointerMoved(object sender, PointerRoutedEventArgs e)
-    {
-        HandleLibraryAutoVisibility(e.GetCurrentPoint(RootLayout).Position.X);
-    }
-
-    private void LibraryPinButton_Click(object sender, RoutedEventArgs e)
-    {
-        _isLibraryPinned = !_isLibraryPinned;
-        UpdateLibraryPinButtonUi();
-        UpdateLibraryPaneState(preferOpen: _isLibraryPinned || ViewModel.SelectedMedia == null);
-    }
-
-    private void LibraryPaneResizer_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        _isResizingLibraryPane = true;
-        SetLibraryPaneOpen(true);
-    }
-
-    private void LibraryPaneResizer_DragDelta(object sender, DragDeltaEventArgs e)
-    {
-        var maxWidth = RootLayout.ActualWidth > 0
-            ? Math.Min(MaxLibraryPaneWidth, Math.Max(MinLibraryPaneWidth, RootLayout.ActualWidth - 200))
-            : MaxLibraryPaneWidth;
-        _libraryPaneWidth = Math.Clamp(_libraryPaneWidth + e.HorizontalChange, MinLibraryPaneWidth, maxWidth);
-        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-    }
-
-    private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        _isResizingLibraryPane = false;
-        UpdateLibraryPaneState(preferOpen: true);
-    }
-
     private void UpdateLibraryPaneState(bool preferOpen = false)
     {
+        if (preferOpen)
+        {
+            SetLibraryPaneOpen(true);
+            return;
+        }
+
         UpdateLibraryPanePresentation();
-        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-
-        var shouldOpen = preferOpen || _isLibraryPinned || ViewModel.SelectedMedia == null;
-        SetLibraryPaneOpen(shouldOpen);
-        UpdateLibraryPinButtonUi();
-    }
-
-    private void HandleLibraryAutoVisibility(double pointerX)
-    {
-        if (_isLibraryPinned || _isResizingLibraryPane)
-        {
-            return;
-        }
-
-        if (ViewModel.SelectedMedia == null)
-        {
-            SetLibraryPaneOpen(true);
-            return;
-        }
-
-        if (pointerX <= LibraryRevealHotZoneWidth)
-        {
-            SetLibraryPaneOpen(true);
-            return;
-        }
-
-        if (LibrarySplitView.IsPaneOpen && pointerX > _libraryPaneWidth + LibraryHideBufferWidth)
-        {
-            SetLibraryPaneOpen(false);
-        }
     }
 
     private void SetLibraryPaneOpen(bool isOpen)
@@ -2881,41 +3128,77 @@ public sealed partial class MainPage : Page
         }
 
         LibrarySplitView.IsPaneOpen = isOpen;
-    }
-
-    private void UpdateLibraryPinButtonUi()
-    {
-        if (LibraryPinButton == null)
-        {
-            return;
-        }
-
-        LibraryPinButton.Opacity = _isLibraryPinned ? 1 : 0.7;
-        LibraryPinButton.Foreground = new SolidColorBrush(_isLibraryPinned
-            ? Microsoft.UI.Colors.White
-            : Microsoft.UI.ColorHelper.FromArgb(204, 255, 255, 255));
-        ToolTipService.SetToolTip(LibraryPinButton, _isLibraryPinned ? "固定媒体库" : "媒体库自动隐藏");
-
-        if (LibraryPinSymbolIcon != null)
-        {
-            LibraryPinSymbolIcon.Symbol = _isLibraryPinned ? Symbol.Pin : Symbol.UnPin;
-        }
+        UpdateLibraryPanePresentation();
     }
 
     private void UpdateLibraryPanePresentation()
     {
-        if (LibrarySplitView == null || LibraryPaneRoot == null)
+        if (LibrarySplitView == null || LibraryPaneRoot == null || LibraryPaneExpandedContent == null || LibraryPaneResizer == null)
         {
             return;
         }
 
-        LibrarySplitView.DisplayMode = _isLibraryPinned
-            ? SplitViewDisplayMode.Inline
-            : SplitViewDisplayMode.Overlay;
-        LibraryPaneRoot.Background = _isLibraryPinned
-            ? Application.Current.Resources["SurfaceAltBrush"] as Brush ?? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 45, 45, 45))
-            : new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(214, 32, 32, 32));
-        LibraryPaneResizer.Opacity = _isLibraryPinned ? 1 : 0.55;
+        LibrarySplitView.DisplayMode = SplitViewDisplayMode.CompactInline;
+        LibrarySplitView.CompactPaneLength = 56;
+        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
+        LibraryPaneRoot.Background = Application.Current.Resources["SurfaceAltBrush"] as Brush
+            ?? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 32, 32, 32));
+        LibraryPaneExpandedContent.Visibility = LibrarySplitView.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+        LibraryPaneResizer.Visibility = LibrarySplitView.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+        LibraryPaneResizer.Opacity = _isResizingLibraryPane ? 1 : 0.65;
+    }
+
+    private async Task RenamePlaylistAsync(Playlist playlist)
+    {
+        var name = await ShowTextInputDialogAsync("重命名播放列表", "播放列表名称", playlist.Name, "保存");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        try
+        {
+            ViewModel.RenamePlaylist(playlist.Id, name);
+            RefreshPlaylistSelection();
+            UpdateLibraryPaneUi();
+        }
+        catch (Exception ex)
+        {
+            await ShowInfoDialogAsync("重命名失败", ex.Message);
+        }
+    }
+
+    private async Task DeletePlaylistAsync(Playlist playlist)
+    {
+        var confirmed = await ConfirmAsync("删除播放列表", $"确定要删除“{playlist.Name}”吗？\n媒体文件本身不会被删除。", "删除");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        await ViewModel.DeletePlaylistAsync(playlist.Id);
+        RefreshPlaylistSelection();
+        UpdateLibraryPaneUi();
+    }
+
+    private async Task ChangePlaylistColorAsync(Playlist playlist)
+    {
+        var colorHex = await ShowPlaylistColorDialogAsync(playlist);
+        if (colorHex == playlist.ColorHex)
+        {
+            return;
+        }
+
+        try
+        {
+            ViewModel.SetPlaylistColor(playlist.Id, colorHex);
+            RefreshPlaylistSelection();
+            UpdateLibraryPaneUi();
+        }
+        catch (Exception ex)
+        {
+            await ShowInfoDialogAsync("更改颜色失败", ex.Message);
+        }
     }
 
     private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)
@@ -3134,6 +3417,42 @@ public sealed partial class MainPage : Page
         return result == ContentDialogResult.Primary ? textBox.Text.Trim() : null;
     }
 
+    private async Task<string?> ShowPlaylistColorDialogAsync(Playlist playlist)
+    {
+        var initialColor = TryParsePlaylistColor(playlist.ColorHex, out var parsedColor)
+            ? parsedColor
+            : Microsoft.UI.ColorHelper.FromArgb(255, 91, 155, 255);
+
+        var colorPicker = new ColorPicker
+        {
+            Color = initialColor,
+            IsAlphaEnabled = false,
+            IsColorChannelTextInputVisible = true,
+            IsHexInputVisible = true,
+            IsMoreButtonVisible = true,
+            MinWidth = 320
+        };
+
+        var dialog = new ContentDialog
+        {
+            Title = $"更改“{playlist.Name}”颜色",
+            Content = colorPicker,
+            PrimaryButtonText = "保存",
+            SecondaryButtonText = "清除颜色",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot
+        };
+
+        var result = await dialog.ShowAsync();
+        return result switch
+        {
+            ContentDialogResult.Primary => FormatPlaylistColor(colorPicker.Color),
+            ContentDialogResult.Secondary => null,
+            _ => playlist.ColorHex
+        };
+    }
+
     private async Task<string?> ShowPasswordInputDialogAsync(string title, string placeholder)
     {
         var passwordBox = new PasswordBox
@@ -3183,6 +3502,16 @@ public sealed partial class MainPage : Page
         };
 
         await dialog.ShowAsync();
+    }
+
+    private static bool TryParsePlaylistColor(string? colorHex, out Windows.UI.Color color)
+    {
+        return PlaylistBackgroundBrushConverter.TryParseColor(colorHex, out color);
+    }
+
+    private static string FormatPlaylistColor(Windows.UI.Color color)
+    {
+        return $"#{color.R:X2}{color.G:X2}{color.B:X2}";
     }
 
     private async Task ExecuteUiActionAsync(Func<Task> action, string failureTitle)

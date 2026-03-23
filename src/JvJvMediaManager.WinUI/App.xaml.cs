@@ -66,7 +66,7 @@ public partial class App : Application
         WriteExceptionLog("TaskScheduler UnobservedTaskException", e.Exception);
     }
 
-    private static void WriteExceptionLog(string source, Exception? exception)
+    internal static void WriteExceptionLog(string source, Exception? exception)
     {
         try
         {

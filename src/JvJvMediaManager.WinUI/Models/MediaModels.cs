@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace JvJvMediaManager.Models;
 
 public enum MediaType
@@ -55,8 +57,46 @@ public class Playlist
 {
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string? ColorHex { get; set; }
     public int SortOrder { get; set; }
     public long CreatedAt { get; set; }
+
+    public string RailDisplayText
+    {
+        get
+        {
+            var normalized = Name?.Trim() ?? string.Empty;
+            if (string.IsNullOrEmpty(normalized))
+            {
+                return "?";
+            }
+
+            var enumerator = StringInfo.GetTextElementEnumerator(normalized);
+            while (enumerator.MoveNext())
+            {
+                var element = enumerator.GetTextElement();
+                if (element.Length > 0 && char.IsLetter(element, 0))
+                {
+                    return element;
+                }
+            }
+
+            return GetLeadingTextElements(normalized, 2);
+        }
+    }
+
+    private static string GetLeadingTextElements(string value, int count)
+    {
+        var enumerator = StringInfo.GetTextElementEnumerator(value);
+        var buffer = string.Empty;
+        while (count > 0 && enumerator.MoveNext())
+        {
+            buffer += enumerator.GetTextElement();
+            count--;
+        }
+
+        return string.IsNullOrEmpty(buffer) ? "?" : buffer;
+    }
 }
 
 public sealed class PlaylistWithMedia : Playlist

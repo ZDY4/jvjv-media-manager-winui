@@ -71,6 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_playlist_media_playlistId ON playlist_media(playl
 CREATE INDEX IF NOT EXISTS idx_playlist_media_mediaId ON playlist_media(mediaId);
 ";
         cmd.ExecuteNonQuery();
+
+        EnsurePlaylistSchema(connection);
     }
 
     public void AddMedia(MediaFile media)
@@ -327,7 +329,7 @@ VALUES ($mediaId, $name, $createdAt);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
-SELECT id, name, sortOrder, createdAt
+SELECT id, name, color, sortOrder, createdAt
 FROM playlists
 ORDER BY sortOrder ASC, createdAt ASC, name COLLATE NOCASE ASC;
 ";
@@ -340,8 +342,9 @@ ORDER BY sortOrder ASC, createdAt ASC, name COLLATE NOCASE ASC;
             {
                 Id = reader.GetString(0),
                 Name = reader.GetString(1),
-                SortOrder = reader.GetInt32(2),
-                CreatedAt = reader.GetInt64(3)
+                ColorHex = reader.IsDBNull(2) ? null : reader.GetString(2),
+                SortOrder = reader.GetInt32(3),
+                CreatedAt = reader.GetInt64(4)
             });
         }
 
@@ -367,17 +370,19 @@ ORDER BY sortOrder ASC, createdAt ASC, name COLLATE NOCASE ASC;
         {
             Id = Guid.NewGuid().ToString("N"),
             Name = normalized,
+            ColorHex = null,
             SortOrder = sortOrder,
             CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
-INSERT INTO playlists (id, name, sortOrder, createdAt)
-VALUES ($id, $name, $sortOrder, $createdAt);
+INSERT INTO playlists (id, name, color, sortOrder, createdAt)
+VALUES ($id, $name, $color, $sortOrder, $createdAt);
 ";
         cmd.Parameters.AddWithValue("$id", playlist.Id);
         cmd.Parameters.AddWithValue("$name", playlist.Name);
+        cmd.Parameters.AddWithValue("$color", (object?)playlist.ColorHex ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$sortOrder", playlist.SortOrder);
         cmd.Parameters.AddWithValue("$createdAt", playlist.CreatedAt);
         cmd.ExecuteNonQuery();
@@ -405,6 +410,23 @@ VALUES ($id, $name, $sortOrder, $createdAt);
         cmd.CommandText = "UPDATE playlists SET name = $name WHERE id = $id;";
         cmd.Parameters.AddWithValue("$id", playlistId);
         cmd.Parameters.AddWithValue("$name", normalized);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SetPlaylistColor(string playlistId, string? colorHex)
+    {
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            throw new ArgumentException("播放列表 ID 不能为空。", nameof(playlistId));
+        }
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "UPDATE playlists SET color = $color WHERE id = $id;";
+        cmd.Parameters.AddWithValue("$id", playlistId);
+        cmd.Parameters.AddWithValue("$color", string.IsNullOrWhiteSpace(colorHex) ? DBNull.Value : colorHex.Trim());
         cmd.ExecuteNonQuery();
     }
 
@@ -546,6 +568,34 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
             LastPlayed = reader.IsDBNull(11) ? null : reader.GetInt64(11),
             PlayCount = reader.IsDBNull(12) ? null : reader.GetInt32(12)
         };
+    }
+
+    private static void EnsurePlaylistSchema(SqliteConnection connection)
+    {
+        using var columnCmd = connection.CreateCommand();
+        columnCmd.CommandText = "PRAGMA table_info(playlists);";
+
+        var hasColorColumn = false;
+        using (var reader = columnCmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), "color", StringComparison.OrdinalIgnoreCase))
+                {
+                    hasColorColumn = true;
+                    break;
+                }
+            }
+        }
+
+        if (hasColorColumn)
+        {
+            return;
+        }
+
+        using var alterCmd = connection.CreateCommand();
+        alterCmd.CommandText = "ALTER TABLE playlists ADD COLUMN color TEXT;";
+        alterCmd.ExecuteNonQuery();
     }
 
     private static void BuildQueryCommand(

@@ -15,18 +15,23 @@ public partial class MainWindow : Window
     private const int PreferredWindowWidth = 1600;
     private const int MinWindowWidth = 960;
     private const int MinWindowHeight = 540;
+    private AppWindow? _appWindow;
+    private MainPage? _mainPage;
 
     public MainWindow()
     {
         InitializeComponent();
+        Closed += MainWindow_Closed;
         ConfigureWindowChrome();
         ConfigureInitialWindowBounds();
         try
         {
-            RootFrame.Content = new MainPage();
+            _mainPage = new MainPage();
+            RootFrame.Content = _mainPage;
         }
         catch (Exception ex)
         {
+            App.WriteExceptionLog("MainPage startup", ex);
             RootFrame.Content = CreateStartupErrorView(ex);
         }
     }
@@ -44,7 +49,7 @@ public partial class MainWindow : Window
 
         var hWnd = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
-        var appWindow = AppWindow.GetFromWindowId(windowId);
+        _appWindow = AppWindow.GetFromWindowId(windowId);
 
         if (!AppWindowTitleBar.IsCustomizationSupported())
         {
@@ -54,8 +59,8 @@ public partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        var titleBar = appWindow.TitleBar;
-        titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        var titleBar = _appWindow.TitleBar;
+        titleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
         titleBar.ButtonBackgroundColor = Colors.Transparent;
         titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         titleBar.ButtonForegroundColor = Colors.White;
@@ -67,6 +72,7 @@ public partial class MainWindow : Window
 
         SyncTitleBarInsets(titleBar);
         WindowTitleText.Text = Title;
+        _appWindow.Changed += AppWindow_Changed;
     }
 
     private static UIElement CreateStartupErrorView(Exception ex)
@@ -118,7 +124,7 @@ public partial class MainWindow : Window
     {
         var hWnd = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
-        var appWindow = AppWindow.GetFromWindowId(windowId);
+        var appWindow = _appWindow ?? AppWindow.GetFromWindowId(windowId);
         var displayArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary);
         var workArea = displayArea.WorkArea;
 
@@ -142,10 +148,53 @@ public partial class MainWindow : Window
 
         appWindow.MoveAndResize(new RectInt32(x, y, width, height));
     }
+
     private void SyncTitleBarInsets(AppWindowTitleBar titleBar)
     {
         LeftInsetColumn.Width = new GridLength(Math.Max(0, titleBar.LeftInset));
         RightInsetColumn.Width = new GridLength(Math.Max(0, titleBar.RightInset));
+    }
+
+    private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (!args.DidSizeChange && !args.DidPresenterChange)
+        {
+            return;
+        }
+
+        DispatcherQueue.TryEnqueue(() => SyncTitleBarInsets(sender.TitleBar));
+    }
+
+    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    {
+        if (_appWindow != null)
+        {
+            _appWindow.Changed -= AppWindow_Changed;
+        }
+    }
+
+    private async void TitleBarAddFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_mainPage != null)
+        {
+            await _mainPage.HandleAddFolderFromTitleBarAsync();
+        }
+    }
+
+    private async void TitleBarAddFilesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_mainPage != null)
+        {
+            await _mainPage.HandleAddFilesFromTitleBarAsync();
+        }
+    }
+
+    private async void TitleBarSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_mainPage != null)
+        {
+            await _mainPage.HandleOpenSettingsFromTitleBarAsync();
+        }
     }
 
     public void ApplyTheme(ElementTheme theme)

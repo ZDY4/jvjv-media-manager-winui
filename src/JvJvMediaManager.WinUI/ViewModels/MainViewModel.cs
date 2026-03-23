@@ -414,6 +414,12 @@ public sealed class MainViewModel : ObservableObject
         ReloadPlaylists(playlistId);
     }
 
+    public void SetPlaylistColor(string playlistId, string? colorHex)
+    {
+        _db.SetPlaylistColor(playlistId, colorHex);
+        ReloadPlaylists(playlistId);
+    }
+
     public async Task DeletePlaylistAsync(string playlistId)
     {
         var deletingCurrent = string.Equals(SelectedPlaylist?.Id, playlistId, StringComparison.Ordinal);
