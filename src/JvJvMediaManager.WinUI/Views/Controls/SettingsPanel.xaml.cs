@@ -1,7 +1,7 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml.Controls;
 using JvJvMediaManager.Models;
-using JvJvMediaManager.ViewModels;
+using JvJvMediaManager.ViewModels.MainPage;
 
 namespace JvJvMediaManager.Views.Controls;
 
@@ -9,7 +9,7 @@ public sealed partial class SettingsPanel : UserControl
 {
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
 
-    public SettingsPanel(MainViewModel viewModel)
+    public SettingsPanel(LibraryShellViewModel viewModel)
     {
         InitializeComponent();
 

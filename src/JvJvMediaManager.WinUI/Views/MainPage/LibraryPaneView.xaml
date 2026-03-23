@@ -1,0 +1,52 @@
+<UserControl
+    x:Class="JvJvMediaManager.Views.MainPageParts.LibraryPaneView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mainPage="using:JvJvMediaManager.Views.MainPageParts">
+
+    <Grid x:Name="PaneRoot"
+          x:FieldModifier="public"
+          Background="Transparent">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="56" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <mainPage:PlaylistRailView x:Name="PlaylistRail"
+                                   x:FieldModifier="public"
+                                   Grid.Column="0" />
+
+        <Border x:Name="DropTargetBorder"
+                x:FieldModifier="public"
+                Grid.Column="1"
+                Style="{StaticResource SectionCardStyle}"
+                Padding="12"
+                AllowDrop="True">
+            <Grid x:Name="ExpandedContent"
+                  x:FieldModifier="public"
+                  RowSpacing="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <mainPage:LibraryHeaderView x:Name="HeaderView"
+                                            x:FieldModifier="public" />
+                <mainPage:MediaFilterBarView x:Name="FilterBarView"
+                                             x:FieldModifier="public"
+                                             Grid.Row="1" />
+                <mainPage:MediaBrowserView x:Name="BrowserView"
+                                           x:FieldModifier="public"
+                                           Grid.Row="2" />
+            </Grid>
+        </Border>
+
+        <Thumb x:Name="PaneResizer"
+               x:FieldModifier="public"
+               Grid.ColumnSpan="2"
+               Width="8"
+               HorizontalAlignment="Right"
+               Background="{ThemeResource ResizerBrush}" />
+    </Grid>
+</UserControl>

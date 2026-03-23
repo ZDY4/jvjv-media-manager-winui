@@ -1,0 +1,63 @@
+<UserControl
+    x:Class="JvJvMediaManager.Views.MainPageParts.PlayerNavigationOverlayView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Border x:Name="PreviousMediaHotspot"
+                x:FieldModifier="public"
+                HorizontalAlignment="Left"
+                Width="96"
+                Background="Transparent"
+                Visibility="Collapsed">
+            <Grid>
+                <Border x:Name="PreviousMediaCue"
+                        x:FieldModifier="public"
+                        Width="22"
+                        Height="56"
+                        Margin="8,0,0,0"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center"
+                        Background="#CC343434"
+                        BorderThickness="0"
+                        CornerRadius="6"
+                        Opacity="0"
+                        IsHitTestVisible="False">
+                    <FontIcon Glyph="&#xE76B;"
+                              FontSize="12"
+                              Foreground="{ThemeResource TextBrush}"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                </Border>
+            </Grid>
+        </Border>
+
+        <Border x:Name="NextMediaHotspot"
+                x:FieldModifier="public"
+                HorizontalAlignment="Right"
+                Width="96"
+                Background="Transparent"
+                Visibility="Collapsed">
+            <Grid>
+                <Border x:Name="NextMediaCue"
+                        x:FieldModifier="public"
+                        Width="22"
+                        Height="56"
+                        Margin="0,0,8,0"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Background="#CC343434"
+                        BorderThickness="0"
+                        CornerRadius="6"
+                        Opacity="0"
+                        IsHitTestVisible="False">
+                    <FontIcon Glyph="&#xE76C;"
+                              FontSize="12"
+                              Foreground="{ThemeResource TextBrush}"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
