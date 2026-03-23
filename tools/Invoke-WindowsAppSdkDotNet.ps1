@@ -115,6 +115,7 @@ if ($Action -eq 'Build') {
     $msbuildPath = Get-VsMsBuildPath
     $msbuildArgs = @(
         $Target
+        '/restore'
         '/t:Build'
         "/p:Configuration=$Configuration"
         "/p:AppxMSBuildToolsPath=$appxMsBuildToolsPath"
