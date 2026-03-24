@@ -3,14 +3,14 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <Grid ColumnSpacing="10">
+    <Grid ColumnSpacing="8">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
         <StackPanel Grid.Column="0"
-                    Spacing="8">
+                    Spacing="6">
             <Button x:Name="SelectedPlaylistTitleButton"
                     x:FieldModifier="public"
                     Content="{Binding SelectedPlaylistTitle}"
@@ -29,7 +29,7 @@
             <StackPanel x:Name="MediaActionsPanel"
                         x:FieldModifier="public"
                         Orientation="Horizontal"
-                        Spacing="6">
+                        Spacing="4">
                 <Button x:Name="RefreshButton"
                         x:FieldModifier="public"
                         Style="{StaticResource PanelIconButtonStyle}"
@@ -70,7 +70,7 @@
             <ProgressBar x:Name="ScanProgressBar"
                          x:FieldModifier="public"
                          Grid.Row="1"
-                         Margin="0,6,0,0"
+                         Margin="0,4,0,0"
                          Height="3"
                          Visibility="{Binding ScanProgressVisibility}"
                          IsIndeterminate="{Binding ScanProgressIsIndeterminate}"
@@ -80,7 +80,7 @@
             <TextBlock x:Name="ScanPathText"
                        x:FieldModifier="public"
                        Grid.Row="2"
-                       Margin="0,4,0,0"
+                       Margin="0,2,0,0"
                        Text="{Binding ScanCurrentPath}"
                        Foreground="{ThemeResource SubtleTextBrush}"
                        FontSize="10"

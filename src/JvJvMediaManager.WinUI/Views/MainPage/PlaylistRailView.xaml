@@ -12,8 +12,8 @@
     </UserControl.Resources>
 
     <Border Background="{ThemeResource SurfaceAltBrush}">
-        <Grid Padding="8,10,8,10"
-              RowSpacing="8">
+        <Grid Padding="6,8,6,8"
+              RowSpacing="6">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -32,7 +32,7 @@
 
             <Rectangle Grid.Row="1"
                        Height="1"
-                       Margin="4,4,4,8"
+                       Margin="3,3,3,6"
                        Fill="{ThemeResource SurfaceStrokeBrush}" />
 
             <ListView x:Name="PlaylistRailListView"

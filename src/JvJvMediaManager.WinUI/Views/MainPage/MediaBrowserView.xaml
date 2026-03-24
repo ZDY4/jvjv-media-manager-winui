@@ -23,7 +23,7 @@
                   IncrementalLoadingThreshold="2"
                   DataFetchSize="1"
                   SelectionMode="Extended"
-                  IsItemClickEnabled="True">
+                  IsItemClickEnabled="False">
             <ListView.ItemContainerTransitions>
                 <TransitionCollection>
                     <AddDeleteThemeTransition />
@@ -44,7 +44,7 @@
                   IncrementalLoadingThreshold="2"
                   DataFetchSize="1"
                   SelectionMode="Extended"
-                  IsItemClickEnabled="True">
+                  IsItemClickEnabled="False">
             <GridView.ItemsPanel>
                 <ItemsPanelTemplate>
                     <ItemsWrapGrid Orientation="Horizontal"

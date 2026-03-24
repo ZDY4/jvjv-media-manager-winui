@@ -17,7 +17,7 @@
         <ItemsControl x:Name="SelectedTagsControl"
                       x:FieldModifier="public"
                       Grid.Row="1"
-                      Margin="0,8,0,0"
+                      Margin="0,6,0,0"
                       ItemsSource="{Binding SelectedTags}"
                       Visibility="{Binding SelectedTagsVisibility}">
             <ItemsControl.ItemTemplate>
@@ -25,8 +25,8 @@
                     <Button x:Name="TagChipButton"
                             Click="TagChipButton_Click"
                             Tag="{Binding}"
-                            Margin="0,0,6,6"
-                            Padding="8,3"
+                            Margin="0,0,4,4"
+                            Padding="6,2"
                             Background="{ThemeResource FilterChipBrush}"
                             Foreground="{ThemeResource AccentBrush}"
                             BorderThickness="0"

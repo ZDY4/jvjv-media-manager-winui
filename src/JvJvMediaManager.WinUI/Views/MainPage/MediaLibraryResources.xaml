@@ -20,14 +20,14 @@
 
     <Style x:Key="MediaListItemContainerStyle" TargetType="ListViewItem">
         <Setter Property="Padding" Value="0" />
-        <Setter Property="Margin" Value="0,0,0,6" />
+        <Setter Property="Margin" Value="0,0,0,4" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="Background" Value="Transparent" />
     </Style>
 
     <Style x:Key="MediaGridItemContainerStyle" TargetType="GridViewItem">
         <Setter Property="Padding" Value="0" />
-        <Setter Property="Margin" Value="0,0,8,8" />
+        <Setter Property="Margin" Value="0,0,0,6" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="VerticalContentAlignment" Value="Stretch" />
         <Setter Property="Background" Value="Transparent" />
@@ -35,7 +35,7 @@
 
     <Style x:Key="PlaylistRailListItemContainerStyle" TargetType="ListViewItem">
         <Setter Property="Padding" Value="0" />
-        <Setter Property="Margin" Value="0,0,0,6" />
+        <Setter Property="Margin" Value="0,0,0,4" />
         <Setter Property="MinWidth" Value="34" />
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -53,7 +53,7 @@
                                 Visibility="{Binding IsSelected, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanVisibilityConverter}}" />
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
-                                          Margin="3"
+                                          Margin="2"
                                           Content="{TemplateBinding Content}"
                                           ContentTemplate="{TemplateBinding ContentTemplate}" />
                     </Grid>
@@ -63,11 +63,11 @@
     </Style>
 
     <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
-        <Border Padding="10"
+        <Border Padding="8"
                 Background="{ThemeResource MediaCardBrush}"
                 BorderThickness="0"
                 CornerRadius="0">
-            <Grid ColumnSpacing="12">
+            <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -89,9 +89,9 @@
                 </Border>
 
                 <StackPanel Grid.Column="1"
-                            Spacing="6"
+                            Spacing="4"
                             VerticalAlignment="Center">
-                    <StackPanel Spacing="3">
+                    <StackPanel Spacing="2">
                         <TextBlock Text="{Binding FileName}"
                                    Foreground="{ThemeResource TextBrush}"
                                    FontSize="14"
@@ -111,7 +111,7 @@
                     </StackPanel>
 
                     <Border HorizontalAlignment="Left"
-                            Padding="6,3"
+                            Padding="5,2"
                             Background="{ThemeResource MediaTagChipBrush}"
                             CornerRadius="4">
                         <TextBlock Text="{Binding TagsText}"
@@ -125,52 +125,57 @@
     </DataTemplate>
 
     <DataTemplate x:Key="GridItemTemplate" x:DataType="viewModels:MediaItemViewModel">
-        <Border Width="{Binding ElementName=GridView, Path=Tag}"
-                Height="{Binding ElementName=GridView, Path=Tag}"
-                Background="{ThemeResource MediaCardBrush}"
-                BorderThickness="0"
-                CornerRadius="0">
-            <Grid>
-                <Border x:Name="GridSelectionOverlay"
-                        Background="{ThemeResource AccentBrush}"
-                        BorderThickness="0"
-                        CornerRadius="0"
-                        Opacity="0.18"
-                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
-                <Border Margin="8"
-                        Background="{ThemeResource MediaCardPlaceholderBrush}"
-                        CornerRadius="0">
-                    <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
-                </Border>
+        <Grid HorizontalAlignment="Stretch"
+              VerticalAlignment="Stretch">
+            <Border Width="{Binding ElementName=GridView, Path=Tag}"
+                    Height="{Binding ElementName=GridView, Path=Tag}"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{ThemeResource MediaCardBrush}"
+                    BorderThickness="0"
+                    CornerRadius="0">
+                <Grid>
+                    <Border x:Name="GridSelectionOverlay"
+                            Background="{ThemeResource AccentBrush}"
+                            BorderThickness="0"
+                            CornerRadius="0"
+                            Opacity="0.18"
+                            Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
+                    <Border Margin="8"
+                            Background="{ThemeResource MediaCardPlaceholderBrush}"
+                            CornerRadius="0">
+                        <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
+                    </Border>
 
-                <Border Margin="8"
-                        VerticalAlignment="Bottom"
-                        Background="{StaticResource MediaThumbOverlayBrush}"
-                        CornerRadius="0"
-                        Padding="8,6">
-                    <StackPanel Spacing="2">
-                        <TextBlock Text="{Binding FileName}"
-                                   Foreground="{ThemeResource TextBrush}"
-                                   FontSize="11"
-                                   FontWeight="SemiBold"
-                                   MaxLines="1"
-                                   TextTrimming="CharacterEllipsis" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="{Binding SizeText}"
-                                       Foreground="{ThemeResource MutedTextBrush}"
-                                       FontSize="9"
+                    <Border Margin="6"
+                            VerticalAlignment="Bottom"
+                            Background="{StaticResource MediaThumbOverlayBrush}"
+                            CornerRadius="0"
+                            Padding="6,5">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{Binding FileName}"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
                                        MaxLines="1"
                                        TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{Binding ResolutionText}"
-                                       Foreground="{ThemeResource MutedTextBrush}"
-                                       FontSize="9"
-                                       MaxLines="1"
-                                       TextTrimming="CharacterEllipsis" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding SizeText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="9"
+                                           MaxLines="1"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding ResolutionText}"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="9"
+                                           MaxLines="1"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                </Border>
-            </Grid>
-        </Border>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
     </DataTemplate>
 
     <DataTemplate x:Key="PlaylistRailTemplate" x:DataType="models:Playlist">

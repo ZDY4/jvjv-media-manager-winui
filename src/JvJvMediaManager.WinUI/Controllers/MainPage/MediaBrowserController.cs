@@ -58,13 +58,11 @@ public sealed class MediaBrowserController : IDisposable
         SearchBox.KeyDown += SearchBox_KeyDown;
         _libraryPane.FilterBarView.TagRemoveRequested += FilterBarView_TagRemoveRequested;
 
-        ListView.ItemClick += Media_ItemClick;
         ListView.ContainerContentChanging += Media_ContainerContentChanging;
         ListView.SelectionChanged += Media_SelectionChanged;
         ListView.RightTapped += MediaView_RightTapped;
         ListView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
 
-        GridView.ItemClick += Media_ItemClick;
         GridView.ContainerContentChanging += Media_ContainerContentChanging;
         GridView.SelectionChanged += Media_SelectionChanged;
         GridView.RightTapped += MediaView_RightTapped;
@@ -87,13 +85,11 @@ public sealed class MediaBrowserController : IDisposable
         SearchBox.KeyDown -= SearchBox_KeyDown;
         _libraryPane.FilterBarView.TagRemoveRequested -= FilterBarView_TagRemoveRequested;
 
-        ListView.ItemClick -= Media_ItemClick;
         ListView.ContainerContentChanging -= Media_ContainerContentChanging;
         ListView.SelectionChanged -= Media_SelectionChanged;
         ListView.RightTapped -= MediaView_RightTapped;
         ListView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
 
-        GridView.ItemClick -= Media_ItemClick;
         GridView.ContainerContentChanging -= Media_ContainerContentChanging;
         GridView.SelectionChanged -= Media_SelectionChanged;
         GridView.RightTapped -= MediaView_RightTapped;
@@ -160,12 +156,10 @@ public sealed class MediaBrowserController : IDisposable
 
     public IReadOnlyList<MediaItemViewModel> GetSelectedItems()
     {
-        if (_viewModel.ViewMode == MediaViewMode.Grid)
-        {
-            return GridView.SelectedItems.OfType<MediaItemViewModel>().ToList();
-        }
-
-        return ListView.SelectedItems.OfType<MediaItemViewModel>().ToList();
+        return _selectedItemIds
+            .Select(id => _loadedMediaById.TryGetValue(id, out var item) ? item : null)
+            .OfType<MediaItemViewModel>()
+            .ToList();
     }
 
     public void SyncSelectionFromViewModel(MediaItemViewModel? selectedMedia)
@@ -173,9 +167,18 @@ public sealed class MediaBrowserController : IDisposable
         _isSyncingSelection = true;
         try
         {
-            ListView.SelectedItem = selectedMedia;
-            GridView.SelectedItem = selectedMedia;
-            UpdateSelectedStateFlags(selectedMedia);
+            if (selectedMedia == null)
+            {
+                _selectedItemIds.Clear();
+            }
+            else if (_selectedItemIds.Count == 0 || !_selectedItemIds.Contains(selectedMedia.Id))
+            {
+                _selectedItemIds = new HashSet<string>(new[] { selectedMedia.Id }, StringComparer.Ordinal);
+            }
+
+            ApplySelectionToView(ListView, selectedMedia);
+            ApplySelectionToView(GridView, selectedMedia);
+            UpdateSelectedStateFlags();
         }
         finally
         {
@@ -291,35 +294,32 @@ public sealed class MediaBrowserController : IDisposable
         _viewModel.RemoveSelectedTagFilter(tag);
     }
 
-    private void Media_ItemClick(object sender, ItemClickEventArgs e)
-    {
-        if (e.ClickedItem is MediaItemViewModel media)
-        {
-            _viewModel.SelectedMedia = media;
-        }
-    }
-
     private void Media_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isSyncingSelection)
+        if (_isSyncingSelection || sender is not ListViewBase listViewBase)
         {
             return;
         }
 
-        if (sender is ListView listView && listView.SelectedItem is MediaItemViewModel media)
+        var selectedIds = listViewBase.SelectedItems
+            .OfType<MediaItemViewModel>()
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var selectedMedia = ResolvePrimarySelection(listViewBase, e, selectedIds);
+
+        _selectedItemIds = selectedIds;
+        _isSyncingSelection = true;
+        try
         {
-            _viewModel.SelectedMedia = media;
+            ApplySelectionToView(ReferenceEquals(listViewBase, ListView) ? GridView : ListView, selectedMedia);
+            UpdateSelectedStateFlags();
         }
-        else if (sender is GridView gridView && gridView.SelectedItem is MediaItemViewModel gridMedia)
+        finally
         {
-            _viewModel.SelectedMedia = gridMedia;
-        }
-        else if (sender is ListView || sender is GridView)
-        {
-            _viewModel.SelectedMedia = null;
+            _isSyncingSelection = false;
         }
 
-        UpdateSelectedStateFlags(_viewModel.SelectedMedia);
+        _viewModel.SelectedMedia = selectedMedia;
     }
 
     private void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
@@ -369,7 +369,7 @@ public sealed class MediaBrowserController : IDisposable
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             RebuildLoadedMediaIndex();
-            UpdateSelectedStateFlags(_viewModel.SelectedMedia);
+            _page.DispatcherQueue.TryEnqueue(() => SyncSelectionFromViewModel(_viewModel.SelectedMedia));
         }
 
         if (e.OldItems != null)
@@ -393,6 +393,11 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         QueueThumbnailLoads(newItems);
+
+        if (_selectedItemIds.Count > 0 && newItems.Any(item => _selectedItemIds.Contains(item.Id)))
+        {
+            _page.DispatcherQueue.TryEnqueue(() => SyncSelectionFromViewModel(_viewModel.SelectedMedia));
+        }
     }
 
     private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -410,7 +415,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        _viewModel.IconSize = Math.Clamp(_viewModel.IconSize + (delta > 0 ? 12 : -12), 72, 260);
+        _viewModel.IconSize = Math.Clamp(_viewModel.IconSize + (delta > 0 ? 8 : -8), 72, 260);
         UpdateMediaItemSize();
         ConfigureGridViewScrolling();
         e.Handled = true;
@@ -496,8 +501,9 @@ public sealed class MediaBrowserController : IDisposable
         if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
         {
             panel.Orientation = Orientation.Horizontal;
-            panel.ItemWidth = CalculateAdaptiveGridItemSize();
-            panel.ItemHeight = panel.ItemWidth;
+            var iconSize = GetCurrentGridItemSize();
+            panel.ItemWidth = CalculateAdaptiveGridSlotSize(iconSize);
+            panel.ItemHeight = iconSize;
         }
 
         _gridViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
@@ -505,29 +511,34 @@ public sealed class MediaBrowserController : IDisposable
 
     private void UpdateMediaItemSize()
     {
-        var gridItemSize = CalculateAdaptiveGridItemSize();
+        var gridItemSize = GetCurrentGridItemSize();
         GridView.Tag = gridItemSize;
         UpdateVisibleListItemSizes();
         if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
         {
             panel.Orientation = Orientation.Horizontal;
-            panel.ItemWidth = gridItemSize;
+            var slotSize = CalculateAdaptiveGridSlotSize(gridItemSize);
+            panel.ItemWidth = slotSize;
             panel.ItemHeight = gridItemSize;
         }
     }
 
-    private double CalculateAdaptiveGridItemSize()
+    private double GetCurrentGridItemSize()
     {
-        var desiredSize = Math.Clamp((double)_viewModel.IconSize, 72, 260);
+        return Math.Clamp((double)_viewModel.IconSize, 72, 260);
+    }
+
+    private double CalculateAdaptiveGridSlotSize(double itemSize)
+    {
         var availableWidth = GetGridViewAvailableWidth();
-        if (availableWidth <= desiredSize)
+        if (availableWidth <= itemSize)
         {
-            return desiredSize;
+            return itemSize;
         }
 
-        var columns = Math.Max(1, (int)Math.Floor(availableWidth / desiredSize));
+        var columns = Math.Max(1, (int)Math.Floor(availableWidth / itemSize));
         var adjustedSize = Math.Floor(availableWidth / columns);
-        return Math.Clamp(adjustedSize, 72, 320);
+        return Math.Clamp(adjustedSize, itemSize, 320);
     }
 
     private double GetGridViewAvailableWidth()
@@ -599,15 +610,54 @@ public sealed class MediaBrowserController : IDisposable
         return media != null;
     }
 
-    private void UpdateSelectedStateFlags(MediaItemViewModel? selectedMedia)
+    private void ApplySelectionToView(ListViewBase listViewBase, MediaItemViewModel? selectedMedia)
     {
-        var selectedIds = new HashSet<string>(GetSelectedItems().Select(item => item.Id), StringComparer.Ordinal);
-        if (selectedMedia != null)
+        listViewBase.SelectedItems.Clear();
+        foreach (var item in listViewBase.Items.OfType<MediaItemViewModel>())
         {
-            selectedIds.Add(selectedMedia.Id);
+            if (_selectedItemIds.Contains(item.Id))
+            {
+                listViewBase.SelectedItems.Add(item);
+            }
         }
 
-        foreach (var removedId in _selectedItemIds.Except(selectedIds).ToList())
+        if (_selectedItemIds.Count <= 1)
+        {
+            listViewBase.SelectedItem = selectedMedia;
+        }
+    }
+
+    private MediaItemViewModel? ResolvePrimarySelection(
+        ListViewBase listViewBase,
+        SelectionChangedEventArgs e,
+        IReadOnlySet<string> selectedIds)
+    {
+        if (selectedIds.Count == 0)
+        {
+            return null;
+        }
+
+        if (listViewBase.SelectedItem is MediaItemViewModel selectedItem && selectedIds.Contains(selectedItem.Id))
+        {
+            return selectedItem;
+        }
+
+        if (e.AddedItems.OfType<MediaItemViewModel>().LastOrDefault() is { } added && selectedIds.Contains(added.Id))
+        {
+            return added;
+        }
+
+        if (_viewModel.SelectedMedia is { } current && selectedIds.Contains(current.Id))
+        {
+            return current;
+        }
+
+        return listViewBase.SelectedItems.OfType<MediaItemViewModel>().LastOrDefault();
+    }
+
+    private void UpdateSelectedStateFlags()
+    {
+        foreach (var removedId in _loadedMediaById.Keys.Except(_selectedItemIds).ToList())
         {
             if (_loadedMediaById.TryGetValue(removedId, out var removedItem))
             {
@@ -615,15 +665,13 @@ public sealed class MediaBrowserController : IDisposable
             }
         }
 
-        foreach (var addedId in selectedIds.Except(_selectedItemIds).ToList())
+        foreach (var addedId in _selectedItemIds)
         {
             if (_loadedMediaById.TryGetValue(addedId, out var addedItem))
             {
                 addedItem.IsSelected = true;
             }
         }
-
-        _selectedItemIds = selectedIds;
     }
 
     private void RebuildLoadedMediaIndex()

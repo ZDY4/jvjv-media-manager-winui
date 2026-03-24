@@ -26,6 +26,7 @@ public sealed class VideoPlaybackController
     private readonly LibraryShellViewModel _libraryViewModel;
     private readonly VideoPlaybackViewModel _viewModel;
     private readonly TransportControlBarView _transportBarView;
+    private readonly VideoViewportView _videoViewportView;
     private readonly MediaPlayerElement _videoPlayer;
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly Func<AppWindow?> _getAppWindow;
@@ -50,6 +51,7 @@ public sealed class VideoPlaybackController
         LibraryShellViewModel libraryViewModel,
         VideoPlaybackViewModel viewModel,
         TransportControlBarView transportBarView,
+        VideoViewportView videoViewportView,
         MediaPlayerElement videoPlayer,
         DispatcherQueue dispatcherQueue,
         Func<AppWindow?> getAppWindow,
@@ -62,6 +64,7 @@ public sealed class VideoPlaybackController
         _libraryViewModel = libraryViewModel;
         _viewModel = viewModel;
         _transportBarView = transportBarView;
+        _videoViewportView = videoViewportView;
         _videoPlayer = videoPlayer;
         _dispatcherQueue = dispatcherQueue;
         _getAppWindow = getAppWindow;
@@ -75,7 +78,8 @@ public sealed class VideoPlaybackController
         _transportBarView.ProgressSlider.ValueChanged += ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click += PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click += VolumeButton_Click;
-        _transportBarView.VolumeDismissLayer.PointerPressed += VolumeDismissLayer_PointerPressed;
+        _transportBarView.VolumeFlyoutPopup.Opened += VolumeFlyoutPopup_Opened;
+        _transportBarView.VolumeFlyoutPopup.Closed += VolumeFlyoutPopup_Closed;
         _transportBarView.VolumeButton.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeFlyoutContent.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeSlider.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
@@ -106,7 +110,8 @@ public sealed class VideoPlaybackController
         _transportBarView.ProgressSlider.ValueChanged -= ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click -= PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click -= VolumeButton_Click;
-        _transportBarView.VolumeDismissLayer.PointerPressed -= VolumeDismissLayer_PointerPressed;
+        _transportBarView.VolumeFlyoutPopup.Opened -= VolumeFlyoutPopup_Opened;
+        _transportBarView.VolumeFlyoutPopup.Closed -= VolumeFlyoutPopup_Closed;
         _transportBarView.VolumeButton.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeFlyoutContent.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeSlider.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
@@ -130,6 +135,7 @@ public sealed class VideoPlaybackController
     public void ShowVideo(MediaItemViewModel media)
     {
         var player = EnsureMediaPlayer();
+        ShowVideoLoadingPreview(media);
         player.Source = MediaSource.CreateFromUri(new Uri(media.FileSystemPath));
         _videoPlayer.Visibility = Visibility.Visible;
         SetVideoState();
@@ -153,6 +159,7 @@ public sealed class VideoPlaybackController
         PauseAndClearSource();
         CloseVolumeFlyout();
         _videoPlayer.Visibility = Visibility.Collapsed;
+        HideVideoLoadingPreview();
         _transportBarView.ProgressSlider.Value = 0;
         _transportBarView.ProgressSlider.Maximum = 1;
         _viewModel.CurrentTimeText = "0:00";
@@ -165,6 +172,7 @@ public sealed class VideoPlaybackController
         PauseAndClearSource();
         CloseVolumeFlyout();
         _videoPlayer.Visibility = Visibility.Collapsed;
+        HideVideoLoadingPreview();
         SetPassiveState(showImageNavigation: true);
     }
 
@@ -185,6 +193,21 @@ public sealed class VideoPlaybackController
     public void HandlePointerExited()
     {
         RestartControlsHideTimer();
+    }
+
+    public void HideControlsImmediately()
+    {
+        if (_viewModel.ControlBarVisibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        CloseVolumeFlyout();
+        _viewModel.ControlBarOpacity = 0;
+        _transportBarView.ControlBar.IsHitTestVisible = false;
+        _areControlsVisible = false;
+        _refreshNavigationHotspots();
+        _controlsHideTimer.Stop();
     }
 
     public void TogglePlayPause()
@@ -270,11 +293,7 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        CloseVolumeFlyout();
-        _viewModel.ControlBarOpacity = 0;
-        _transportBarView.ControlBar.IsHitTestVisible = false;
-        _areControlsVisible = false;
-        _refreshNavigationHotspots();
+        HideControlsImmediately();
     }
 
     private void RestartControlsHideTimer()
@@ -511,13 +530,6 @@ public sealed class VideoPlaybackController
         ShowControls();
     }
 
-    private void VolumeDismissLayer_PointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        CloseVolumeFlyout();
-        ShowControls();
-        e.Handled = true;
-    }
-
     private void VolumeInteraction_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
         if (!_viewModel.IsVolumeFlyoutOpen)
@@ -573,6 +585,7 @@ public sealed class VideoPlaybackController
         var duration = sender.PlaybackSession.NaturalDuration;
         _dispatcherQueue.TryEnqueue(() =>
         {
+            HideVideoLoadingPreview();
             _transportBarView.ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
             _viewModel.TotalTimeText = FormatTime(duration);
             _viewModel.CurrentTimeText = "0:00";
@@ -661,24 +674,49 @@ public sealed class VideoPlaybackController
 
     private void ShowVolumeFlyout()
     {
-        _viewModel.IsVolumeFlyoutOpen = true;
-        _transportBarView.VolumeDismissLayer.Visibility = Visibility.Visible;
-        _transportBarView.VolumeFlyoutContent.Visibility = Visibility.Visible;
-        _transportBarView.VolumeFlyoutContent.IsHitTestVisible = true;
-        _transportBarView.VolumeSlider.Focus(FocusState.Programmatic);
+        if (_transportBarView.VolumeFlyoutPopup.IsOpen)
+        {
+            _transportBarView.VolumeSlider.Focus(FocusState.Programmatic);
+            return;
+        }
+
+        _transportBarView.VolumeFlyoutPopup.IsOpen = true;
+    }
+
+    private void ShowVideoLoadingPreview(MediaItemViewModel media)
+    {
+        _videoViewportView.VideoLoadingPreviewImage.Source = media.Thumbnail;
+        _videoViewportView.VideoLoadingPreviewHost.Visibility = media.Thumbnail == null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private void HideVideoLoadingPreview()
+    {
+        _videoViewportView.VideoLoadingPreviewHost.Visibility = Visibility.Collapsed;
+        _videoViewportView.VideoLoadingPreviewImage.Source = null;
     }
 
     private void CloseVolumeFlyout()
     {
-        if (!_viewModel.IsVolumeFlyoutOpen)
+        if (!_transportBarView.VolumeFlyoutPopup.IsOpen && !_viewModel.IsVolumeFlyoutOpen)
         {
             return;
         }
 
+        _transportBarView.VolumeFlyoutPopup.IsOpen = false;
+    }
+
+    private void VolumeFlyoutPopup_Opened(object? sender, object e)
+    {
+        _viewModel.IsVolumeFlyoutOpen = true;
+        _transportBarView.VolumeSlider.Focus(FocusState.Programmatic);
+        ShowControls();
+    }
+
+    private void VolumeFlyoutPopup_Closed(object? sender, object e)
+    {
         _viewModel.IsVolumeFlyoutOpen = false;
-        _transportBarView.VolumeFlyoutContent.Visibility = Visibility.Collapsed;
-        _transportBarView.VolumeFlyoutContent.IsHitTestVisible = false;
-        _transportBarView.VolumeDismissLayer.Visibility = Visibility.Collapsed;
         RestartControlsHideTimer();
     }
 
@@ -687,6 +725,7 @@ public sealed class VideoPlaybackController
         while (source != null)
         {
             if (ReferenceEquals(source, _transportBarView.VolumeButton)
+                || ReferenceEquals(source, _transportBarView.VolumeFlyoutPopup)
                 || ReferenceEquals(source, _transportBarView.VolumeFlyoutContent)
                 || ReferenceEquals(source, _transportBarView.VolumeSlider)
                 || ReferenceEquals(source, _transportBarView.VolumeButtonHost))

@@ -127,6 +127,7 @@ public sealed class MainPageShellController
             shell.Library,
             shell.Player.VideoPlayback,
             playerPane.TransportBar,
+            playerPane.VideoViewport,
             playerPane.VideoViewport.VideoPlayer,
             _page.DispatcherQueue,
             GetAppWindow,
@@ -548,8 +549,20 @@ public sealed class MainPageShellController
 
     private void PlayerRoot_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        ShowControls();
-        UpdatePlayerNavigationCue(e.GetCurrentPoint(PlayerRoot).Position);
+        var pointerPosition = e.GetCurrentPoint(PlayerRoot).Position;
+        UpdatePlayerNavigationCue(pointerPosition);
+
+        if (ViewModel.SelectedMedia?.Type == MediaType.Video
+            && _videoPlaybackController.AreControlsVisible
+            && !IsPlayerOverlayInteractionSource(e.OriginalSource as DependencyObject))
+        {
+            _videoPlaybackController.HideControlsImmediately();
+        }
+        else
+        {
+            ShowControls();
+        }
+
         _page.Focus(FocusState.Programmatic);
     }
 
@@ -960,6 +973,35 @@ public sealed class MainPageShellController
         _isNavigationHotspotTapCanceled = false;
         _isNavigationHotspotDraggingImage = false;
         _pressedNavigationHotspotEdge = PlayerNavigationEdge.None;
+    }
+
+    private bool IsPlayerOverlayInteractionSource(DependencyObject? source)
+    {
+        while (source != null)
+        {
+            if (ReferenceEquals(source, _playerPane.TransportBar.ControlBar)
+                || ReferenceEquals(source, _playerPane.TransportBar.VolumeButtonHost)
+                || ReferenceEquals(source, _playerPane.TransportBar.VolumeFlyoutContent)
+                || ReferenceEquals(source, _playerPane.TransportBar.VolumeSlider)
+                || ReferenceEquals(source, _playerPane.TransportBar.VolumeButton)
+                || ReferenceEquals(source, _playerPane.TransportBar.PlayPauseButton)
+                || ReferenceEquals(source, _playerPane.TransportBar.PlaybackModeButton)
+                || ReferenceEquals(source, _playerPane.TransportBar.ClipModeToggleButton)
+                || ReferenceEquals(source, _playerPane.TransportBar.FullScreenButton)
+                || ReferenceEquals(source, _playerPane.TransportBar.ProgressSlider)
+                || ReferenceEquals(source, PreviousMediaHotspot)
+                || ReferenceEquals(source, NextMediaHotspot)
+                || ReferenceEquals(source, PreviousMediaCue)
+                || ReferenceEquals(source, NextMediaCue)
+                || ReferenceEquals(source, _playerPane.ClipBarView.ClipBar))
+            {
+                return true;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     private static void SetButtonGlyph(Button? button, string glyph)

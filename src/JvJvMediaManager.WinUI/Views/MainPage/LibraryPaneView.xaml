@@ -21,12 +21,13 @@
                 x:FieldModifier="public"
                 Grid.Column="1"
                 Style="{StaticResource SectionCardStyle}"
-                Padding="12"
+                CornerRadius="0"
+                Padding="8"
                 AllowDrop="True">
             <Grid x:Name="ExpandedContent"
                   x:FieldModifier="public"
                   Visibility="{Binding LibraryPaneExpandedVisibility}"
-                  RowSpacing="10">
+                  RowSpacing="6">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
