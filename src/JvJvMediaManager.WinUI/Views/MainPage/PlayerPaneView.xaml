@@ -37,11 +37,11 @@
                         Background="{ThemeResource ZoomBadgeBrush}"
                         BorderThickness="0"
                         CornerRadius="0"
-                        Visibility="{Binding Player.ImagePreview.ZoomBadgeVisibility}"
+                        Visibility="{Binding ImagePreview.ZoomBadgeVisibility}"
                         IsHitTestVisible="False">
                     <TextBlock x:Name="ImageZoomText"
                                x:FieldModifier="public"
-                               Text="{Binding Player.ImagePreview.ZoomText}"
+                               Text="{Binding ImagePreview.ZoomText}"
                                Foreground="{ThemeResource TextBrush}"
                                FontSize="12"
                                FontWeight="SemiBold" />
@@ -49,10 +49,10 @@
 
                 <mainPage:TransportControlBarView x:Name="TransportBar"
                                                   x:FieldModifier="public"
-                                                  DataContext="{Binding Player.VideoPlayback}" />
+                                                  DataContext="{Binding VideoPlayback}" />
                 <mainPage:ClipEditorBarView x:Name="ClipBarView"
                                             x:FieldModifier="public"
-                                            DataContext="{Binding Player.ClipEditor}" />
+                                            DataContext="{Binding ClipEditor}" />
             </Grid>
         </Grid>
     </Border>

@@ -1,6 +1,6 @@
 using Microsoft.UI.Xaml;
 using JvJvMediaManager.Models;
-using JvJvMediaManager.Services;
+using JvJvMediaManager.Services.MainPage;
 
 namespace JvJvMediaManager;
 
@@ -10,10 +10,9 @@ public partial class App : Application
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "JvJvMediaManager",
         "logs");
-    private readonly SettingsService _settings = new();
-
     public static Window? MainWindow { get; private set; }
-    public static AppThemeMode CurrentThemeMode { get; private set; } = AppThemeMode.System;
+    public static AppThemeMode CurrentThemeMode { get; private set; } = AppThemeMode.Dark;
+    public MainPageModuleFactory MainPageModules { get; } = new();
 
     public App()
     {
@@ -27,28 +26,23 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         MainWindow = new MainWindow();
-        ApplyThemeMode(_settings.ThemeMode);
+        ApplyThemeMode(AppThemeMode.Dark);
         MainWindow.Activate();
     }
 
     public static void ApplyThemeMode(AppThemeMode themeMode)
     {
-        CurrentThemeMode = themeMode;
+        CurrentThemeMode = AppThemeMode.Dark;
 
         if (MainWindow is MainWindow window)
         {
-            window.ApplyTheme(MapThemeMode(themeMode));
+            window.ApplyTheme(MapThemeMode(AppThemeMode.Dark));
         }
     }
 
     private static ElementTheme MapThemeMode(AppThemeMode themeMode)
     {
-        return themeMode switch
-        {
-            AppThemeMode.Light => ElementTheme.Light,
-            AppThemeMode.Dark => ElementTheme.Dark,
-            _ => ElementTheme.Default
-        };
+        return ElementTheme.Dark;
     }
 
     private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)

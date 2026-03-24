@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using JvJvMediaManager.Data;
 using JvJvMediaManager.Models;
@@ -11,6 +12,8 @@ namespace JvJvMediaManager.ViewModels.MainPage;
 
 public sealed class LibraryShellViewModel : ObservableObject
 {
+    private static readonly Brush TransparentBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
     private readonly SettingsService _settings;
     private readonly MediaDb _db;
     private readonly MediaLibraryService _library;
@@ -33,6 +36,9 @@ public sealed class LibraryShellViewModel : ObservableObject
     private int _scanProgressValue;
     private int _scanProgressMaximum;
     private string _scanCurrentPath = string.Empty;
+    private bool _isLibraryPaneOpen = true;
+    private double _libraryPaneWidth = 360;
+    private double _libraryPaneResizerOpacity = 0.65;
 
     public LibraryShellViewModel(SelectionViewModel selection)
     {
@@ -45,6 +51,7 @@ public sealed class LibraryShellViewModel : ObservableObject
         FilteredMediaItems = new IncrementalMediaCollection(LoadMediaPageAsync);
         WatchedFolders = new ObservableCollection<WatchedFolder>(_settings.WatchedFolders);
         Playlists = new ObservableCollection<Playlist>(_db.GetPlaylists());
+        SelectedTags.CollectionChanged += (_, _) => OnPropertyChanged(nameof(SelectedTagsVisibility));
     }
 
     public IncrementalMediaCollection FilteredMediaItems { get; }
@@ -97,7 +104,18 @@ public sealed class LibraryShellViewModel : ObservableObject
     public MediaViewMode ViewMode
     {
         get => _viewMode;
-        set => SetProperty(ref _viewMode, value);
+        set
+        {
+            if (!SetProperty(ref _viewMode, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(ListViewVisibility));
+            OnPropertyChanged(nameof(GridViewVisibility));
+            OnPropertyChanged(nameof(ViewModeToggleGlyph));
+            OnPropertyChanged(nameof(ViewModeToggleToolTip));
+        }
     }
 
     public MediaSortField SortField
@@ -107,6 +125,8 @@ public sealed class LibraryShellViewModel : ObservableObject
         {
             if (SetProperty(ref _sortField, value))
             {
+                OnPropertyChanged(nameof(SortButtonText));
+                OnPropertyChanged(nameof(SortButtonToolTip));
                 QueueRefreshMedia(true);
             }
         }
@@ -119,6 +139,8 @@ public sealed class LibraryShellViewModel : ObservableObject
         {
             if (SetProperty(ref _sortOrder, value))
             {
+                OnPropertyChanged(nameof(SortButtonText));
+                OnPropertyChanged(nameof(SortButtonToolTip));
                 QueueRefreshMedia(true);
             }
         }
@@ -138,6 +160,10 @@ public sealed class LibraryShellViewModel : ObservableObject
             if (SetProperty(ref _selectedPlaylist, value))
             {
                 OnPropertyChanged(nameof(CurrentScopeTitle));
+                OnPropertyChanged(nameof(SelectedPlaylistTitle));
+                OnPropertyChanged(nameof(SelectedPlaylistTitleVisibility));
+                OnPropertyChanged(nameof(MediaTabBackground));
+                OnPropertyChanged(nameof(MediaTabForeground));
                 QueueRefreshMedia(false);
             }
         }
@@ -146,13 +172,25 @@ public sealed class LibraryShellViewModel : ObservableObject
     public bool IsScanning
     {
         get => _isScanning;
-        private set => SetProperty(ref _isScanning, value);
+        private set
+        {
+            if (SetProperty(ref _isScanning, value))
+            {
+                RaiseScanUiProperties();
+            }
+        }
     }
 
     public int ScanProgressValue
     {
         get => _scanProgressValue;
-        private set => SetProperty(ref _scanProgressValue, value);
+        private set
+        {
+            if (SetProperty(ref _scanProgressValue, value))
+            {
+                RaiseScanUiProperties();
+            }
+        }
     }
 
     public int ScanProgressMaximum
@@ -164,7 +202,13 @@ public sealed class LibraryShellViewModel : ObservableObject
     public string ScanCurrentPath
     {
         get => _scanCurrentPath;
-        private set => SetProperty(ref _scanCurrentPath, value);
+        private set
+        {
+            if (SetProperty(ref _scanCurrentPath, value))
+            {
+                RaiseScanUiProperties();
+            }
+        }
     }
 
     public string DataDir => _settings.DataDir;
@@ -177,9 +221,92 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public bool HasLockPassword => !string.IsNullOrWhiteSpace(LockPassword);
 
-    public AppThemeMode ThemeMode => _settings.ThemeMode;
+    public AppThemeMode ThemeMode => AppThemeMode.Dark;
 
     public string CurrentScopeTitle => SelectedPlaylist?.Name ?? "全部媒体";
+
+    public bool IsLibraryPaneOpen
+    {
+        get => _isLibraryPaneOpen;
+        set
+        {
+            if (!SetProperty(ref _isLibraryPaneOpen, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(LibraryPaneExpandedVisibility));
+            OnPropertyChanged(nameof(LibraryPaneResizerVisibility));
+        }
+    }
+
+    public double LibraryPaneWidth
+    {
+        get => _libraryPaneWidth;
+        set => SetProperty(ref _libraryPaneWidth, value);
+    }
+
+    public double LibraryPaneResizerOpacity
+    {
+        get => _libraryPaneResizerOpacity;
+        set => SetProperty(ref _libraryPaneResizerOpacity, value);
+    }
+
+    public Visibility LibraryPaneExpandedVisibility => IsLibraryPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility LibraryPaneResizerVisibility => IsLibraryPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility SelectedTagsVisibility => SelectedTags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ScanProgressVisibility => IsScanning || ScanProgressValue > 0 || !string.IsNullOrWhiteSpace(ScanCurrentPath)
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public Visibility ScanPathVisibility => !string.IsNullOrWhiteSpace(ScanCurrentPath)
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
+    public Visibility SelectedPlaylistTitleVisibility => SelectedPlaylist == null ? Visibility.Collapsed : Visibility.Visible;
+
+    public string SelectedPlaylistTitle => SelectedPlaylist?.Name ?? string.Empty;
+
+    public Brush MediaTabBackground => SelectedPlaylist == null
+        ? ResolveBrush("SurfaceMutedBrush", Microsoft.UI.ColorHelper.FromArgb(255, 46, 46, 46))
+        : TransparentBrush;
+
+    public Brush MediaTabForeground => SelectedPlaylist == null
+        ? ResolveBrush("TextBrush", Microsoft.UI.Colors.White)
+        : ResolveBrush("MutedTextBrush", Microsoft.UI.ColorHelper.FromArgb(255, 170, 170, 170));
+
+    public string ViewModeToggleGlyph => ViewMode == MediaViewMode.List ? "\uECA5" : "\uE8FD";
+
+    public string ViewModeToggleToolTip => ViewMode == MediaViewMode.List ? "切换到网格" : "切换到列表";
+
+    public string SortButtonText
+    {
+        get
+        {
+            return (SortField, SortOrder) switch
+            {
+                (MediaSortField.ModifiedAt, MediaSortOrder.Desc) => "时间 ↓",
+                (MediaSortField.ModifiedAt, MediaSortOrder.Asc) => "时间 ↑",
+                (MediaSortField.FileName, MediaSortOrder.Asc) => "名称 A-Z",
+                _ => "名称 Z-A"
+            };
+        }
+    }
+
+    public string SortButtonToolTip
+    {
+        get
+        {
+            return $"排序方式：{SortButtonText}";
+        }
+    }
+
+    public Visibility ListViewVisibility => ViewMode == MediaViewMode.List ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GridViewVisibility => ViewMode == MediaViewMode.Grid ? Visibility.Visible : Visibility.Collapsed;
 
     public void SetDispatcher(DispatcherQueue dispatcher)
     {
@@ -254,6 +381,8 @@ public sealed class LibraryShellViewModel : ObservableObject
         {
             _sortOrder = SortOrder == MediaSortOrder.Asc ? MediaSortOrder.Desc : MediaSortOrder.Asc;
             OnPropertyChanged(nameof(SortOrder));
+            OnPropertyChanged(nameof(SortButtonText));
+            OnPropertyChanged(nameof(SortButtonToolTip));
         }
         else
         {
@@ -261,9 +390,44 @@ public sealed class LibraryShellViewModel : ObservableObject
             _sortOrder = MediaSortOrder.Asc;
             OnPropertyChanged(nameof(SortField));
             OnPropertyChanged(nameof(SortOrder));
+            OnPropertyChanged(nameof(SortButtonText));
+            OnPropertyChanged(nameof(SortButtonToolTip));
         }
 
         QueueRefreshMedia(true);
+    }
+
+    public void SetSort(MediaSortField field, MediaSortOrder order)
+    {
+        var changed = false;
+
+        if (!EqualityComparer<MediaSortField>.Default.Equals(_sortField, field))
+        {
+            _sortField = field;
+            OnPropertyChanged(nameof(SortField));
+            changed = true;
+        }
+
+        if (!EqualityComparer<MediaSortOrder>.Default.Equals(_sortOrder, order))
+        {
+            _sortOrder = order;
+            OnPropertyChanged(nameof(SortOrder));
+            changed = true;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(SortButtonText));
+        OnPropertyChanged(nameof(SortButtonToolTip));
+        QueueRefreshMedia(true);
+    }
+
+    public void SetLibraryPaneResizing(bool isResizing)
+    {
+        LibraryPaneResizerOpacity = isResizing ? 1 : 0.65;
     }
 
     public async Task UpdateTagsAsync(IEnumerable<MediaItemViewModel> items, IEnumerable<string> tags, TagUpdateMode mode)
@@ -493,7 +657,7 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public void SetThemeMode(AppThemeMode themeMode)
     {
-        _settings.SetThemeMode(themeMode);
+        _settings.SetThemeMode(AppThemeMode.Dark);
         OnPropertyChanged(nameof(ThemeMode));
     }
 
@@ -780,5 +944,17 @@ public sealed class LibraryShellViewModel : ObservableObject
         }
 
         _dispatcher.TryEnqueue(() => action());
+    }
+
+    private void RaiseScanUiProperties()
+    {
+        OnPropertyChanged(nameof(ScanProgressVisibility));
+        OnPropertyChanged(nameof(ScanPathVisibility));
+    }
+
+    private static Brush ResolveBrush(string resourceKey, Windows.UI.Color fallbackColor)
+    {
+        return Application.Current.Resources[resourceKey] as Brush
+            ?? new SolidColorBrush(fallbackColor);
     }
 }

@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services.MainPage;
@@ -19,6 +20,12 @@ public sealed class ContentDialogService : IContentDialogService
         {
             dialog.XamlRoot = _xamlRoot;
         }
+
+        dialog.RequestedTheme = ElementTheme.Dark;
+        dialog.Background ??= Application.Current.Resources["SurfaceBrush"] as Brush;
+        dialog.Foreground ??= Application.Current.Resources["TextBrush"] as Brush;
+        dialog.BorderBrush ??= Application.Current.Resources["SurfaceStrokeBrush"] as Brush;
+        dialog.BorderThickness = new Thickness(1);
 
         return dialog.ShowAsync().AsTask();
     }

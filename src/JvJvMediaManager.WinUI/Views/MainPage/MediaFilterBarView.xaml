@@ -18,7 +18,8 @@
                       x:FieldModifier="public"
                       Grid.Row="1"
                       Margin="0,8,0,0"
-                      Visibility="Collapsed">
+                      ItemsSource="{Binding SelectedTags}"
+                      Visibility="{Binding SelectedTagsVisibility}">
             <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="x:String">
                     <Button x:Name="TagChipButton"

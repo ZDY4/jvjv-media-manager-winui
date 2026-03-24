@@ -13,18 +13,6 @@ public sealed partial class SettingsPanel : UserControl
     {
         InitializeComponent();
 
-        ThemeModeComboBox.ItemsSource = new[]
-        {
-            new ComboBoxItem { Content = "跟随系统", Tag = AppThemeMode.System },
-            new ComboBoxItem { Content = "浅色", Tag = AppThemeMode.Light },
-            new ComboBoxItem { Content = "深色", Tag = AppThemeMode.Dark }
-        };
-        ThemeModeComboBox.SelectedIndex = viewModel.ThemeMode switch
-        {
-            AppThemeMode.Light => 1,
-            AppThemeMode.Dark => 2,
-            _ => 0
-        };
         PortableToggle.IsOn = viewModel.PortableMode;
         DataDirTextBox.Text = viewModel.ConfiguredDataDir ?? viewModel.DataDir;
         GlobalPasswordBox.Password = viewModel.LockPassword;
@@ -54,9 +42,6 @@ public sealed partial class SettingsPanel : UserControl
     public string GlobalPassword => GlobalPasswordBox.Password;
 
     public bool PortableModeEnabled => PortableToggle.IsOn;
-
-    public AppThemeMode SelectedThemeMode =>
-        (AppThemeMode?)((ThemeModeComboBox.SelectedItem as ComboBoxItem)?.Tag ?? AppThemeMode.System) ?? AppThemeMode.System;
 
     public WatchedFolder? SelectedWatchedFolder => WatchedFoldersList.SelectedItem as WatchedFolder;
 

@@ -24,7 +24,6 @@ namespace JvJvMediaManager.Controllers.MainPage;
 
 public sealed class MainPageShellController
 {
-    private const double DefaultLibraryPaneWidth = 360;
     private const double MinLibraryPaneWidth = 240;
     private const double MaxLibraryPaneWidth = 640;
     private const double GridViewWidthPadding = 24;
@@ -41,13 +40,17 @@ public sealed class MainPageShellController
 
     private readonly Views.MainPage _page;
     private readonly MainPageShellViewModel _shell;
+    private readonly MainPageModuleFactory _modules;
     private readonly IContentDialogService _dialogService;
     private readonly DialogWorkflowCoordinator _dialogCoordinator;
+    private readonly LibraryPaneController _libraryPaneController;
+    private readonly PlaylistRailCoordinator _playlistRailCoordinator;
+    private readonly MediaContextMenuCoordinator _mediaContextMenuCoordinator;
+    private readonly MediaBrowserController _mediaBrowserController;
     private readonly ClipEditorController _clipEditorController;
     private readonly VideoPlaybackController _videoPlaybackController;
     private readonly ImagePreviewController _imagePreviewController;
 
-    private readonly DebounceDispatcher _debouncer = new();
     private AppWindow? _appWindow;
 
     private bool _isSyncingSelection;
@@ -57,7 +60,7 @@ public sealed class MainPageShellController
     private bool _isNavigationHotspotDraggingImage;
     private bool _isResizingLibraryPane;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
-    private double _libraryPaneWidth = DefaultLibraryPaneWidth;
+    private double _libraryPaneWidth = 360;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
 
@@ -108,15 +111,37 @@ public sealed class MainPageShellController
         MainPageShellViewModel shell,
         LibraryPaneView libraryPane,
         PlayerPaneView playerPane,
-        IContentDialogService dialogService)
+        IContentDialogService dialogService,
+        MainPageModuleFactory modules)
     {
         _page = page;
         _shell = shell;
+        _modules = modules;
         _libraryPane = libraryPane;
         _playerPane = playerPane;
         _dialogService = dialogService;
-        _dialogCoordinator = new DialogWorkflowCoordinator(shell.Library, dialogService);
-        _videoPlaybackController = new VideoPlaybackController(
+        _dialogCoordinator = _modules.CreateDialogWorkflowCoordinator(shell.Library, dialogService);
+        _libraryPaneController = _modules.CreateLibraryPaneController(page, shell.Library, libraryPane);
+        _mediaContextMenuCoordinator = _modules.CreateMediaContextMenuCoordinator(
+            shell.Library,
+            ApplyTagEditorAsync,
+            DeleteSelectionAsync);
+        _playlistRailCoordinator = _modules.CreatePlaylistRailCoordinator(
+            shell.Library,
+            libraryPane.PlaylistRail,
+            libraryPane.HeaderView,
+            _libraryPaneController,
+            dialogService,
+            ShowInfoDialogAsync,
+            ConfirmAsync);
+        _mediaBrowserController = _modules.CreateMediaBrowserController(
+            page,
+            shell.Library,
+            libraryPane,
+            _mediaContextMenuCoordinator,
+            (paths, refreshMedia) => UpdateWatchedFolders(paths, refreshMedia),
+            ShowInfoDialogAsync);
+        _videoPlaybackController = _modules.CreateVideoPlaybackController(
             shell.Library,
             shell.Player.VideoPlayback,
             playerPane.TransportBar,
@@ -124,11 +149,11 @@ public sealed class MainPageShellController
             _page.DispatcherQueue,
             GetAppWindow,
             NavigateRelativeAsync,
-            () => ViewModel.SelectedMedia?.Type == MediaType.Video && EmptyState.Visibility != Visibility.Visible,
+            () => ViewModel.SelectedMedia?.Type == MediaType.Video && _shell.Player.EmptyStateVisibility != Visibility.Visible,
             () => _page.Focus(FocusState.Programmatic),
             RefreshPlayerNavigationHotspots,
             duration => _clipEditorController!.HandleMediaOpened(duration));
-        _clipEditorController = new ClipEditorController(
+        _clipEditorController = _modules.CreateClipEditorController(
             shell.Library,
             shell.Player.ClipEditor,
             ClipModeToggleButton,
@@ -138,44 +163,14 @@ public sealed class MainPageShellController
             _videoPlaybackController.GetCurrentVideoDuration,
             paths => UpdateWatchedFolders(paths),
             ShowControls);
-        _imagePreviewController = new ImagePreviewController(
+        _imagePreviewController = _modules.CreateImagePreviewController(
             shell.Library,
             shell.Player.ImagePreview,
             playerPane.ImageViewport,
             playerPane.PlayerOverlay,
             RefreshPlayerNavigationHotspots);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
-        ViewModel.Playlists.CollectionChanged += Playlists_CollectionChanged;
-        ViewModel.SelectedTags.CollectionChanged += SelectedTags_CollectionChanged;
         ViewModel.SetDispatcher(_page.DispatcherQueue);
-        MediaTabButton.Click += MediaTabButton_Click;
-        PlaylistRailListView.ItemClick += PlaylistRailListView_ItemClick;
-        PlaylistRailListView.DragItemsCompleted += PlaylistRailListView_DragItemsCompleted;
-        PlaylistRailListView.RightTapped += PlaylistRailListView_RightTapped;
-        CreatePlaylistRailButton.Click += CreatePlaylist_Click;
-        SelectedPlaylistTitleButton.Click += SelectedPlaylistTitleButton_Click;
-        RefreshButton.Click += Refresh_Click;
-        ViewModeToggleButton.Click += ToggleViewMode_Click;
-        SortButton.Click += Sort_Click;
-        SearchBox.TextChanged += SearchBox_TextChanged;
-        SearchBox.KeyDown += SearchBox_KeyDown;
-        _libraryPane.FilterBarView.TagRemoveRequested += (_, tag) => ViewModel.RemoveSelectedTagFilter(tag);
-        ListView.ItemClick += Media_ItemClick;
-        ListView.ContainerContentChanging += Media_ContainerContentChanging;
-        ListView.SelectionChanged += Media_SelectionChanged;
-        ListView.RightTapped += MediaView_RightTapped;
-        GridView.ItemClick += Media_ItemClick;
-        GridView.ContainerContentChanging += Media_ContainerContentChanging;
-        GridView.SelectionChanged += Media_SelectionChanged;
-        GridView.RightTapped += MediaView_RightTapped;
-        GridView.Loaded += GridView_Loaded;
-        GridView.SizeChanged += GridView_SizeChanged;
-        LibraryDropTarget.DragOver += LibraryPanel_DragOver;
-        LibraryDropTarget.Drop += LibraryPanel_Drop;
-        LibraryPaneResizer.DragStarted += LibraryPaneResizer_DragStarted;
-        LibraryPaneResizer.DragDelta += LibraryPaneResizer_DragDelta;
-        LibraryPaneResizer.DragCompleted += LibraryPaneResizer_DragCompleted;
-        LibraryPaneRoot.SizeChanged += LibraryPaneRoot_SizeChanged;
         PlayerRoot.PointerMoved += PlayerRoot_PointerMoved;
         PlayerRoot.PointerPressed += PlayerRoot_PointerPressed;
         PlayerRoot.PointerExited += PlayerRoot_PointerExited;
@@ -196,24 +191,11 @@ public sealed class MainPageShellController
         ClipPlanButton.Click += ClipPlan_Click;
         ClearClipButton.Click += ClearClip_Click;
         ExportClipButton.Click += ExportClip_Click;
-        ListView.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(MediaLibraryView_PointerWheelChanged), true);
-        GridView.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(MediaLibraryView_PointerWheelChanged), true);
-        PlaylistRailListView.ItemsSource = ViewModel.Playlists;
-        SelectedTagsControl.ItemsSource = ViewModel.SelectedTags;
-        ListView.ItemsSource = ViewModel.FilteredMediaItems;
-        GridView.ItemsSource = ViewModel.FilteredMediaItems;
-        StatusText.Text = ViewModel.StatusMessage;
-        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-        RefreshPlaylistSelection();
-        UpdateLibraryPaneUi();
-        UpdateLibraryPanePresentation();
-
-        UpdateViewModeButtonUi();
-        UpdateSortButtonUi();
+        _shell.Player.EmptyStateVisibility = Visibility.Visible;
+        _shell.Player.PlayerInfoVisibility = Visibility.Collapsed;
         _shell.Player.ImagePreview.ZoomBadgeVisibility = Visibility.Collapsed;
         _videoPlaybackController.Clear();
         _clipEditorController.Refresh();
-        RefreshScanProgressVisibility();
     }
 
     public LibraryShellViewModel ViewModel => _shell.Library;
@@ -222,24 +204,17 @@ public sealed class MainPageShellController
     {
         await ExecuteUiActionAsync(async () =>
         {
-            await ViewModel.InitializeAsync();
-            RefreshTagChips();
-            RefreshPlaylistSelection();
-            RefreshScanProgressVisibility();
-            UpdateMediaItemSize();
-            ConfigureGridViewScrolling();
-            UpdateLibraryPaneState(preferOpen: true);
+            await _mediaBrowserController.InitializeAsync();
+            _libraryPaneController.EnsurePaneState(preferOpen: true);
         }, "初始化失败");
     }
 
     public void Dispose()
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
-        ViewModel.Playlists.CollectionChanged -= Playlists_CollectionChanged;
-        ViewModel.SelectedTags.CollectionChanged -= SelectedTags_CollectionChanged;
-        GridView.Loaded -= GridView_Loaded;
-        GridView.SizeChanged -= GridView_SizeChanged;
-        LibraryPaneRoot.SizeChanged -= LibraryPaneRoot_SizeChanged;
+        _mediaBrowserController.Dispose();
+        _playlistRailCoordinator.Dispose();
+        _libraryPaneController.Dispose();
         _videoPlaybackController.Dispose();
         _imagePreviewController.Dispose();
     }
@@ -250,48 +225,18 @@ public sealed class MainPageShellController
         {
             _page.DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
         }
-        else if (e.PropertyName == nameof(LibraryShellViewModel.SelectedPlaylist))
-        {
-            _page.DispatcherQueue.TryEnqueue(() =>
-            {
-                RefreshPlaylistSelection();
-                UpdateLibraryPaneUi();
-            });
-        }
-        else if (e.PropertyName == nameof(LibraryShellViewModel.IsScanning)
-            || e.PropertyName == nameof(LibraryShellViewModel.ScanCurrentPath)
-            || e.PropertyName == nameof(LibraryShellViewModel.ScanProgressMaximum)
-            || e.PropertyName == nameof(LibraryShellViewModel.ScanProgressValue))
-        {
-            _page.DispatcherQueue.TryEnqueue(RefreshScanProgressVisibility);
-        }
-        else if (e.PropertyName == nameof(LibraryShellViewModel.StatusMessage))
-        {
-            _page.DispatcherQueue.TryEnqueue(() => StatusText.Text = ViewModel.StatusMessage);
-        }
-    }
-
-    private void SelectedTags_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        RefreshTagChips();
-    }
-
-    private void Playlists_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        RefreshPlaylistSelection();
-        UpdateLibraryPaneUi();
     }
 
     public Task HandleAddFolderFromTitleBarAsync()
     {
-        ActivateMediaLibrary(openPane: true);
-        return AddFolderAsync();
+        _libraryPaneController.ActivateMediaLibrary(openPane: true);
+        return _mediaBrowserController.AddFolderAsync();
     }
 
     public Task HandleAddFilesFromTitleBarAsync()
     {
-        ActivateMediaLibrary(openPane: true);
-        return AddFilesAsync();
+        _libraryPaneController.ActivateMediaLibrary(openPane: true);
+        return _mediaBrowserController.AddFilesAsync();
     }
 
     public Task HandleOpenSettingsFromTitleBarAsync()
@@ -301,25 +246,12 @@ public sealed class MainPageShellController
 
     private async void AddFiles_Click(object sender, RoutedEventArgs e)
     {
-        await AddFilesAsync();
+        await _mediaBrowserController.AddFilesAsync();
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {
-        await AddFolderAsync();
-    }
-
-    private async void Refresh_Click(object sender, RoutedEventArgs e)
-    {
-        await ExecuteUiActionAsync(async () =>
-        {
-            if (ViewModel.WatchedFolders.Count == 0)
-            {
-                return;
-            }
-
-            await ViewModel.RescanFoldersAsync();
-        }, "刷新媒体库失败");
+        await _mediaBrowserController.AddFolderAsync();
     }
 
     private async void EditTags_Click(object sender, RoutedEventArgs e)
@@ -342,105 +274,9 @@ public sealed class MainPageShellController
         await _dialogCoordinator.ShowFolderLockDialogAsync();
     }
 
-    private Task AddFolderAsync()
-    {
-        return ExecuteUiActionAsync(async () =>
-        {
-            var window = App.MainWindow;
-            if (window == null)
-            {
-                return;
-            }
+    private Task AddFolderAsync() => _mediaBrowserController.AddFolderAsync();
 
-            var folder = await PickerHelpers.PickFolderAsync(window);
-            if (string.IsNullOrWhiteSpace(folder))
-            {
-                return;
-            }
-
-            await ViewModel.AddFolderAsync(folder);
-            UpdateWatchedFolders(new[] { folder }, refreshMedia: false);
-        }, "导入文件夹失败");
-    }
-
-    private Task AddFilesAsync()
-    {
-        return ExecuteUiActionAsync(async () =>
-        {
-            var window = App.MainWindow;
-            if (window == null)
-            {
-                return;
-            }
-
-            var paths = await PickerHelpers.PickFilesAsync(window);
-            if (paths.Count == 0)
-            {
-                return;
-            }
-
-            await ViewModel.AddFilesAsync(paths);
-            UpdateWatchedFolders(paths, refreshMedia: false);
-        }, "导入文件失败");
-    }
-
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        var query = SearchBox.Text ?? string.Empty;
-        _debouncer.Debounce(TimeSpan.FromMilliseconds(250), () =>
-        {
-            _page.DispatcherQueue.TryEnqueue(() => ViewModel.SearchQuery = query);
-        });
-    }
-
-    private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key != Windows.System.VirtualKey.Enter)
-        {
-            return;
-        }
-
-        var value = SearchBox.Text?.Trim() ?? string.Empty;
-        if (!value.StartsWith("#", StringComparison.Ordinal) || value.Length <= 1)
-        {
-            return;
-        }
-
-        var tag = value[1..].Trim();
-        if (tag.Length == 0)
-        {
-            return;
-        }
-
-        var needsImmediateRefresh = string.IsNullOrWhiteSpace(ViewModel.SearchQuery);
-
-        if (!ViewModel.SelectedTags.Any(existing => string.Equals(existing, tag, StringComparison.OrdinalIgnoreCase)))
-        {
-            ViewModel.SelectedTags.Add(tag);
-            if (needsImmediateRefresh)
-            {
-                _ = ViewModel.RefreshMediaAsync(false);
-            }
-        }
-
-        SearchBox.Text = string.Empty;
-        ViewModel.SearchQuery = string.Empty;
-        e.Handled = true;
-    }
-
-    private void SelectedTagRemove_Click(object sender, RoutedEventArgs e)
-    {
-        var tag = sender is Button button && button.Tag is string directTag
-            ? directTag
-            : e.OriginalSource is Button { Tag: string originalTag }
-                ? originalTag
-                : null;
-
-        if (!string.IsNullOrWhiteSpace(tag))
-        {
-            ViewModel.RemoveSelectedTagFilter(tag);
-        }
-    }
+    private Task AddFilesAsync() => _mediaBrowserController.AddFilesAsync();
 
     private void MediaTabButton_Click(object sender, RoutedEventArgs e)
     {
@@ -713,7 +549,7 @@ public sealed class MainPageShellController
             return;
         }
 
-        var selected = GetSelectedItems().ToList();
+        var selected = _mediaBrowserController.GetSelectedItems().ToList();
         if (selected.Count == 0)
         {
             selected.Add(ViewModel.SelectedMedia);
@@ -729,8 +565,7 @@ public sealed class MainPageShellController
         }
 
         ShowControls();
-        var flyout = BuildMediaContextFlyout(selected);
-        flyout.ShowAt(PlayerRoot, e.GetPosition(PlayerRoot));
+        _mediaContextMenuCoordinator.ShowForTarget(PlayerRoot, e.GetPosition(PlayerRoot), selected);
         e.Handled = true;
     }
 
@@ -741,9 +576,10 @@ public sealed class MainPageShellController
 
     private void UpdatePlayer(MediaItemViewModel media)
     {
-        EmptyState.Visibility = Visibility.Collapsed;
-        PlayerFileNameText.Text = media.FileName;
-        PlayerResolutionText.Text = media.ResolutionText;
+        _shell.Player.EmptyStateVisibility = Visibility.Collapsed;
+        _shell.Player.PlayerInfoVisibility = Visibility.Visible;
+        _shell.Player.PlayerFileName = media.FileName;
+        _shell.Player.PlayerResolution = media.ResolutionText;
         _clipEditorController.HandleMediaChanged(media);
 
         if (media.Type == MediaType.Video)
@@ -758,56 +594,34 @@ public sealed class MainPageShellController
             _videoPlaybackController.ShowImageState();
             _imagePreviewController.ShowImage(media);
         }
-
-        UpdateLibraryPaneState();
     }
 
     private void ClearPlayerSelection()
     {
-        EmptyState.Visibility = Visibility.Visible;
-        PlayerFileNameText.Text = string.Empty;
-        PlayerResolutionText.Text = string.Empty;
+        _shell.Player.EmptyStateVisibility = Visibility.Visible;
+        _shell.Player.PlayerInfoVisibility = Visibility.Collapsed;
+        _shell.Player.PlayerFileName = string.Empty;
+        _shell.Player.PlayerResolution = string.Empty;
         _shell.Player.ImagePreview.ZoomBadgeVisibility = Visibility.Collapsed;
         _imagePreviewController.Clear();
         _clipEditorController.HandleMediaChanged(null);
         _videoPlaybackController.Clear();
-        UpdateLibraryPaneState(preferOpen: true);
+        _libraryPaneController.EnsurePaneState(preferOpen: true);
     }
 
     private void SyncSelectionFromViewModel()
     {
-        _isSyncingSelection = true;
-        try
-        {
-            var selected = ViewModel.SelectedMedia;
-            ListView.SelectedItem = selected;
-            GridView.SelectedItem = selected;
-            UpdateSelectedStateFlags();
+        var selected = ViewModel.SelectedMedia;
+        _mediaBrowserController.SyncSelectionFromViewModel(selected);
 
-            if (selected == null)
-            {
-                ClearPlayerSelection();
-                return;
-            }
-
-            UpdatePlayer(selected);
-            RevealSelectedMedia(selected);
-        }
-        finally
+        if (selected == null)
         {
-            _isSyncingSelection = false;
-        }
-    }
-
-    private void RevealSelectedMedia(MediaItemViewModel media)
-    {
-        if (ViewModel.ViewMode == MediaViewMode.Grid)
-        {
-            GridView.ScrollIntoView(media);
+            ClearPlayerSelection();
             return;
         }
 
-        ListView.ScrollIntoView(media);
+        UpdatePlayer(selected);
+        _mediaBrowserController.RevealSelectedMedia(selected);
     }
 
     public async Task HandleKeyDownAsync(KeyRoutedEventArgs e)
@@ -821,9 +635,8 @@ public sealed class MainPageShellController
             }
             else if (e.Key == Windows.System.VirtualKey.F)
             {
-                SetLibraryPaneOpen(true);
-                SearchBox.Focus(FocusState.Programmatic);
-                SearchBox.SelectAll();
+                _libraryPaneController.SetPaneOpen(true);
+                _mediaBrowserController.FocusSearchBox();
                 e.Handled = true;
             }
             else if (e.Key == Windows.System.VirtualKey.T)
@@ -1373,9 +1186,14 @@ public sealed class MainPageShellController
         }
     }
 
-    private async Task DeleteSelectedAsync()
+    private Task DeleteSelectedAsync()
     {
-        var selected = GetSelectedItems().ToList();
+        return DeleteSelectionAsync(_mediaBrowserController.GetSelectedItems());
+    }
+
+    private async Task DeleteSelectionAsync(IReadOnlyList<MediaItemViewModel> initialSelection)
+    {
+        var selected = initialSelection.ToList();
         if (selected.Count == 0 && ViewModel.SelectedMedia != null)
         {
             selected.Add(ViewModel.SelectedMedia);
@@ -1443,7 +1261,7 @@ public sealed class MainPageShellController
             await ShowInfoDialogAsync("部分文件移到回收站失败", $"{detail}{suffix}");
         }
 
-        UpdateSelectedStateFlags();
+        _mediaBrowserController.SyncSelectionFromViewModel(ViewModel.SelectedMedia);
     }
 
     private void MoveMediaFileToRecycleBin(MediaItemViewModel media)
@@ -1465,12 +1283,7 @@ public sealed class MainPageShellController
 
     private IEnumerable<MediaItemViewModel> GetSelectedItems()
     {
-        if (ViewModel.ViewMode == MediaViewMode.Grid)
-        {
-            return GridView.SelectedItems.OfType<MediaItemViewModel>();
-        }
-
-        return ListView.SelectedItems.OfType<MediaItemViewModel>();
+        return _mediaBrowserController.GetSelectedItems();
     }
 
     private void UpdateSelectedStateFlags()
@@ -1496,7 +1309,7 @@ public sealed class MainPageShellController
     {
         return ViewModel.SelectedMedia != null
             && ViewModel.FilteredMediaItems.Count > 1
-            && EmptyState.Visibility != Visibility.Visible;
+            && _shell.Player.EmptyStateVisibility != Visibility.Visible;
     }
 
     private void UpdatePlayerNavigationHotspotLayout()
@@ -2027,8 +1840,6 @@ public sealed class MainPageShellController
             return;
         }
 
-        ViewModel.SetThemeMode(result.ThemeMode);
-        App.ApplyThemeMode(result.ThemeMode);
         ViewModel.SetPortableMode(result.PortableModeEnabled);
         if (!string.IsNullOrWhiteSpace(result.DataDirectory))
         {

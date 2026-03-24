@@ -23,16 +23,18 @@
           Padding="{ThemeResource PageOuterPadding}">
         <SplitView x:Name="LibrarySplitViewHost"
                    DisplayMode="CompactInline"
-                   IsPaneOpen="True"
+                   IsPaneOpen="{Binding Library.IsLibraryPaneOpen, Mode=TwoWay}"
                    CompactPaneLength="56"
-                   OpenPaneLength="360"
+                   OpenPaneLength="{Binding Library.LibraryPaneWidth, Mode=TwoWay}"
                    Background="Transparent">
             <SplitView.Pane>
-                <mainPage:LibraryPaneView x:Name="LibraryPaneHost" />
+                <mainPage:LibraryPaneView x:Name="LibraryPaneHost"
+                                          DataContext="{Binding Library}" />
             </SplitView.Pane>
 
             <SplitView.Content>
-                <mainPage:PlayerPaneView x:Name="PlayerPaneHost" />
+                <mainPage:PlayerPaneView x:Name="PlayerPaneHost"
+                                         DataContext="{Binding Player}" />
             </SplitView.Content>
         </SplitView>
     </Grid>

@@ -1,0 +1,626 @@
+using System.Collections.Specialized;
+using Microsoft.UI.Input;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
+using JvJvMediaManager.Models;
+using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
+using JvJvMediaManager.ViewModels;
+using JvJvMediaManager.ViewModels.MainPage;
+using JvJvMediaManager.Views.MainPageParts;
+
+namespace JvJvMediaManager.Controllers.MainPage;
+
+public sealed class MediaBrowserController : IDisposable
+{
+    private const double GridViewWidthPadding = 24;
+
+    private readonly JvJvMediaManager.Views.MainPage _page;
+    private readonly LibraryShellViewModel _viewModel;
+    private readonly LibraryPaneView _libraryPane;
+    private readonly MediaContextMenuCoordinator _contextMenuCoordinator;
+    private readonly Action<IEnumerable<string>, bool> _updateWatchedFolders;
+    private readonly Func<string, string, Task> _showInfoAsync;
+    private readonly DebounceDispatcher _debouncer = new();
+
+    private bool _isSyncingSelection;
+    private ScrollViewer? _gridViewScrollViewer;
+
+    private TextBox SearchBox => _libraryPane.FilterBarView.SearchBox;
+    private ListView ListView => _libraryPane.BrowserView.ListView;
+    private GridView GridView => _libraryPane.BrowserView.GridView;
+
+    public MediaBrowserController(
+        JvJvMediaManager.Views.MainPage page,
+        LibraryShellViewModel viewModel,
+        LibraryPaneView libraryPane,
+        MediaContextMenuCoordinator contextMenuCoordinator,
+        Action<IEnumerable<string>, bool> updateWatchedFolders,
+        Func<string, string, Task> showInfoAsync)
+    {
+        _page = page;
+        _viewModel = viewModel;
+        _libraryPane = libraryPane;
+        _contextMenuCoordinator = contextMenuCoordinator;
+        _updateWatchedFolders = updateWatchedFolders;
+        _showInfoAsync = showInfoAsync;
+
+        _libraryPane.HeaderView.RefreshButton.Click += Refresh_Click;
+        _libraryPane.HeaderView.ViewModeToggleButton.Click += ToggleViewMode_Click;
+        _libraryPane.HeaderView.SortButton.Click += Sort_Click;
+        SearchBox.TextChanged += SearchBox_TextChanged;
+        SearchBox.KeyDown += SearchBox_KeyDown;
+        _libraryPane.FilterBarView.TagRemoveRequested += FilterBarView_TagRemoveRequested;
+
+        ListView.ItemClick += Media_ItemClick;
+        ListView.ContainerContentChanging += Media_ContainerContentChanging;
+        ListView.SelectionChanged += Media_SelectionChanged;
+        ListView.RightTapped += MediaView_RightTapped;
+        ListView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
+
+        GridView.ItemClick += Media_ItemClick;
+        GridView.ContainerContentChanging += Media_ContainerContentChanging;
+        GridView.SelectionChanged += Media_SelectionChanged;
+        GridView.RightTapped += MediaView_RightTapped;
+        GridView.Loaded += GridView_Loaded;
+        GridView.SizeChanged += GridView_SizeChanged;
+        GridView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
+
+        _libraryPane.DropTargetBorder.DragOver += LibraryPanel_DragOver;
+        _libraryPane.DropTargetBorder.Drop += LibraryPanel_Drop;
+        _libraryPane.PaneRoot.SizeChanged += LibraryPaneRoot_SizeChanged;
+        _viewModel.FilteredMediaItems.CollectionChanged += FilteredMediaItems_CollectionChanged;
+    }
+
+    public void Dispose()
+    {
+        _libraryPane.HeaderView.RefreshButton.Click -= Refresh_Click;
+        _libraryPane.HeaderView.ViewModeToggleButton.Click -= ToggleViewMode_Click;
+        _libraryPane.HeaderView.SortButton.Click -= Sort_Click;
+        SearchBox.TextChanged -= SearchBox_TextChanged;
+        SearchBox.KeyDown -= SearchBox_KeyDown;
+        _libraryPane.FilterBarView.TagRemoveRequested -= FilterBarView_TagRemoveRequested;
+
+        ListView.ItemClick -= Media_ItemClick;
+        ListView.ContainerContentChanging -= Media_ContainerContentChanging;
+        ListView.SelectionChanged -= Media_SelectionChanged;
+        ListView.RightTapped -= MediaView_RightTapped;
+        ListView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
+
+        GridView.ItemClick -= Media_ItemClick;
+        GridView.ContainerContentChanging -= Media_ContainerContentChanging;
+        GridView.SelectionChanged -= Media_SelectionChanged;
+        GridView.RightTapped -= MediaView_RightTapped;
+        GridView.Loaded -= GridView_Loaded;
+        GridView.SizeChanged -= GridView_SizeChanged;
+        GridView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
+
+        _libraryPane.DropTargetBorder.DragOver -= LibraryPanel_DragOver;
+        _libraryPane.DropTargetBorder.Drop -= LibraryPanel_Drop;
+        _libraryPane.PaneRoot.SizeChanged -= LibraryPaneRoot_SizeChanged;
+        _viewModel.FilteredMediaItems.CollectionChanged -= FilteredMediaItems_CollectionChanged;
+    }
+
+    public async Task InitializeAsync()
+    {
+        await _viewModel.InitializeAsync();
+        QueueThumbnailLoads(_viewModel.FilteredMediaItems);
+        UpdateMediaItemSize();
+        ConfigureGridViewScrolling();
+    }
+
+    public Task AddFolderAsync()
+    {
+        return ExecuteUiActionAsync(async () =>
+        {
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
+
+            var folder = await PickerHelpers.PickFolderAsync(window);
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                return;
+            }
+
+            await _viewModel.AddFolderAsync(folder);
+            _updateWatchedFolders(new[] { folder }, false);
+        }, "导入文件夹失败", _showInfoAsync);
+    }
+
+    public Task AddFilesAsync()
+    {
+        return ExecuteUiActionAsync(async () =>
+        {
+            var window = App.MainWindow;
+            if (window == null)
+            {
+                return;
+            }
+
+            var paths = await PickerHelpers.PickFilesAsync(window);
+            if (paths.Count == 0)
+            {
+                return;
+            }
+
+            await _viewModel.AddFilesAsync(paths);
+            _updateWatchedFolders(paths, false);
+        }, "导入文件失败", _showInfoAsync);
+    }
+
+    public IReadOnlyList<MediaItemViewModel> GetSelectedItems()
+    {
+        if (_viewModel.ViewMode == MediaViewMode.Grid)
+        {
+            return GridView.SelectedItems.OfType<MediaItemViewModel>().ToList();
+        }
+
+        return ListView.SelectedItems.OfType<MediaItemViewModel>().ToList();
+    }
+
+    public void SyncSelectionFromViewModel(MediaItemViewModel? selectedMedia)
+    {
+        _isSyncingSelection = true;
+        try
+        {
+            ListView.SelectedItem = selectedMedia;
+            GridView.SelectedItem = selectedMedia;
+            UpdateSelectedStateFlags(selectedMedia);
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+    }
+
+    public void RevealSelectedMedia(MediaItemViewModel media)
+    {
+        if (_viewModel.ViewMode == MediaViewMode.Grid)
+        {
+            GridView.ScrollIntoView(media);
+            return;
+        }
+
+        ListView.ScrollIntoView(media);
+    }
+
+    public void FocusSearchBox()
+    {
+        SearchBox.Focus(FocusState.Programmatic);
+        SearchBox.SelectAll();
+    }
+
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        await ExecuteUiActionAsync(async () =>
+        {
+            if (_viewModel.WatchedFolders.Count == 0)
+            {
+                return;
+            }
+
+            await _viewModel.RescanFoldersAsync();
+        }, "刷新媒体库失败", _showInfoAsync);
+    }
+
+    private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.ViewMode = _viewModel.ViewMode == MediaViewMode.List
+            ? MediaViewMode.Grid
+            : MediaViewMode.List;
+        UpdateMediaItemSize();
+        if (_viewModel.ViewMode == MediaViewMode.Grid)
+        {
+            ConfigureGridViewScrolling();
+            _page.DispatcherQueue.TryEnqueue(ConfigureGridViewScrolling);
+        }
+    }
+
+    private void Sort_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement target)
+        {
+            return;
+        }
+
+        BuildSortFlyout().ShowAt(target);
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var query = SearchBox.Text ?? string.Empty;
+        _debouncer.Debounce(TimeSpan.FromMilliseconds(250), () =>
+        {
+            _page.DispatcherQueue.TryEnqueue(() => _viewModel.SearchQuery = query);
+        });
+    }
+
+    private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Enter)
+        {
+            return;
+        }
+
+        var value = SearchBox.Text?.Trim() ?? string.Empty;
+        if (!value.StartsWith("#", StringComparison.Ordinal) || value.Length <= 1)
+        {
+            return;
+        }
+
+        var tag = value[1..].Trim();
+        if (tag.Length == 0)
+        {
+            return;
+        }
+
+        var needsImmediateRefresh = string.IsNullOrWhiteSpace(_viewModel.SearchQuery);
+        if (!_viewModel.SelectedTags.Any(existing => string.Equals(existing, tag, StringComparison.OrdinalIgnoreCase)))
+        {
+            _viewModel.SelectedTags.Add(tag);
+            if (needsImmediateRefresh)
+            {
+                _ = _viewModel.RefreshMediaAsync(false);
+            }
+        }
+
+        SearchBox.Text = string.Empty;
+        _viewModel.SearchQuery = string.Empty;
+        e.Handled = true;
+    }
+
+    private void FilterBarView_TagRemoveRequested(object? sender, string tag)
+    {
+        _viewModel.RemoveSelectedTagFilter(tag);
+    }
+
+    private void Media_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is MediaItemViewModel media)
+        {
+            _viewModel.SelectedMedia = media;
+        }
+    }
+
+    private void Media_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isSyncingSelection)
+        {
+            return;
+        }
+
+        if (sender is ListView listView && listView.SelectedItem is MediaItemViewModel media)
+        {
+            _viewModel.SelectedMedia = media;
+        }
+        else if (sender is GridView gridView && gridView.SelectedItem is MediaItemViewModel gridMedia)
+        {
+            _viewModel.SelectedMedia = gridMedia;
+        }
+        else if (sender is ListView || sender is GridView)
+        {
+            _viewModel.SelectedMedia = null;
+        }
+
+        UpdateSelectedStateFlags(_viewModel.SelectedMedia);
+    }
+
+    private void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is not ListViewBase listViewBase || sender is not FrameworkElement target)
+        {
+            return;
+        }
+
+        if (TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var media) && media != null)
+        {
+            EnsureRightTappedSelection(listViewBase, media);
+        }
+
+        var selected = GetSelectedItems();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        _contextMenuCoordinator.ShowForTarget(target, e.GetPosition(target), selected);
+        e.Handled = true;
+    }
+
+    private void Media_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.Item is not MediaItemViewModel media)
+        {
+            return;
+        }
+
+        if (sender == ListView)
+        {
+            ApplyListItemSize(args.ItemContainer as SelectorItem);
+        }
+
+        if (args.InRecycleQueue)
+        {
+            return;
+        }
+
+        _ = _viewModel.EnsureThumbnailAsync(media);
+    }
+
+    private void FilteredMediaItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems == null || e.NewItems.Count == 0)
+        {
+            return;
+        }
+
+        QueueThumbnailLoads(e.NewItems.OfType<MediaItemViewModel>());
+    }
+
+    private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        var ctrlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+        if (!ctrlDown)
+        {
+            return;
+        }
+
+        var source = sender as UIElement ?? ListView;
+        var delta = e.GetCurrentPoint(source).Properties.MouseWheelDelta;
+        if (delta == 0)
+        {
+            return;
+        }
+
+        _viewModel.IconSize = Math.Clamp(_viewModel.IconSize + (delta > 0 ? 12 : -12), 72, 260);
+        UpdateMediaItemSize();
+        ConfigureGridViewScrolling();
+        e.Handled = true;
+    }
+
+    private void GridView_Loaded(object sender, RoutedEventArgs e)
+    {
+        ConfigureGridViewScrolling();
+    }
+
+    private void GridView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width > 0)
+        {
+            UpdateMediaItemSize();
+        }
+    }
+
+    private void LibraryPaneRoot_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Width > 0)
+        {
+            UpdateMediaItemSize();
+        }
+    }
+
+    private void LibraryPanel_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            e.AcceptedOperation = DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = "导入媒体文件或文件夹";
+        }
+        else
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+        }
+
+        e.Handled = true;
+    }
+
+    private async void LibraryPanel_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            return;
+        }
+
+        var deferral = e.GetDeferral();
+        try
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            var paths = items
+                .OfType<IStorageItem>()
+                .Select(item => item.Path)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToList();
+
+            if (paths.Count == 0)
+            {
+                return;
+            }
+
+            await _viewModel.AddFilesAsync(paths);
+            _updateWatchedFolders(paths, true);
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
+    private void ConfigureGridViewScrolling()
+    {
+        ScrollViewer.SetHorizontalScrollMode(GridView, ScrollMode.Disabled);
+        ScrollViewer.SetHorizontalScrollBarVisibility(GridView, ScrollBarVisibility.Disabled);
+        ScrollViewer.SetVerticalScrollMode(GridView, ScrollMode.Enabled);
+        ScrollViewer.SetVerticalScrollBarVisibility(GridView, ScrollBarVisibility.Visible);
+
+        GridView.ApplyTemplate();
+        GridView.UpdateLayout();
+
+        if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
+        {
+            panel.Orientation = Orientation.Horizontal;
+            panel.ItemWidth = CalculateAdaptiveGridItemSize();
+            panel.ItemHeight = panel.ItemWidth;
+        }
+
+        _gridViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
+    }
+
+    private void UpdateMediaItemSize()
+    {
+        var gridItemSize = CalculateAdaptiveGridItemSize();
+        GridView.Tag = gridItemSize;
+        UpdateVisibleListItemSizes();
+        if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
+        {
+            panel.Orientation = Orientation.Horizontal;
+            panel.ItemWidth = gridItemSize;
+            panel.ItemHeight = gridItemSize;
+        }
+    }
+
+    private double CalculateAdaptiveGridItemSize()
+    {
+        var desiredSize = Math.Clamp((double)_viewModel.IconSize, 72, 260);
+        var availableWidth = GetGridViewAvailableWidth();
+        if (availableWidth <= desiredSize)
+        {
+            return desiredSize;
+        }
+
+        var columns = Math.Max(1, (int)Math.Floor(availableWidth / desiredSize));
+        var adjustedSize = Math.Floor(availableWidth / columns);
+        return Math.Clamp(adjustedSize, 72, 320);
+    }
+
+    private double GetGridViewAvailableWidth()
+    {
+        var width = _gridViewScrollViewer?.ActualWidth ?? 0;
+        if (width <= 0)
+        {
+            width = GridView.ActualWidth;
+        }
+
+        if (width <= 0)
+        {
+            width = _viewModel.LibraryPaneWidth;
+        }
+
+        return Math.Max(72, width - GridViewWidthPadding);
+    }
+
+    private void UpdateVisibleListItemSizes()
+    {
+        for (var index = 0; index < ListView.Items.Count; index++)
+        {
+            if (ListView.ContainerFromIndex(index) is SelectorItem container)
+            {
+                ApplyListItemSize(container);
+            }
+        }
+    }
+
+    private void ApplyListItemSize(SelectorItem? container)
+    {
+        if (container == null)
+        {
+            return;
+        }
+
+        if (MainPageVisualTreeHelpers.FindDescendantByName(container, "ListThumbnailHost") is not FrameworkElement thumbnailHost)
+        {
+            return;
+        }
+
+        var size = Math.Clamp((int)Math.Round(_viewModel.IconSize * 0.6), 48, 180);
+        thumbnailHost.Width = size;
+        thumbnailHost.Height = size;
+    }
+
+    private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)
+    {
+        var selected = GetSelectedItems().Any(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal));
+        if (selected)
+        {
+            return;
+        }
+
+        listViewBase.SelectedItems.Clear();
+        listViewBase.SelectedItem = media;
+    }
+
+    private bool TryGetMediaFromElement(DependencyObject? origin, out MediaItemViewModel? media)
+    {
+        media = null;
+        if (origin == null)
+        {
+            return false;
+        }
+
+        var container = MainPageVisualTreeHelpers.FindAncestor<SelectorItem>(origin);
+        media = container?.Content as MediaItemViewModel;
+        return media != null;
+    }
+
+    private void UpdateSelectedStateFlags(MediaItemViewModel? selectedMedia)
+    {
+        var selectedIds = new HashSet<string>(GetSelectedItems().Select(item => item.Id), StringComparer.Ordinal);
+        if (selectedMedia != null)
+        {
+            selectedIds.Add(selectedMedia.Id);
+        }
+
+        foreach (var item in _viewModel.FilteredMediaItems)
+        {
+            item.IsSelected = selectedIds.Contains(item.Id);
+        }
+    }
+
+    private static async Task ExecuteUiActionAsync(Func<Task> action, string failureTitle, Func<string, string, Task> showInfoAsync)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            await showInfoAsync(failureTitle, ex.Message);
+        }
+    }
+
+    private void QueueThumbnailLoads(IEnumerable<MediaItemViewModel> items)
+    {
+        foreach (var item in items)
+        {
+            _ = _viewModel.EnsureThumbnailAsync(item);
+        }
+    }
+
+    private MenuFlyout BuildSortFlyout()
+    {
+        var flyout = new MenuFlyout();
+        flyout.Items.Add(CreateSortMenuItem("按时间排序（新到旧）", MediaSortField.ModifiedAt, MediaSortOrder.Desc));
+        flyout.Items.Add(CreateSortMenuItem("按时间排序（旧到新）", MediaSortField.ModifiedAt, MediaSortOrder.Asc));
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateSortMenuItem("按名称排序（A-Z）", MediaSortField.FileName, MediaSortOrder.Asc));
+        flyout.Items.Add(CreateSortMenuItem("按名称排序（Z-A）", MediaSortField.FileName, MediaSortOrder.Desc));
+        return flyout;
+    }
+
+    private ToggleMenuFlyoutItem CreateSortMenuItem(string text, MediaSortField field, MediaSortOrder order)
+    {
+        var item = new ToggleMenuFlyoutItem
+        {
+            Text = text,
+            IsChecked = _viewModel.SortField == field && _viewModel.SortOrder == order
+        };
+        item.Click += (_, _) => _viewModel.SetSort(field, order);
+        return item;
+    }
+}

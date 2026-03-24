@@ -34,14 +34,6 @@
                                FontSize="16"
                                FontWeight="SemiBold" />
 
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="主题"
-                                   Foreground="{ThemeResource MutedTextBrush}" />
-                        <ComboBox x:Name="ThemeModeComboBox"
-                                  x:FieldModifier="public"
-                                  Style="{StaticResource GlassComboBoxStyle}" />
-                    </StackPanel>
-
                     <ToggleSwitch x:Name="PortableToggle"
                                   x:FieldModifier="public"
                                   Header="便携模式（数据保存在程序目录 data）" />

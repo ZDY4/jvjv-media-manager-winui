@@ -36,7 +36,7 @@ public sealed class SettingsService
 
     public string LockPassword => _settings.LockPassword ?? string.Empty;
 
-    public AppThemeMode ThemeMode => _settings.ThemeMode;
+    public AppThemeMode ThemeMode => AppThemeMode.Dark;
 
     public void SetDataDir(string path)
     {
@@ -68,7 +68,7 @@ public sealed class SettingsService
 
     public void SetThemeMode(AppThemeMode themeMode)
     {
-        _settings.ThemeMode = themeMode;
+        _settings.ThemeMode = AppThemeMode.Dark;
         Save();
     }
 
@@ -120,6 +120,6 @@ public sealed class SettingsService
         public bool PortableMode { get; set; }
         public List<WatchedFolder> WatchedFolders { get; set; } = new();
         public string? LockPassword { get; set; }
-        public AppThemeMode ThemeMode { get; set; }
+        public AppThemeMode ThemeMode { get; set; } = AppThemeMode.Dark;
     }
 }

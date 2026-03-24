@@ -24,7 +24,7 @@
                 </Grid.ColumnDefinitions>
 
                 <Grid Grid.Column="1"
-                      Margin="6,4,6,1"
+                      Margin="3,2,3,0"
                       Padding="0"
                       Background="{ThemeResource ShellTopBarBrush}">
                     <Grid.ColumnDefinitions>

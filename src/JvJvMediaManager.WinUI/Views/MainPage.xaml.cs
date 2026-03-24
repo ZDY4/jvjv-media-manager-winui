@@ -11,12 +11,15 @@ namespace JvJvMediaManager.Views;
 public sealed partial class MainPage : Page
 {
     private readonly MainPageShellViewModel _shell = new();
-    private readonly IContentDialogService _dialogService = new ContentDialogService();
+    private readonly Services.MainPage.MainPageModuleFactory _modules;
+    private readonly IContentDialogService _dialogService;
     private MainPageShellController? _controller;
     private MainPageShortcutRouter? _shortcutRouter;
 
     public MainPage()
     {
+        _modules = ((App)Application.Current).MainPageModules;
+        _dialogService = _modules.CreateContentDialogService();
         InitializeComponent();
         DataContext = _shell;
         Loaded += MainPage_Loaded;
@@ -31,7 +34,7 @@ public sealed partial class MainPage : Page
     {
         _dialogService.AttachHost(XamlRoot);
 
-        _controller ??= new MainPageShellController(this, _shell, LibraryPaneHost, PlayerPaneHost, _dialogService);
+        _controller ??= new MainPageShellController(this, _shell, LibraryPaneHost, PlayerPaneHost, _dialogService, _modules);
         _shortcutRouter ??= new MainPageShortcutRouter(_controller);
 
         KeyDown -= MainPage_KeyDown;

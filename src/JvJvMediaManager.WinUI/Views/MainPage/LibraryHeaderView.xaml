@@ -13,6 +13,7 @@
                     Spacing="8">
             <Button x:Name="SelectedPlaylistTitleButton"
                     x:FieldModifier="public"
+                    Content="{Binding SelectedPlaylistTitle}"
                     Padding="0"
                     HorizontalAlignment="Left"
                     HorizontalContentAlignment="Left"
@@ -22,7 +23,7 @@
                     Foreground="{ThemeResource TextBrush}"
                     FontSize="14.3"
                     FontWeight="SemiBold"
-                    Visibility="Collapsed"
+                    Visibility="{Binding SelectedPlaylistTitleVisibility}"
                     ToolTipService.ToolTip="点击重命名播放列表" />
 
             <StackPanel x:Name="MediaActionsPanel"
@@ -38,14 +39,15 @@
                 <Button x:Name="ViewModeToggleButton"
                         x:FieldModifier="public"
                         Style="{StaticResource PanelIconButtonStyle}"
-                        ToolTipService.ToolTip="切换视图">
-                    <FontIcon Glyph="&#xECA5;" />
+                        ToolTipService.ToolTip="{Binding ViewModeToggleToolTip}">
+                    <FontIcon Glyph="{Binding ViewModeToggleGlyph}" />
                 </Button>
                 <Button x:Name="SortButton"
                         x:FieldModifier="public"
-                        Style="{StaticResource PanelIconButtonStyle}"
-                        ToolTipService.ToolTip="排序">
-                    <FontIcon Glyph="&#xE8CB;" />
+                        Style="{StaticResource SecondaryToolbarButtonStyle}"
+                        Content="{Binding SortButtonText}"
+                        Padding="10,4"
+                        ToolTipService.ToolTip="{Binding SortButtonToolTip}">
                 </Button>
             </StackPanel>
         </StackPanel>
@@ -61,6 +63,7 @@
 
             <TextBlock x:Name="StatusText"
                        x:FieldModifier="public"
+                       Text="{Binding StatusMessage}"
                        Foreground="{ThemeResource MutedTextBrush}"
                        FontSize="11"
                        TextTrimming="CharacterEllipsis" />
@@ -69,18 +72,19 @@
                          Grid.Row="1"
                          Margin="0,6,0,0"
                          Height="3"
-                         Visibility="Collapsed"
+                         Visibility="{Binding ScanProgressVisibility}"
                          Minimum="0"
-                         Maximum="1"
-                         Value="0" />
+                         Maximum="{Binding ScanProgressMaximum}"
+                         Value="{Binding ScanProgressValue}" />
             <TextBlock x:Name="ScanPathText"
                        x:FieldModifier="public"
                        Grid.Row="2"
                        Margin="0,4,0,0"
+                       Text="{Binding ScanCurrentPath}"
                        Foreground="{ThemeResource SubtleTextBrush}"
                        FontSize="10"
                        TextTrimming="CharacterEllipsis"
-                       Visibility="Collapsed" />
+                       Visibility="{Binding ScanPathVisibility}" />
         </Grid>
     </Grid>
 </UserControl>

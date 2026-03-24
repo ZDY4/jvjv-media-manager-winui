@@ -14,7 +14,8 @@
 
         <mainPage:PlaylistRailView x:Name="PlaylistRail"
                                    x:FieldModifier="public"
-                                   Grid.Column="0" />
+                                   Grid.Column="0"
+                                   DataContext="{Binding}" />
 
         <Border x:Name="DropTargetBorder"
                 x:FieldModifier="public"
@@ -24,6 +25,7 @@
                 AllowDrop="True">
             <Grid x:Name="ExpandedContent"
                   x:FieldModifier="public"
+                  Visibility="{Binding LibraryPaneExpandedVisibility}"
                   RowSpacing="10">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -32,12 +34,15 @@
                 </Grid.RowDefinitions>
 
                 <mainPage:LibraryHeaderView x:Name="HeaderView"
-                                            x:FieldModifier="public" />
+                                            x:FieldModifier="public"
+                                            DataContext="{Binding}" />
                 <mainPage:MediaFilterBarView x:Name="FilterBarView"
                                              x:FieldModifier="public"
+                                             DataContext="{Binding}"
                                              Grid.Row="1" />
                 <mainPage:MediaBrowserView x:Name="BrowserView"
                                            x:FieldModifier="public"
+                                           DataContext="{Binding}"
                                            Grid.Row="2" />
             </Grid>
         </Border>
@@ -47,6 +52,8 @@
                Grid.ColumnSpan="2"
                Width="8"
                HorizontalAlignment="Right"
-               Background="{ThemeResource ResizerBrush}" />
+               Background="{ThemeResource ResizerBrush}"
+               Opacity="{Binding LibraryPaneResizerOpacity}"
+               Visibility="{Binding LibraryPaneResizerVisibility}" />
     </Grid>
 </UserControl>

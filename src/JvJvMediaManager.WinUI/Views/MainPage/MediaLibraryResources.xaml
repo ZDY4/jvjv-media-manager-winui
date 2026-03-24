@@ -14,6 +14,7 @@
 
     <utilities:PlaylistBackgroundBrushConverter x:Key="PlaylistBackgroundBrushConverter" />
     <utilities:PlaylistForegroundBrushConverter x:Key="PlaylistForegroundBrushConverter" />
+    <utilities:BooleanVisibilityConverter x:Key="BooleanVisibilityConverter" />
 
     <Style x:Key="MediaListItemContainerStyle" TargetType="ListViewItem">
         <Setter Property="Padding" Value="0" />
@@ -43,8 +44,14 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ListViewItem">
                     <Grid Background="Transparent">
+                        <Border x:Name="PlaylistSelectionBackground"
+                                Background="{ThemeResource AccentBrush}"
+                                CornerRadius="8"
+                                Opacity="0.18"
+                                Visibility="{Binding IsSelected, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanVisibilityConverter}}" />
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Margin="3"
                                           Content="{TemplateBinding Content}"
                                           ContentTemplate="{TemplateBinding ContentTemplate}" />
                     </Grid>
@@ -64,36 +71,38 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Border x:Name="ListSelectionOverlay"
-                        Background="{ThemeResource SelectionOverlayBrush}"
+                        Background="{ThemeResource AccentBrush}"
                         BorderThickness="0"
                         CornerRadius="0"
-                        x:Load="{x:Bind IsSelected}" />
+                        Opacity="0.16"
+                        Grid.ColumnSpan="2"
+                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
 
                 <Border x:Name="ListThumbnailHost"
                         Width="78"
                         Height="78"
                         Background="{ThemeResource MediaCardPlaceholderBrush}"
                         CornerRadius="0">
-                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                    <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
                 </Border>
 
                 <StackPanel Grid.Column="1"
                             Spacing="6"
                             VerticalAlignment="Center">
                     <StackPanel Spacing="3">
-                        <TextBlock Text="{x:Bind FileName}"
+                        <TextBlock Text="{Binding FileName}"
                                    Foreground="{ThemeResource TextBrush}"
                                    FontSize="14"
                                    FontWeight="SemiBold"
                                    TextTrimming="CharacterEllipsis" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="{x:Bind SizeText}"
+                            <TextBlock Text="{Binding SizeText}"
                                        Foreground="{ThemeResource MutedTextBrush}"
                                        FontSize="12" />
-                            <TextBlock Text="{x:Bind ResolutionText}"
+                            <TextBlock Text="{Binding ResolutionText}"
                                        Foreground="{ThemeResource MutedTextBrush}"
                                        FontSize="12" />
-                            <TextBlock Text="{x:Bind DurationText}"
+                            <TextBlock Text="{Binding DurationText}"
                                        Foreground="{ThemeResource MutedTextBrush}"
                                        FontSize="12" />
                         </StackPanel>
@@ -103,7 +112,7 @@
                             Padding="6,3"
                             Background="{ThemeResource MediaTagChipBrush}"
                             CornerRadius="4">
-                        <TextBlock Text="{x:Bind TagsText}"
+                        <TextBlock Text="{Binding TagsText}"
                                    Foreground="{ThemeResource AccentBrush}"
                                    FontSize="11"
                                    TextTrimming="CharacterEllipsis" />
@@ -121,39 +130,41 @@
                 CornerRadius="0">
             <Grid>
                 <Border x:Name="GridSelectionOverlay"
-                        Background="{ThemeResource SelectionOverlayBrush}"
+                        Background="{ThemeResource AccentBrush}"
                         BorderThickness="0"
                         CornerRadius="0"
-                        x:Load="{x:Bind IsSelected}" />
+                        Opacity="0.18"
+                        Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
                 <Border Margin="8"
                         Background="{ThemeResource MediaCardPlaceholderBrush}"
                         CornerRadius="0">
-                    <Image Source="{x:Bind Thumbnail}" Stretch="UniformToFill" />
+                    <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
                 </Border>
 
                 <Border Margin="8"
                         VerticalAlignment="Bottom"
                         Background="{StaticResource MediaThumbOverlayBrush}"
                         CornerRadius="0"
-                        Padding="10,8">
-                    <StackPanel Spacing="3">
-                        <TextBlock Text="{x:Bind FileName}"
+                        Padding="8,6">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="{Binding FileName}"
                                    Foreground="{ThemeResource TextBrush}"
-                                   FontSize="12"
+                                   FontSize="11"
                                    FontWeight="SemiBold"
+                                   MaxLines="1"
                                    TextTrimming="CharacterEllipsis" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="{x:Bind SizeText}"
+                            <TextBlock Text="{Binding SizeText}"
                                        Foreground="{ThemeResource MutedTextBrush}"
-                                       FontSize="10" />
-                            <TextBlock Text="{x:Bind ResolutionText}"
+                                       FontSize="9"
+                                       MaxLines="1"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding ResolutionText}"
                                        Foreground="{ThemeResource MutedTextBrush}"
-                                       FontSize="10" />
+                                       FontSize="9"
+                                       MaxLines="1"
+                                       TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                        <TextBlock Text="{x:Bind TagsText}"
-                                   Foreground="{ThemeResource AccentBrush}"
-                                   FontSize="10"
-                                   TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                 </Border>
             </Grid>
@@ -163,11 +174,11 @@
     <DataTemplate x:Key="PlaylistRailTemplate" x:DataType="models:Playlist">
         <Border Width="34"
                 Height="34"
-                Background="{x:Bind ColorHex, Converter={StaticResource PlaylistBackgroundBrushConverter}}"
+                Background="{Binding ColorHex, Converter={StaticResource PlaylistBackgroundBrushConverter}}"
                 CornerRadius="4"
-                ToolTipService.ToolTip="{x:Bind Name}">
-            <TextBlock Text="{x:Bind RailDisplayText}"
-                       Foreground="{x:Bind ColorHex, Converter={StaticResource PlaylistForegroundBrushConverter}}"
+                ToolTipService.ToolTip="{Binding Name}">
+            <TextBlock Text="{Binding RailDisplayText}"
+                       Foreground="{Binding ColorHex, Converter={StaticResource PlaylistForegroundBrushConverter}}"
                        FontSize="13"
                        FontWeight="SemiBold"
                        HorizontalAlignment="Center"

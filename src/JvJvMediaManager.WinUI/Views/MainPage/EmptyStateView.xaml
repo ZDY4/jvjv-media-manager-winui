@@ -5,7 +5,7 @@
 
     <Grid x:Name="RootGrid"
           x:FieldModifier="public"
-          Visibility="Visible">
+          Visibility="{Binding EmptyStateVisibility}">
         <Border HorizontalAlignment="Center"
                 VerticalAlignment="Center"
                 Padding="24"

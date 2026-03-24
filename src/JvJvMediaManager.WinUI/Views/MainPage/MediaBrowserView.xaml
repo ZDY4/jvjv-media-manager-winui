@@ -14,6 +14,8 @@
     <Grid>
         <ListView x:Name="ListView"
                   x:FieldModifier="public"
+                  ItemsSource="{Binding FilteredMediaItems}"
+                  Visibility="{Binding ListViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
                   ItemTemplate="{StaticResource ListItemTemplate}"
@@ -32,8 +34,9 @@
 
         <GridView x:Name="GridView"
                   x:FieldModifier="public"
-                  Tag="140"
-                  Visibility="Collapsed"
+                  ItemsSource="{Binding FilteredMediaItems}"
+                  Tag="{Binding IconSize}"
+                  Visibility="{Binding GridViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
                   ItemTemplate="{StaticResource GridItemTemplate}"

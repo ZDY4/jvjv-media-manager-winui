@@ -96,7 +96,6 @@ public sealed class SettingsDialogCoordinator
 
         return new SettingsDialogResult
         {
-            ThemeMode = panel.SelectedThemeMode,
             PortableModeEnabled = panel.PortableModeEnabled,
             DataDirectory = panel.DataDirectory,
             GlobalPassword = panel.GlobalPassword,

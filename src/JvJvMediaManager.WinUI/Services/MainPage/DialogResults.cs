@@ -42,8 +42,6 @@ public sealed class ClipPlanDialogRequest
 
 public sealed class SettingsDialogResult
 {
-    public required AppThemeMode ThemeMode { get; init; }
-
     public required bool PortableModeEnabled { get; init; }
 
     public required string DataDirectory { get; init; }

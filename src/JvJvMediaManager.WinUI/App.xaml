@@ -107,10 +107,10 @@
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
 
-      <CornerRadius x:Key="RadiusSmall">0</CornerRadius>
-      <CornerRadius x:Key="RadiusMedium">0</CornerRadius>
-      <CornerRadius x:Key="RadiusLarge">0</CornerRadius>
-      <Thickness x:Key="PageOuterPadding">4</Thickness>
+      <CornerRadius x:Key="RadiusSmall">6</CornerRadius>
+      <CornerRadius x:Key="RadiusMedium">8</CornerRadius>
+      <CornerRadius x:Key="RadiusLarge">12</CornerRadius>
+      <Thickness x:Key="PageOuterPadding">2</Thickness>
       <Thickness x:Key="SectionCardPadding">12</Thickness>
 
       <SolidColorBrush x:Key="AccentBrush" Color="{ThemeResource AccentColor}" />
@@ -174,10 +174,10 @@
       </Style>
 
       <Style x:Key="PrimaryToolbarButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="{ThemeResource AccentStrongBrush}" />
+        <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
         <Setter Property="Foreground" Value="#081019" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
         <Setter Property="Padding" Value="12,8" />
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="UseSystemFocusVisuals" Value="True" />
@@ -244,10 +244,10 @@
       </Style>
 
       <Style x:Key="SecondaryToolbarButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="{ThemeResource SurfaceMutedBrush}" />
+        <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusSmall}" />
         <Setter Property="Padding" Value="12,8" />
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="UseSystemFocusVisuals" Value="True" />
@@ -314,18 +314,18 @@
       </Style>
 
       <Style x:Key="PanelIconButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="27.2" />
-        <Setter Property="Height" Value="27.2" />
-        <Setter Property="MinWidth" Value="27.2" />
-        <Setter Property="MinHeight" Value="27.2" />
+        <Setter Property="Width" Value="32.6" />
+        <Setter Property="Height" Value="32.6" />
+        <Setter Property="MinWidth" Value="32.6" />
+        <Setter Property="MinHeight" Value="32.6" />
         <Setter Property="Padding" Value="0" />
       </Style>
 
       <Style x:Key="PrimaryIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="27.2" />
-        <Setter Property="Height" Value="27.2" />
-        <Setter Property="MinWidth" Value="27.2" />
-        <Setter Property="MinHeight" Value="27.2" />
+        <Setter Property="Width" Value="32.6" />
+        <Setter Property="Height" Value="32.6" />
+        <Setter Property="MinWidth" Value="32.6" />
+        <Setter Property="MinHeight" Value="32.6" />
         <Setter Property="Padding" Value="0" />
       </Style>
 

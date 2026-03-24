@@ -24,6 +24,8 @@
             <Button x:Name="MediaTabButton"
                     x:FieldModifier="public"
                     Style="{StaticResource PanelIconButtonStyle}"
+                    Background="{Binding MediaTabBackground}"
+                    Foreground="{Binding MediaTabForeground}"
                     ToolTipService.ToolTip="媒体库">
                 <FontIcon Glyph="&#xE8B9;" />
             </Button>
@@ -36,6 +38,8 @@
             <ListView x:Name="PlaylistRailListView"
                       x:FieldModifier="public"
                       Grid.Row="2"
+                      ItemsSource="{Binding Playlists}"
+                      SelectedItem="{Binding SelectedPlaylist, Mode=TwoWay}"
                       Background="Transparent"
                       BorderThickness="0"
                       HorizontalAlignment="Stretch"

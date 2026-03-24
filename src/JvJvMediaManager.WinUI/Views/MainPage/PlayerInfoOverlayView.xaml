@@ -5,6 +5,7 @@
 
     <Border x:Name="PlayerInfoBadge"
             x:FieldModifier="public"
+            Visibility="{Binding PlayerInfoVisibility}"
             HorizontalAlignment="Left"
             VerticalAlignment="Top"
             Margin="16"
@@ -16,12 +17,14 @@
         <StackPanel Spacing="2">
             <TextBlock x:Name="FileNameText"
                        x:FieldModifier="public"
+                       Text="{Binding PlayerFileName}"
                        Foreground="{ThemeResource TextBrush}"
                        FontSize="14"
                        FontWeight="SemiBold"
                        TextTrimming="CharacterEllipsis" />
             <TextBlock x:Name="ResolutionText"
                        x:FieldModifier="public"
+                       Text="{Binding PlayerResolution}"
                        Foreground="{ThemeResource MutedTextBrush}"
                        FontSize="12" />
         </StackPanel>
