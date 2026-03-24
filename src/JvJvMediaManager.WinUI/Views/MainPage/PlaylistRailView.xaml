@@ -24,8 +24,8 @@
             <Button x:Name="MediaTabButton"
                     x:FieldModifier="public"
                     Style="{StaticResource PanelIconButtonStyle}"
-                    Background="{Binding MediaTabBackground}"
-                    Foreground="{Binding MediaTabForeground}"
+                    Background="{Binding SelectedPlaylist, Converter={StaticResource MediaTabBackgroundBrushConverter}}"
+                    Foreground="{Binding SelectedPlaylist, Converter={StaticResource MediaTabForegroundBrushConverter}}"
                     ToolTipService.ToolTip="媒体库">
                 <FontIcon Glyph="&#xE8B9;" />
             </Button>

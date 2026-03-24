@@ -28,9 +28,10 @@ public sealed class MainPageModuleFactory
     public MediaContextMenuCoordinator CreateMediaContextMenuCoordinator(
         LibraryShellViewModel library,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
+        Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
     {
-        return new MediaContextMenuCoordinator(library, applyTagEditorAsync, deleteSelectionAsync);
+        return new MediaContextMenuCoordinator(library, applyTagEditorAsync, addToPlaylistAsync, deleteSelectionAsync);
     }
 
     public PlaylistRailCoordinator CreatePlaylistRailCoordinator(

@@ -54,7 +54,7 @@
 
         <Grid Grid.Column="1"
               HorizontalAlignment="Right"
-              MaxWidth="240">
+              MaxWidth="360">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -73,6 +73,7 @@
                          Margin="0,6,0,0"
                          Height="3"
                          Visibility="{Binding ScanProgressVisibility}"
+                         IsIndeterminate="{Binding ScanProgressIsIndeterminate}"
                          Minimum="0"
                          Maximum="{Binding ScanProgressMaximum}"
                          Value="{Binding ScanProgressValue}" />

@@ -53,14 +53,10 @@ public sealed class MainPageShellController
 
     private AppWindow? _appWindow;
 
-    private bool _isSyncingSelection;
-    private ScrollViewer? _gridViewScrollViewer;
     private bool _isNavigationHotspotPressed;
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
-    private bool _isResizingLibraryPane;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
-    private double _libraryPaneWidth = 360;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
 
@@ -70,21 +66,6 @@ public sealed class MainPageShellController
     private Grid LibraryPaneExpandedContent => _libraryPane.ExpandedContent;
     private Border LibraryDropTarget => _libraryPane.DropTargetBorder;
     private Thumb LibraryPaneResizer => _libraryPane.PaneResizer;
-    private Button MediaTabButton => _libraryPane.PlaylistRail.MediaTabButton;
-    private ListView PlaylistRailListView => _libraryPane.PlaylistRail.PlaylistRailListView;
-    private Button CreatePlaylistRailButton => _libraryPane.PlaylistRail.CreatePlaylistRailButton;
-    private Button SelectedPlaylistTitleButton => _libraryPane.HeaderView.SelectedPlaylistTitleButton;
-    private StackPanel MediaActionsPanel => _libraryPane.HeaderView.MediaActionsPanel;
-    private Button RefreshButton => _libraryPane.HeaderView.RefreshButton;
-    private Button ViewModeToggleButton => _libraryPane.HeaderView.ViewModeToggleButton;
-    private Button SortButton => _libraryPane.HeaderView.SortButton;
-    private TextBlock StatusText => _libraryPane.HeaderView.StatusText;
-    private ProgressBar ScanProgressBar => _libraryPane.HeaderView.ScanProgressBar;
-    private TextBlock ScanPathText => _libraryPane.HeaderView.ScanPathText;
-    private TextBox SearchBox => _libraryPane.FilterBarView.SearchBox;
-    private ItemsControl SelectedTagsControl => _libraryPane.FilterBarView.SelectedTagsControl;
-    private ListView ListView => _libraryPane.BrowserView.ListView;
-    private GridView GridView => _libraryPane.BrowserView.GridView;
     private Grid PlayerRoot => _playerPane.PlayerRoot;
     private Grid PlayerOverlay => _playerPane.PlayerOverlay;
     private Grid EmptyState => _playerPane.EmptyStateView.RootGrid;
@@ -125,6 +106,7 @@ public sealed class MainPageShellController
         _mediaContextMenuCoordinator = _modules.CreateMediaContextMenuCoordinator(
             shell.Library,
             ApplyTagEditorAsync,
+            AddSelectionToPlaylistAsync,
             DeleteSelectionAsync);
         _playlistRailCoordinator = _modules.CreatePlaylistRailCoordinator(
             shell.Library,
@@ -244,303 +226,7 @@ public sealed class MainPageShellController
         return ApplySettingsAsync();
     }
 
-    private async void AddFiles_Click(object sender, RoutedEventArgs e)
-    {
-        await _mediaBrowserController.AddFilesAsync();
-    }
-
-    private async void AddFolder_Click(object sender, RoutedEventArgs e)
-    {
-        await _mediaBrowserController.AddFolderAsync();
-    }
-
-    private async void EditTags_Click(object sender, RoutedEventArgs e)
-    {
-        await EditSelectedTagsAsync();
-    }
-
-    private async void AddToPlaylist_Click(object sender, RoutedEventArgs e)
-    {
-        await AddSelectionToPlaylistAsync();
-    }
-
-    private async void Settings_Click(object sender, RoutedEventArgs e)
-    {
-        await HandleOpenSettingsFromTitleBarAsync();
-    }
-
-    private async void FolderLock_Click(object sender, RoutedEventArgs e)
-    {
-        await _dialogCoordinator.ShowFolderLockDialogAsync();
-    }
-
     private Task AddFolderAsync() => _mediaBrowserController.AddFolderAsync();
-
-    private Task AddFilesAsync() => _mediaBrowserController.AddFilesAsync();
-
-    private void MediaTabButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (LibrarySplitView.IsPaneOpen && ViewModel.SelectedPlaylist == null)
-        {
-            SetLibraryPaneOpen(false);
-            return;
-        }
-
-        ActivateMediaLibrary(openPane: true);
-    }
-
-    private void PlaylistRailListView_ItemClick(object sender, ItemClickEventArgs e)
-    {
-        if (e.ClickedItem is not Playlist playlist)
-        {
-            return;
-        }
-
-        var isCurrentPlaylist = string.Equals(ViewModel.SelectedPlaylist?.Id, playlist.Id, StringComparison.Ordinal);
-        if (LibrarySplitView.IsPaneOpen && isCurrentPlaylist)
-        {
-            SetLibraryPaneOpen(false);
-            return;
-        }
-
-        ActivatePlaylist(playlist, openPane: true);
-    }
-
-    private void AllMedia_Click(object sender, RoutedEventArgs e)
-    {
-        ActivateMediaLibrary(openPane: true);
-    }
-
-    private async void CreatePlaylist_Click(object sender, RoutedEventArgs e)
-    {
-        var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
-
-        try
-        {
-            ViewModel.CreatePlaylist(name);
-            SetLibraryPaneOpen(true);
-            UpdateLibraryPaneUi();
-        }
-        catch (Exception ex)
-        {
-            await ShowInfoDialogAsync("创建失败", ex.Message);
-        }
-    }
-
-    private async void RenamePlaylist_Click(object sender, RoutedEventArgs e)
-    {
-        var playlist = ViewModel.SelectedPlaylist;
-        if (playlist == null)
-        {
-            await ShowInfoDialogAsync("提示", "请先选择一个播放列表。");
-            return;
-        }
-
-        await RenamePlaylistAsync(playlist);
-    }
-
-    private async void DeletePlaylist_Click(object sender, RoutedEventArgs e)
-    {
-        var playlist = ViewModel.SelectedPlaylist;
-        if (playlist == null)
-        {
-            await ShowInfoDialogAsync("提示", "请先选择一个播放列表。");
-            return;
-        }
-
-        await DeletePlaylistAsync(playlist);
-    }
-
-    private void PlaylistRailListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
-    {
-        ViewModel.UpdatePlaylistOrder(ViewModel.Playlists.ToList());
-        RefreshPlaylistSelection();
-    }
-
-    private async void SelectedPlaylistTitleButton_Click(object sender, RoutedEventArgs e)
-    {
-        var playlist = ViewModel.SelectedPlaylist;
-        if (playlist == null)
-        {
-            return;
-        }
-
-        await RenamePlaylistAsync(playlist);
-    }
-
-    private void PlaylistRailListView_RightTapped(object sender, RightTappedRoutedEventArgs e)
-    {
-        if (e.OriginalSource is not DependencyObject origin)
-        {
-            return;
-        }
-
-        var container = FindAncestor<ListViewItem>(origin);
-        if (container?.Content is not Playlist playlist)
-        {
-            return;
-        }
-
-        PlaylistRailItem_RightTapped(container, e);
-    }
-
-    private void PlaylistRailItem_RightTapped(object sender, RightTappedRoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement element || element.DataContext is not Playlist playlist)
-        {
-            return;
-        }
-
-        e.Handled = true;
-
-        var flyout = new MenuFlyout();
-
-        var renameItem = new MenuFlyoutItem { Text = "重命名" };
-        renameItem.Click += async (_, _) => await RenamePlaylistAsync(playlist);
-
-        var colorItem = new MenuFlyoutItem { Text = "更改颜色" };
-        colorItem.Click += async (_, _) => await ChangePlaylistColorAsync(playlist);
-
-        var deleteItem = new MenuFlyoutItem { Text = "删除" };
-        deleteItem.Click += async (_, _) => await DeletePlaylistAsync(playlist);
-
-        flyout.Items.Add(renameItem);
-        flyout.Items.Add(colorItem);
-        flyout.Items.Add(deleteItem);
-        flyout.ShowAt(element, e.GetPosition(element));
-    }
-
-    private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
-    {
-        SetMediaViewMode(ViewModel.ViewMode == MediaViewMode.List
-            ? MediaViewMode.Grid
-            : MediaViewMode.List);
-    }
-
-    private void SetMediaViewMode(MediaViewMode viewMode)
-    {
-        ViewModel.ViewMode = viewMode;
-        ListView.Visibility = viewMode == MediaViewMode.List ? Visibility.Visible : Visibility.Collapsed;
-        GridView.Visibility = viewMode == MediaViewMode.Grid ? Visibility.Visible : Visibility.Collapsed;
-        UpdateMediaItemSize();
-        UpdateViewModeButtonUi();
-        if (viewMode == MediaViewMode.Grid)
-        {
-            ConfigureGridViewScrolling();
-            _page.DispatcherQueue.TryEnqueue(ConfigureGridViewScrolling);
-        }
-        _page.DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
-    }
-
-    private void UpdateViewModeButtonUi()
-    {
-        if (ViewModeToggleButton == null)
-        {
-            return;
-        }
-
-        var switchToGrid = ViewModel.ViewMode == MediaViewMode.List;
-        SetButtonGlyph(ViewModeToggleButton, switchToGrid ? "\uECA5" : "\uE8FD");
-        ToolTipService.SetToolTip(ViewModeToggleButton, switchToGrid ? "切换到网格" : "切换到列表");
-    }
-
-    private void UpdateSortButtonUi()
-    {
-        if (SortButton == null)
-        {
-            return;
-        }
-
-        var fieldLabel = ViewModel.SortField == MediaSortField.FileName ? "名称" : "时间";
-        var orderLabel = ViewModel.SortOrder == MediaSortOrder.Asc ? "升序" : "降序";
-        ToolTipService.SetToolTip(SortButton, $"排序：{fieldLabel} {orderLabel}");
-    }
-
-    private void Sort_Click(object sender, RoutedEventArgs e)
-    {
-        if (ViewModel.SortField == MediaSortField.FileName && ViewModel.SortOrder == MediaSortOrder.Asc)
-        {
-            ViewModel.ToggleSort(MediaSortField.FileName);
-            UpdateSortButtonUi();
-            return;
-        }
-
-        if (ViewModel.SortField == MediaSortField.FileName && ViewModel.SortOrder == MediaSortOrder.Desc)
-        {
-            ViewModel.ToggleSort(MediaSortField.ModifiedAt);
-            UpdateSortButtonUi();
-            return;
-        }
-
-        if (ViewModel.SortField == MediaSortField.ModifiedAt && ViewModel.SortOrder == MediaSortOrder.Asc)
-        {
-            ViewModel.ToggleSort(MediaSortField.ModifiedAt);
-            UpdateSortButtonUi();
-            return;
-        }
-
-        ViewModel.ToggleSort(MediaSortField.FileName);
-        UpdateSortButtonUi();
-    }
-
-    private void Media_ItemClick(object sender, ItemClickEventArgs e)
-    {
-        if (e.ClickedItem is MediaItemViewModel media)
-        {
-            SelectMedia(media);
-        }
-    }
-
-    private void Media_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_isSyncingSelection)
-        {
-            return;
-        }
-
-        if (sender is ListView listView && listView.SelectedItem is MediaItemViewModel media)
-        {
-            SelectMedia(media);
-        }
-        else if (sender is GridView gridView && gridView.SelectedItem is MediaItemViewModel gridMedia)
-        {
-            SelectMedia(gridMedia);
-        }
-        else if (sender is ListView || sender is GridView)
-        {
-            ViewModel.SelectedMedia = null;
-        }
-
-        UpdateSelectedStateFlags();
-    }
-
-    private async void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
-    {
-        if (sender is not ListViewBase listViewBase)
-        {
-            return;
-        }
-
-        if (TryGetMediaFromElement(listViewBase, e.OriginalSource as DependencyObject, out var media) && media != null)
-        {
-            EnsureRightTappedSelection(listViewBase, media);
-        }
-
-        var selected = GetSelectedItems().ToList();
-        if (selected.Count == 0)
-        {
-            return;
-        }
-
-        var flyout = BuildMediaContextFlyout(selected);
-        flyout.ShowAt((FrameworkElement)sender, e.GetPosition((FrameworkElement)sender));
-        await Task.CompletedTask;
-        e.Handled = true;
-    }
 
     private void PlayerRoot_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
@@ -626,9 +312,24 @@ public sealed class MainPageShellController
 
     public async Task HandleKeyDownAsync(KeyRoutedEventArgs e)
     {
-        if ((InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0)
+        var ctrlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+        var shiftDown = (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+
+        if (ctrlDown)
         {
-            if (e.Key == Windows.System.VirtualKey.O)
+            if (shiftDown && e.Key == Windows.System.VirtualKey.O)
+            {
+                e.Handled = TryOpenSelectedMediaFolderFromShortcut();
+            }
+            else if (shiftDown && e.Key == Windows.System.VirtualKey.A)
+            {
+                e.Handled = await TryAddSelectionToPlaylistFromShortcutAsync();
+            }
+            else if (shiftDown && e.Key == Windows.System.VirtualKey.R)
+            {
+                e.Handled = await TryRemoveSelectionFromPlaylistFromShortcutAsync();
+            }
+            else if (e.Key == Windows.System.VirtualKey.O)
             {
                 await AddFolderAsync();
                 e.Handled = true;
@@ -765,6 +466,62 @@ public sealed class MainPageShellController
         }
 
         await DeleteSelectedAsync();
+        return true;
+    }
+
+    private bool TryOpenSelectedMediaFolderFromShortcut()
+    {
+        if (IsTextInputFocused())
+        {
+            return false;
+        }
+
+        var media = GetPrimarySelectedMedia();
+        if (media == null)
+        {
+            return false;
+        }
+
+        MediaContextMenuCoordinator.OpenMediaFolder(media);
+        return true;
+    }
+
+    private async Task<bool> TryAddSelectionToPlaylistFromShortcutAsync()
+    {
+        if (IsTextInputFocused())
+        {
+            return false;
+        }
+
+        var selected = GetCommandSelection();
+        if (selected.Count == 0 || ViewModel.Playlists.Count == 0)
+        {
+            return false;
+        }
+
+        await AddSelectionToPlaylistAsync(selected);
+        return true;
+    }
+
+    private async Task<bool> TryRemoveSelectionFromPlaylistFromShortcutAsync()
+    {
+        if (IsTextInputFocused())
+        {
+            return false;
+        }
+
+        if (ViewModel.SelectedPlaylist == null)
+        {
+            return false;
+        }
+
+        var selected = GetCommandSelection();
+        if (selected.Count == 0)
+        {
+            return false;
+        }
+
+        await ViewModel.RemoveMediaFromSelectedPlaylistAsync(selected);
         return true;
     }
 
@@ -961,188 +718,6 @@ public sealed class MainPageShellController
         ViewModel.UpdateWatchedFolders(current, refreshMedia);
     }
 
-    private void RefreshTagChips()
-    {
-        SelectedTagsControl.Visibility = ViewModel.SelectedTags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void RefreshPlaylistSelection()
-    {
-        _isSyncingSelection = true;
-        try
-        {
-            PlaylistRailListView.SelectedItem = ViewModel.SelectedPlaylist;
-        }
-        finally
-        {
-            _isSyncingSelection = false;
-        }
-    }
-
-    private void RefreshScanProgressVisibility()
-    {
-        var showProgress = ViewModel.IsScanning || ViewModel.ScanProgressValue > 0 || !string.IsNullOrWhiteSpace(ViewModel.ScanCurrentPath);
-        StatusText.Text = ViewModel.StatusMessage;
-        ScanProgressBar.Visibility = showProgress ? Visibility.Visible : Visibility.Collapsed;
-        ScanPathText.Visibility = !string.IsNullOrWhiteSpace(ViewModel.ScanCurrentPath) ? Visibility.Visible : Visibility.Collapsed;
-        ScanProgressBar.Maximum = Math.Max(1, ViewModel.ScanProgressMaximum);
-        ScanProgressBar.Value = ViewModel.ScanProgressValue;
-    }
-
-    private void ActivateMediaLibrary(bool openPane)
-    {
-        ViewModel.SelectedPlaylist = null;
-        RefreshPlaylistSelection();
-        UpdateLibraryPaneUi();
-        if (openPane)
-        {
-            SetLibraryPaneOpen(true);
-        }
-    }
-
-    private void ActivatePlaylist(Playlist playlist, bool openPane)
-    {
-        var targetPlaylist = ViewModel.Playlists.FirstOrDefault(item => string.Equals(item.Id, playlist.Id, StringComparison.Ordinal))
-            ?? playlist;
-        ViewModel.SelectedPlaylist = targetPlaylist;
-        RefreshPlaylistSelection();
-        UpdateLibraryPaneUi();
-        if (openPane)
-        {
-            SetLibraryPaneOpen(true);
-        }
-    }
-
-    private void UpdateLibraryPaneUi()
-    {
-        var hasSelectedPlaylist = ViewModel.SelectedPlaylist != null;
-        SelectedPlaylistTitleButton.Visibility = hasSelectedPlaylist ? Visibility.Visible : Visibility.Collapsed;
-        SelectedPlaylistTitleButton.Content = ViewModel.SelectedPlaylist?.Name ?? string.Empty;
-
-        var activeBackground = Application.Current.Resources["SurfaceMutedBrush"] as Brush;
-        var inactiveBackground = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        var activeForeground = Application.Current.Resources["TextBrush"] as Brush;
-        var inactiveForeground = Application.Current.Resources["MutedTextBrush"] as Brush;
-
-        MediaTabButton.Background = hasSelectedPlaylist ? inactiveBackground : activeBackground;
-        MediaTabButton.Foreground = hasSelectedPlaylist ? inactiveForeground : activeForeground;
-    }
-
-    private void UpdateMediaItemSize()
-    {
-        var gridItemSize = CalculateAdaptiveGridItemSize();
-        GridView.Tag = gridItemSize;
-        UpdateVisibleListItemSizes();
-        if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
-        {
-            panel.Orientation = Orientation.Horizontal;
-            panel.ItemWidth = gridItemSize;
-            panel.ItemHeight = gridItemSize;
-        }
-    }
-
-    private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
-    {
-        var ctrlDown = (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
-        if (!ctrlDown)
-        {
-            return;
-        }
-
-        var source = sender as UIElement ?? ListView;
-        var delta = e.GetCurrentPoint(source).Properties.MouseWheelDelta;
-        if (delta == 0)
-        {
-            return;
-        }
-
-        ViewModel.IconSize = Math.Clamp(ViewModel.IconSize + (delta > 0 ? 12 : -12), 72, 260);
-        UpdateMediaItemSize();
-        ConfigureGridViewScrolling();
-        e.Handled = true;
-    }
-
-    private void GridView_Loaded(object sender, RoutedEventArgs e)
-    {
-        ConfigureGridViewScrolling();
-    }
-
-    private void GridView_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (e.NewSize.Width <= 0)
-        {
-            return;
-        }
-
-        UpdateMediaItemSize();
-    }
-
-    private void LibraryPaneRoot_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (e.NewSize.Width <= 0)
-        {
-            return;
-        }
-
-        UpdateMediaItemSize();
-    }
-
-    private void LibraryPaneResizer_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        _isResizingLibraryPane = true;
-        SetLibraryPaneOpen(true);
-    }
-
-    private void LibraryPaneResizer_DragDelta(object sender, DragDeltaEventArgs e)
-    {
-        var maxWidth = RootLayout.ActualWidth > 0
-            ? Math.Min(MaxLibraryPaneWidth, Math.Max(MinLibraryPaneWidth, RootLayout.ActualWidth - 200))
-            : MaxLibraryPaneWidth;
-
-        _libraryPaneWidth = Math.Clamp(_libraryPaneWidth + e.HorizontalChange, MinLibraryPaneWidth, maxWidth);
-        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-        UpdateMediaItemSize();
-    }
-
-    private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        _isResizingLibraryPane = false;
-        UpdateLibraryPanePresentation();
-        UpdateMediaItemSize();
-    }
-
-    private void ConfigureGridViewScrolling()
-    {
-        ScrollViewer.SetHorizontalScrollMode(GridView, ScrollMode.Disabled);
-        ScrollViewer.SetHorizontalScrollBarVisibility(GridView, ScrollBarVisibility.Disabled);
-        ScrollViewer.SetVerticalScrollMode(GridView, ScrollMode.Enabled);
-        ScrollViewer.SetVerticalScrollBarVisibility(GridView, ScrollBarVisibility.Visible);
-
-        GridView.ApplyTemplate();
-        GridView.UpdateLayout();
-
-        if (GridView.ItemsPanelRoot is ItemsWrapGrid panel)
-        {
-            panel.Orientation = Orientation.Horizontal;
-            var gridItemSize = CalculateAdaptiveGridItemSize();
-            panel.ItemWidth = gridItemSize;
-            panel.ItemHeight = gridItemSize;
-        }
-
-        var scrollViewer = FindDescendant<ScrollViewer>(GridView);
-        if (scrollViewer == null)
-        {
-            return;
-        }
-
-        _gridViewScrollViewer = scrollViewer;
-        _gridViewScrollViewer.VerticalScrollMode = ScrollMode.Enabled;
-        _gridViewScrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Visible;
-        _gridViewScrollViewer.HorizontalScrollMode = ScrollMode.Disabled;
-        _gridViewScrollViewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-        _gridViewScrollViewer.ZoomMode = ZoomMode.Disabled;
-    }
-
     private void SetClipStart_Click(object sender, RoutedEventArgs e)
     {
         _clipEditorController.SetClipStartToCurrent();
@@ -1166,24 +741,6 @@ public sealed class MainPageShellController
     private async void ClipPlan_Click(object sender, RoutedEventArgs e)
     {
         await _clipEditorController.ShowClipPlanDialogAsync();
-    }
-
-    private void Media_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
-    {
-        if (args.InRecycleQueue)
-        {
-            return;
-        }
-
-        if (sender == ListView)
-        {
-            ApplyListItemSize(args.ItemContainer as SelectorItem);
-        }
-
-        if (args.Item is MediaItemViewModel media)
-        {
-            _ = ViewModel.EnsureThumbnailAsync(media);
-        }
     }
 
     private Task DeleteSelectedAsync()
@@ -1284,6 +841,22 @@ public sealed class MainPageShellController
     private IEnumerable<MediaItemViewModel> GetSelectedItems()
     {
         return _mediaBrowserController.GetSelectedItems();
+    }
+
+    private MediaItemViewModel? GetPrimarySelectedMedia()
+    {
+        return GetSelectedItems().FirstOrDefault() ?? ViewModel.SelectedMedia;
+    }
+
+    private IReadOnlyList<MediaItemViewModel> GetCommandSelection()
+    {
+        var selected = GetSelectedItems().ToList();
+        if (selected.Count == 0 && ViewModel.SelectedMedia != null)
+        {
+            selected.Add(ViewModel.SelectedMedia);
+        }
+
+        return selected;
     }
 
     private void UpdateSelectedStateFlags()
@@ -1472,12 +1045,7 @@ public sealed class MainPageShellController
 
     private async Task EditSelectedTagsAsync()
     {
-        var selected = GetSelectedItems().ToList();
-        if (selected.Count == 0 && ViewModel.SelectedMedia != null)
-        {
-            selected.Add(ViewModel.SelectedMedia);
-        }
-
+        var selected = GetCommandSelection();
         if (selected.Count == 0)
         {
             await ShowInfoDialogAsync("提示", "请先选择一个或多个媒体。");
@@ -1487,14 +1055,13 @@ public sealed class MainPageShellController
         await ApplyTagEditorAsync(selected);
     }
 
-    private async Task AddSelectionToPlaylistAsync()
+    private Task AddSelectionToPlaylistAsync()
     {
-        var selected = GetSelectedItems().ToList();
-        if (selected.Count == 0 && ViewModel.SelectedMedia != null)
-        {
-            selected.Add(ViewModel.SelectedMedia);
-        }
+        return AddSelectionToPlaylistAsync(GetCommandSelection());
+    }
 
+    private async Task AddSelectionToPlaylistAsync(IReadOnlyList<MediaItemViewModel> selected)
+    {
         if (selected.Count == 0)
         {
             await ShowInfoDialogAsync("提示", "请先选择一个或多个媒体。");
@@ -1527,310 +1094,6 @@ public sealed class MainPageShellController
         await ViewModel.UpdateTagsAsync(items, result.Tags, result.Mode);
     }
 
-    private MenuFlyout BuildMediaContextFlyout(IReadOnlyList<MediaItemViewModel> selected)
-    {
-        var flyout = new MenuFlyout();
-
-        var openFolder = new MenuFlyoutItem { Text = "打开所在目录" };
-        openFolder.Click += (_, _) => OpenMediaFolder(selected[0]);
-        flyout.Items.Add(openFolder);
-
-        var editTags = new MenuFlyoutItem { Text = selected.Count == 1 ? "编辑标签" : $"批量编辑标签 ({selected.Count})" };
-        editTags.Click += async (_, _) => await ApplyTagEditorAsync(selected);
-        flyout.Items.Add(editTags);
-
-        var addToPlaylist = new MenuFlyoutSubItem { Text = "添加到播放列表" };
-        if (ViewModel.Playlists.Count == 0)
-        {
-            addToPlaylist.Items.Add(new MenuFlyoutItem { Text = "暂无播放列表", IsEnabled = false });
-        }
-        else
-        {
-            foreach (var playlist in ViewModel.Playlists)
-            {
-                var playlistId = playlist.Id;
-                var item = new MenuFlyoutItem { Text = playlist.Name };
-                item.Click += async (_, _) => await ViewModel.AddMediaToPlaylistAsync(playlistId, selected);
-                addToPlaylist.Items.Add(item);
-            }
-        }
-
-        flyout.Items.Add(addToPlaylist);
-
-        if (ViewModel.SelectedPlaylist != null)
-        {
-            var removeFromPlaylist = new MenuFlyoutItem { Text = $"从“{ViewModel.SelectedPlaylist.Name}”移除" };
-            removeFromPlaylist.Click += async (_, _) => await ViewModel.RemoveMediaFromSelectedPlaylistAsync(selected);
-            flyout.Items.Add(removeFromPlaylist);
-        }
-
-        flyout.Items.Add(new MenuFlyoutSeparator());
-
-        var delete = new MenuFlyoutItem { Text = "删除文件" };
-        delete.Click += async (_, _) => await DeleteSelectedAsync();
-        flyout.Items.Add(delete);
-
-        return flyout;
-    }
-
-    private void OpenMediaFolder(MediaItemViewModel media)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{media.FileSystemPath}\"",
-                UseShellExecute = true
-            });
-        }
-        catch
-        {
-        }
-    }
-
-    private bool TryGetMediaFromElement(ListViewBase listViewBase, DependencyObject? origin, out MediaItemViewModel? media)
-    {
-        media = null;
-        if (origin == null)
-        {
-            return false;
-        }
-
-        var container = FindAncestor<SelectorItem>(origin);
-        media = container?.Content as MediaItemViewModel;
-        return media != null;
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? start) where T : DependencyObject
-    {
-        var current = start;
-        while (current != null)
-        {
-            if (current is T typed)
-            {
-                return typed;
-            }
-
-            current = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(current);
-        }
-
-        return null;
-    }
-
-    private static T? FindDescendant<T>(DependencyObject? root) where T : DependencyObject
-    {
-        if (root == null)
-        {
-            return null;
-        }
-
-        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
-        for (var index = 0; index < childCount; index++)
-        {
-            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, index);
-            if (child is T typed)
-            {
-                return typed;
-            }
-
-            var nested = FindDescendant<T>(child);
-            if (nested != null)
-            {
-                return nested;
-            }
-        }
-
-        return null;
-    }
-
-    private static FrameworkElement? FindDescendantByName(DependencyObject? root, string name)
-    {
-        if (root == null)
-        {
-            return null;
-        }
-
-        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
-        for (var index = 0; index < childCount; index++)
-        {
-            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, index);
-            if (child is FrameworkElement element && string.Equals(element.Name, name, StringComparison.Ordinal))
-            {
-                return element;
-            }
-
-            var nested = FindDescendantByName(child, name);
-            if (nested != null)
-            {
-                return nested;
-            }
-        }
-
-        return null;
-    }
-
-    private void UpdateVisibleListItemSizes()
-    {
-        for (var index = 0; index < ListView.Items.Count; index++)
-        {
-            if (ListView.ContainerFromIndex(index) is SelectorItem container)
-            {
-                ApplyListItemSize(container);
-            }
-        }
-    }
-
-    private void ApplyListItemSize(SelectorItem? container)
-    {
-        if (container == null)
-        {
-            return;
-        }
-
-        if (FindDescendantByName(container, "ListThumbnailHost") is not FrameworkElement thumbnailHost)
-        {
-            return;
-        }
-
-        var size = Math.Clamp((int)Math.Round(ViewModel.IconSize * 0.6), 48, 180);
-        thumbnailHost.Width = size;
-        thumbnailHost.Height = size;
-    }
-
-    private double CalculateAdaptiveGridItemSize()
-    {
-        var desiredSize = Math.Clamp((double)ViewModel.IconSize, 72, 260);
-        var availableWidth = GetGridViewAvailableWidth();
-        if (availableWidth <= desiredSize)
-        {
-            return desiredSize;
-        }
-
-        var columns = Math.Max(1, (int)Math.Floor(availableWidth / desiredSize));
-        var adjustedSize = Math.Floor(availableWidth / columns);
-        return Math.Clamp(adjustedSize, 72, 320);
-    }
-
-    private double GetGridViewAvailableWidth()
-    {
-        var width = _gridViewScrollViewer?.ActualWidth ?? 0;
-        if (width <= 0)
-        {
-            width = GridView.ActualWidth;
-        }
-
-        if (width <= 0)
-        {
-            width = _libraryPaneWidth;
-        }
-
-        return Math.Max(72, width - GridViewWidthPadding);
-    }
-
-    private void UpdateLibraryPaneState(bool preferOpen = false)
-    {
-        if (preferOpen)
-        {
-            SetLibraryPaneOpen(true);
-            return;
-        }
-
-        UpdateLibraryPanePresentation();
-    }
-
-    private void SetLibraryPaneOpen(bool isOpen)
-    {
-        if (LibrarySplitView.IsPaneOpen == isOpen)
-        {
-            return;
-        }
-
-        LibrarySplitView.IsPaneOpen = isOpen;
-        UpdateLibraryPanePresentation();
-    }
-
-    private void UpdateLibraryPanePresentation()
-    {
-        if (LibrarySplitView == null || LibraryPaneRoot == null || LibraryPaneExpandedContent == null || LibraryPaneResizer == null)
-        {
-            return;
-        }
-
-        LibrarySplitView.DisplayMode = SplitViewDisplayMode.CompactInline;
-        LibrarySplitView.CompactPaneLength = 56;
-        LibrarySplitView.OpenPaneLength = _libraryPaneWidth;
-        LibraryPaneRoot.Background = Application.Current.Resources["SurfaceAltBrush"] as Brush
-            ?? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 32, 32, 32));
-        LibraryPaneExpandedContent.Visibility = LibrarySplitView.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
-        LibraryPaneResizer.Visibility = LibrarySplitView.IsPaneOpen ? Visibility.Visible : Visibility.Collapsed;
-        LibraryPaneResizer.Opacity = _isResizingLibraryPane ? 1 : 0.65;
-    }
-
-    private async Task RenamePlaylistAsync(Playlist playlist)
-    {
-        var name = await _dialogService.ShowTextInputAsync("重命名播放列表", "播放列表名称", playlist.Name, "保存");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
-
-        try
-        {
-            ViewModel.RenamePlaylist(playlist.Id, name);
-            RefreshPlaylistSelection();
-            UpdateLibraryPaneUi();
-        }
-        catch (Exception ex)
-        {
-            await ShowInfoDialogAsync("重命名失败", ex.Message);
-        }
-    }
-
-    private async Task DeletePlaylistAsync(Playlist playlist)
-    {
-        var confirmed = await ConfirmAsync("删除播放列表", $"确定要删除“{playlist.Name}”吗？\n媒体文件本身不会被删除。", "删除");
-        if (!confirmed)
-        {
-            return;
-        }
-
-        await ViewModel.DeletePlaylistAsync(playlist.Id);
-        RefreshPlaylistSelection();
-        UpdateLibraryPaneUi();
-    }
-
-    private async Task ChangePlaylistColorAsync(Playlist playlist)
-    {
-        var colorHex = await _dialogService.ShowPlaylistColorDialogAsync($"更改“{playlist.Name}”颜色", playlist.ColorHex);
-        if (colorHex == playlist.ColorHex)
-        {
-            return;
-        }
-
-        try
-        {
-            ViewModel.SetPlaylistColor(playlist.Id, colorHex);
-            RefreshPlaylistSelection();
-            UpdateLibraryPaneUi();
-        }
-        catch (Exception ex)
-        {
-            await ShowInfoDialogAsync("更改颜色失败", ex.Message);
-        }
-    }
-
-    private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)
-    {
-        var selected = GetSelectedItems().Any(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal));
-        if (selected)
-        {
-            return;
-        }
-
-        listViewBase.SelectedItems.Clear();
-        listViewBase.SelectedItem = media;
-    }
 
     private async Task ApplySettingsAsync()
     {

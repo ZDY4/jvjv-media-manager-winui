@@ -8,104 +8,56 @@
       <ResourceDictionary.MergedDictionaries>
         <XamlControlsResources />
       </ResourceDictionary.MergedDictionaries>
-      <ResourceDictionary.ThemeDictionaries>
-        <ResourceDictionary x:Key="Default">
-          <Color x:Key="AccentColor">#8AB4F8</Color>
-          <Color x:Key="AccentStrongColor">#5B9BFF</Color>
-          <Color x:Key="SuccessColor">#7BD88F</Color>
-          <Color x:Key="WarningColor">#FFB86C</Color>
-          <Color x:Key="WindowBackdropColor">#1F1F1F</Color>
-          <Color x:Key="ShellTopBarColor">#FF1F1F1F</Color>
-          <Color x:Key="SurfaceColor">#FF262626</Color>
-          <Color x:Key="SurfaceAltColor">#FF202020</Color>
-          <Color x:Key="SurfaceMutedColor">#FF323232</Color>
-          <Color x:Key="OverlaySurfaceColor">#FF2B2B2B</Color>
-          <Color x:Key="PrimaryHoverColor">#6CA8FF</Color>
-          <Color x:Key="PrimaryPressedColor">#4B84DE</Color>
-          <Color x:Key="SecondaryHoverColor">#FF3A3A3A</Color>
-          <Color x:Key="SecondaryPressedColor">#FF454545</Color>
-          <Color x:Key="StrokeSubtleColor">#26FFFFFF</Color>
-          <Color x:Key="StrokeStrongColor">#4DFFFFFF</Color>
-          <Color x:Key="TextPrimaryColor">#FFF3F3F3</Color>
-          <Color x:Key="TextSecondaryColor">#FFC8C8C8</Color>
-          <Color x:Key="TextTertiaryColor">#FF9E9E9E</Color>
-          <Color x:Key="AppIconBadgeColor">#00000000</Color>
-          <Color x:Key="MediaCardColor">#FF2A2A2A</Color>
-          <Color x:Key="MediaCardPlaceholderColor">#FF3A3A3A</Color>
-          <Color x:Key="MediaTagChipColor">#FF32363D</Color>
-          <Color x:Key="SelectionOverlayColor">#265B9BFF</Color>
-          <Color x:Key="PlaylistItemColor">#FF2B2B2B</Color>
-          <Color x:Key="FilterChipColor">#FF2F3640</Color>
-          <Color x:Key="ScopeBadgeColor">#FF303030</Color>
-          <Color x:Key="StatusBadgeColor">#FF303030</Color>
-          <Color x:Key="EmptyStateCardColor">#00202020</Color>
-          <Color x:Key="EmptyStateIconColor">#FF313131</Color>
-          <Color x:Key="PlayerSurfaceColor">#FF252525</Color>
-          <Color x:Key="PlayerInfoColor">#CC1F1F1F</Color>
-          <Color x:Key="ZoomBadgeColor">#E61F1F1F</Color>
-          <Color x:Key="ControlBarColor">#E61E1E1E</Color>
-          <Color x:Key="ClipBarColor">#FF2A2A2A</Color>
-          <Color x:Key="ResizerColor">#00000000</Color>
-          <Color x:Key="PlayerEdgeTintColor">#202020</Color>
-          <Color x:Key="PlayerEdgeFallbackColor">#CC2A2A2A</Color>
-          <Color x:Key="ThumbOverlayStartColor">#05000000</Color>
-          <Color x:Key="ThumbOverlayMiddleColor">#66000000</Color>
-          <Color x:Key="ThumbOverlayEndColor">#CC071018</Color>
-          <Color x:Key="AmbientStartColor">#10101010</Color>
-          <Color x:Key="AmbientEndColor">#00101010</Color>
-          <Color x:Key="HeroPanelStartColor">#FF262626</Color>
-          <Color x:Key="HeroPanelMiddleColor">#FF262626</Color>
-          <Color x:Key="HeroPanelEndColor">#FF262626</Color>
-        </ResourceDictionary>
-        <ResourceDictionary x:Key="Light">
-          <Color x:Key="AccentColor">#006FC4</Color>
-          <Color x:Key="AccentStrongColor">#0078D4</Color>
-          <Color x:Key="SuccessColor">#2E8B57</Color>
-          <Color x:Key="WarningColor">#B95D00</Color>
-          <Color x:Key="WindowBackdropColor">#F4F9FD</Color>
-          <Color x:Key="ShellTopBarColor">#EAF3FA</Color>
-          <Color x:Key="SurfaceColor">#F7FBFE</Color>
-          <Color x:Key="SurfaceAltColor">#EEF5FB</Color>
-          <Color x:Key="SurfaceMutedColor">#E3EEF8</Color>
-          <Color x:Key="OverlaySurfaceColor">#F6FBFF</Color>
-          <Color x:Key="PrimaryHoverColor">#1490F0</Color>
-          <Color x:Key="PrimaryPressedColor">#0069C2</Color>
-          <Color x:Key="SecondaryHoverColor">#DDEAF7</Color>
-          <Color x:Key="SecondaryPressedColor">#D0E1F2</Color>
-          <Color x:Key="StrokeSubtleColor">#1F24435C</Color>
-          <Color x:Key="StrokeStrongColor">#663297F3</Color>
-          <Color x:Key="TextPrimaryColor">#112031</Color>
-          <Color x:Key="TextSecondaryColor">#4B5E74</Color>
-          <Color x:Key="TextTertiaryColor">#6F8196</Color>
-          <Color x:Key="AppIconBadgeColor">#D6E7F5</Color>
-          <Color x:Key="MediaCardColor">#EEF5FB</Color>
-          <Color x:Key="MediaCardPlaceholderColor">#D9E5F1</Color>
-          <Color x:Key="MediaTagChipColor">#D8EAFE</Color>
-          <Color x:Key="SelectionOverlayColor">#2A6FB6FF</Color>
-          <Color x:Key="PlaylistItemColor">#EAF2F8</Color>
-          <Color x:Key="FilterChipColor">#DDEBFF</Color>
-          <Color x:Key="ScopeBadgeColor">#D9EBFA</Color>
-          <Color x:Key="StatusBadgeColor">#F3F8FC</Color>
-          <Color x:Key="EmptyStateCardColor">#F7FCFF</Color>
-          <Color x:Key="EmptyStateIconColor">#D7EAF8</Color>
-          <Color x:Key="PlayerSurfaceColor">#F7FCFF</Color>
-          <Color x:Key="PlayerInfoColor">#EEF6FD</Color>
-          <Color x:Key="ZoomBadgeColor">#EAF3FA</Color>
-          <Color x:Key="ControlBarColor">#F2F8FD</Color>
-          <Color x:Key="ClipBarColor">#EAF2F8</Color>
-          <Color x:Key="ResizerColor">#2092A4B6</Color>
-          <Color x:Key="PlayerEdgeTintColor">#D5E6F5</Color>
-          <Color x:Key="PlayerEdgeFallbackColor">#E3EFF8</Color>
-          <Color x:Key="ThumbOverlayStartColor">#00FFFFFF</Color>
-          <Color x:Key="ThumbOverlayMiddleColor">#66E7F0F8</Color>
-          <Color x:Key="ThumbOverlayEndColor">#CCF3F8FC</Color>
-          <Color x:Key="AmbientStartColor">#16A9D4F2</Color>
-          <Color x:Key="AmbientEndColor">#14C2D3E2</Color>
-          <Color x:Key="HeroPanelStartColor">#E7F3FB</Color>
-          <Color x:Key="HeroPanelMiddleColor">#DDEDF8</Color>
-          <Color x:Key="HeroPanelEndColor">#D3E7F6</Color>
-        </ResourceDictionary>
-      </ResourceDictionary.ThemeDictionaries>
+      <Color x:Key="AccentColor">#8AB4F8</Color>
+      <Color x:Key="AccentStrongColor">#5B9BFF</Color>
+      <Color x:Key="SuccessColor">#7BD88F</Color>
+      <Color x:Key="WarningColor">#FFB86C</Color>
+      <Color x:Key="WindowBackdropColor">#1F1F1F</Color>
+      <Color x:Key="ShellTopBarColor">#FF1F1F1F</Color>
+      <Color x:Key="SurfaceColor">#FF262626</Color>
+      <Color x:Key="SurfaceAltColor">#FF202020</Color>
+      <Color x:Key="SurfaceMutedColor">#FF323232</Color>
+      <Color x:Key="OverlaySurfaceColor">#FF2B2B2B</Color>
+      <Color x:Key="PrimaryHoverColor">#6CA8FF</Color>
+      <Color x:Key="PrimaryPressedColor">#4B84DE</Color>
+      <Color x:Key="SecondaryHoverColor">#FF3A3A3A</Color>
+      <Color x:Key="SecondaryPressedColor">#FF454545</Color>
+      <Color x:Key="StrokeSubtleColor">#26FFFFFF</Color>
+      <Color x:Key="StrokeStrongColor">#4DFFFFFF</Color>
+      <Color x:Key="TextPrimaryColor">#FFF3F3F3</Color>
+      <Color x:Key="TextSecondaryColor">#FFC8C8C8</Color>
+      <Color x:Key="TextTertiaryColor">#FF9E9E9E</Color>
+      <Color x:Key="AppIconBadgeColor">#00000000</Color>
+      <Color x:Key="MediaCardColor">#FF2A2A2A</Color>
+      <Color x:Key="MediaCardPlaceholderColor">#FF3A3A3A</Color>
+      <Color x:Key="MediaTagChipColor">#FF32363D</Color>
+      <Color x:Key="SelectionOverlayColor">#265B9BFF</Color>
+      <Color x:Key="PlaylistItemColor">#FF2B2B2B</Color>
+      <Color x:Key="FilterChipColor">#FF2F3640</Color>
+      <Color x:Key="ScopeBadgeColor">#FF303030</Color>
+      <Color x:Key="StatusBadgeColor">#FF303030</Color>
+      <Color x:Key="EmptyStateCardColor">#00202020</Color>
+      <Color x:Key="EmptyStateIconColor">#FF313131</Color>
+      <Color x:Key="PlayerSurfaceColor">#FF252525</Color>
+      <Color x:Key="PlayerInfoColor">#CC1F1F1F</Color>
+      <Color x:Key="ZoomBadgeColor">#E61F1F1F</Color>
+      <Color x:Key="ControlBarColor">#E61E1E1E</Color>
+      <Color x:Key="ControlBarFallbackColor">#B8141414</Color>
+      <Color x:Key="ControlBarBorderColor">#33FFFFFF</Color>
+      <Color x:Key="ControlBarTintColor">#FF161616</Color>
+      <Color x:Key="VolumeFlyoutFallbackColor">#C0141414</Color>
+      <Color x:Key="ClipBarColor">#FF2A2A2A</Color>
+      <Color x:Key="ResizerColor">#00000000</Color>
+      <Color x:Key="PlayerEdgeTintColor">#202020</Color>
+      <Color x:Key="PlayerEdgeFallbackColor">#CC2A2A2A</Color>
+      <Color x:Key="ThumbOverlayStartColor">#05000000</Color>
+      <Color x:Key="ThumbOverlayMiddleColor">#66000000</Color>
+      <Color x:Key="ThumbOverlayEndColor">#CC071018</Color>
+      <Color x:Key="AmbientStartColor">#10101010</Color>
+      <Color x:Key="AmbientEndColor">#00101010</Color>
+      <Color x:Key="HeroPanelStartColor">#FF262626</Color>
+      <Color x:Key="HeroPanelMiddleColor">#FF262626</Color>
+      <Color x:Key="HeroPanelEndColor">#FF262626</Color>
 
       <CornerRadius x:Key="RadiusSmall">6</CornerRadius>
       <CornerRadius x:Key="RadiusMedium">8</CornerRadius>
@@ -147,8 +99,11 @@
       <SolidColorBrush x:Key="PlayerInfoBrush" Color="{ThemeResource PlayerInfoColor}" />
       <SolidColorBrush x:Key="ZoomBadgeBrush" Color="{ThemeResource ZoomBadgeColor}" />
       <SolidColorBrush x:Key="ControlBarBrush" Color="{ThemeResource ControlBarColor}" />
+      <SolidColorBrush x:Key="ControlBarBorderBrush" Color="{ThemeResource ControlBarBorderColor}" />
       <SolidColorBrush x:Key="ClipBarBrush" Color="{ThemeResource ClipBarColor}" />
       <SolidColorBrush x:Key="ResizerBrush" Color="{ThemeResource ResizerColor}" />
+      <SolidColorBrush x:Key="ControlBarOverlayBrush" Color="{ThemeResource ControlBarFallbackColor}" />
+      <SolidColorBrush x:Key="VolumeFlyoutBrush" Color="{ThemeResource VolumeFlyoutFallbackColor}" />
 
       <LinearGradientBrush x:Key="WindowAmbientBrush" StartPoint="0,0" EndPoint="1,1">
         <GradientStop Color="{ThemeResource AmbientStartColor}" Offset="0" />
@@ -314,18 +269,18 @@
       </Style>
 
       <Style x:Key="PanelIconButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="32.6" />
-        <Setter Property="Height" Value="32.6" />
-        <Setter Property="MinWidth" Value="32.6" />
-        <Setter Property="MinHeight" Value="32.6" />
+        <Setter Property="Width" Value="40" />
+        <Setter Property="Height" Value="40" />
+        <Setter Property="MinWidth" Value="40" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="Padding" Value="0" />
       </Style>
 
       <Style x:Key="PrimaryIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="32.6" />
-        <Setter Property="Height" Value="32.6" />
-        <Setter Property="MinWidth" Value="32.6" />
-        <Setter Property="MinHeight" Value="32.6" />
+        <Setter Property="Width" Value="40" />
+        <Setter Property="Height" Value="40" />
+        <Setter Property="MinWidth" Value="40" />
+        <Setter Property="MinHeight" Value="40" />
         <Setter Property="Padding" Value="0" />
       </Style>
 

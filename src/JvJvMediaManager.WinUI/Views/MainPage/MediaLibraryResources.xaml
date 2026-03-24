@@ -14,6 +14,8 @@
 
     <utilities:PlaylistBackgroundBrushConverter x:Key="PlaylistBackgroundBrushConverter" />
     <utilities:PlaylistForegroundBrushConverter x:Key="PlaylistForegroundBrushConverter" />
+    <utilities:MediaTabBackgroundBrushConverter x:Key="MediaTabBackgroundBrushConverter" />
+    <utilities:MediaTabForegroundBrushConverter x:Key="MediaTabForegroundBrushConverter" />
     <utilities:BooleanVisibilityConverter x:Key="BooleanVisibilityConverter" />
 
     <Style x:Key="MediaListItemContainerStyle" TargetType="ListViewItem">

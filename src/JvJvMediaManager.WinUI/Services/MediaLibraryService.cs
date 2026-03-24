@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using JvJvMediaManager.Data;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Utilities;
@@ -8,8 +9,15 @@ namespace JvJvMediaManager.Services;
 
 public sealed class MediaLibraryService
 {
+    private sealed class FolderEnumerationState
+    {
+        public bool HadErrors { get; set; }
+    }
+
     private readonly MediaDb _db;
     private const int BatchSize = 200;
+    private static readonly TimeSpan ProgressReportInterval = TimeSpan.FromMilliseconds(120);
+    private const int ProgressReportBatchSize = 24;
 
     public MediaLibraryService(MediaDb db)
     {
@@ -23,86 +31,191 @@ public sealed class MediaLibraryService
 
     public async Task<int> AddFilesAsync(IEnumerable<string> paths, IProgress<ScanProgress>? progress = null)
     {
-        var normalized = paths
-            .Where(p => !string.IsNullOrWhiteSpace(p))
-            .Select(p => p.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var files = new List<string>();
-        foreach (var path in normalized)
-        {
-            if (Directory.Exists(path))
-            {
-                files.AddRange(EnumerateMediaFiles(path));
-            }
-            else if (File.Exists(path) && MediaExtensions.IsSupported(path))
-            {
-                files.Add(path);
-            }
-        }
-
-        return await ProcessFilesAsync(files, progress);
+        return await ProcessFilesAsync(EnumerateImportFiles(paths), progress);
     }
 
     public async Task<int> AddFolderAsync(string folderPath, IProgress<ScanProgress>? progress = null)
     {
-        var files = EnumerateMediaFiles(folderPath);
-        return await ProcessFilesAsync(files, progress);
+        return await ProcessFilesAsync(EnumerateFolderMediaFiles(folderPath), progress);
     }
 
     public async Task<int> RescanFoldersAsync(IEnumerable<string> folders, IProgress<ScanProgress>? progress = null)
     {
-        var files = new List<string>();
-        foreach (var folder in folders)
-        {
-            files.AddRange(EnumerateMediaFiles(folder));
-        }
-        return await ProcessFilesAsync(files, progress);
-    }
+        var normalizedFolders = folders
+            .Where(folder => !string.IsNullOrWhiteSpace(folder))
+            .Select(PathHelpers.NormalizeFolderPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-    private static List<string> EnumerateMediaFiles(string folderPath)
-    {
-        var results = new List<string>();
-        try
+        if (normalizedFolders.Count == 0)
         {
-            foreach (var file in Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories))
-            {
-                if (MediaExtensions.IsSupported(file))
-                {
-                    results.Add(file);
-                }
-            }
-        }
-        catch
-        {
-            // Ignore folder scan errors
-        }
-        return results;
-    }
-
-    private async Task<int> ProcessFilesAsync(List<string> files, IProgress<ScanProgress>? progress)
-    {
-        if (files.Count == 0)
-        {
-            progress?.Report(new ScanProgress(0, 0, "", true));
+            progress?.Report(new ScanProgress(0, 0, string.Empty, true));
             return 0;
         }
 
-        var total = files.Count;
+        var successfullyScannedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var discoveredPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var persisted = await ProcessFilesAsync(
+            EnumerateRescanFiles(normalizedFolders, successfullyScannedFolders),
+            progress,
+            discoveredPaths);
+
+        if (successfullyScannedFolders.Count > 0)
+        {
+            var existingEntries = _db.GetMediaEntriesUnderFolders(successfullyScannedFolders.ToList());
+            var staleIds = existingEntries
+                .Where(entry => !discoveredPaths.Contains(entry.Path))
+                .Select(entry => entry.Id)
+                .ToList();
+
+            if (staleIds.Count > 0)
+            {
+                _db.DeleteMedia(staleIds);
+            }
+        }
+
+        return persisted;
+    }
+
+    private static IEnumerable<string> EnumerateImportFiles(IEnumerable<string> paths)
+    {
+        var normalized = paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in normalized)
+        {
+            if (Directory.Exists(path))
+            {
+                foreach (var file in EnumerateFolderMediaFiles(path))
+                {
+                    yield return file;
+                }
+            }
+            else if (File.Exists(path) && MediaExtensions.IsSupported(path))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateFolderMediaFiles(string folderPath)
+    {
+        if (!Directory.Exists(folderPath))
+        {
+            yield break;
+        }
+
+        var state = new FolderEnumerationState();
+        foreach (var file in EnumerateFolderMediaFiles(folderPath, state))
+        {
+            yield return file;
+        }
+    }
+
+    private static IEnumerable<string> EnumerateRescanFiles(
+        IEnumerable<string> folders,
+        ISet<string> successfullyScannedFolders)
+    {
+        foreach (var folder in folders)
+        {
+            if (!Directory.Exists(folder))
+            {
+                successfullyScannedFolders.Add(folder);
+                continue;
+            }
+
+            var state = new FolderEnumerationState();
+            foreach (var file in EnumerateFolderMediaFiles(PathHelpers.ToNativePath(folder), state))
+            {
+                yield return file;
+            }
+
+            if (!state.HadErrors)
+            {
+                successfullyScannedFolders.Add(folder);
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateFolderMediaFiles(string folderPath, FolderEnumerationState state)
+    {
+        if (!Directory.Exists(folderPath))
+        {
+            yield break;
+        }
+
+        var pendingDirectories = new Stack<string>();
+        pendingDirectories.Push(folderPath);
+
+        while (pendingDirectories.Count > 0)
+        {
+            var currentDirectory = pendingDirectories.Pop();
+
+            string[] childDirectories;
+            try
+            {
+                childDirectories = Directory.GetDirectories(currentDirectory);
+            }
+            catch
+            {
+                state.HadErrors = true;
+                continue;
+            }
+
+            foreach (var childDirectory in childDirectories)
+            {
+                pendingDirectories.Push(childDirectory);
+            }
+
+            string[] childFiles;
+            try
+            {
+                childFiles = Directory.GetFiles(currentDirectory);
+            }
+            catch
+            {
+                state.HadErrors = true;
+                continue;
+            }
+
+            foreach (var file in childFiles)
+            {
+                if (MediaExtensions.IsSupported(file))
+                {
+                    yield return file;
+                }
+            }
+        }
+    }
+
+    private async Task<int> ProcessFilesAsync(
+        IEnumerable<string> files,
+        IProgress<ScanProgress>? progress,
+        ISet<string>? discoveredPaths = null)
+    {
         var processed = 0;
         var persisted = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var batch = new List<MediaFile>(BatchSize);
+        var progressStopwatch = Stopwatch.StartNew();
+        var lastReportedCount = 0;
+        var sawAnyFile = false;
 
         foreach (var file in files)
         {
+            sawAnyFile = true;
             processed++;
-            if (!seen.Add(file))
+
+            var normalizedPath = PathHelpers.NormalizePath(file);
+            if (!seen.Add(normalizedPath))
             {
-                progress?.Report(new ScanProgress(processed, total, file, processed == total));
+                ReportProgress(progress, processed, file, isComplete: false, isIndeterminate: true, progressStopwatch, ref lastReportedCount);
                 continue;
             }
+
+            discoveredPaths?.Add(normalizedPath);
 
             var media = await ProcessFileAsync(file);
             if (media != null)
@@ -116,7 +229,7 @@ public sealed class MediaLibraryService
                 }
             }
 
-            progress?.Report(new ScanProgress(processed, total, file, processed == total));
+            ReportProgress(progress, processed, file, isComplete: false, isIndeterminate: true, progressStopwatch, ref lastReportedCount);
             await Task.Yield();
         }
 
@@ -126,7 +239,42 @@ public sealed class MediaLibraryService
             persisted += batch.Count;
         }
 
+        if (!sawAnyFile)
+        {
+            progress?.Report(new ScanProgress(0, 0, string.Empty, true));
+            return 0;
+        }
+
+        progress?.Report(new ScanProgress(processed, processed, string.Empty, true));
         return persisted;
+    }
+
+    private static void ReportProgress(
+        IProgress<ScanProgress>? progress,
+        int processed,
+        string currentPath,
+        bool isComplete,
+        bool isIndeterminate,
+        Stopwatch stopwatch,
+        ref int lastReportedCount)
+    {
+        if (progress == null)
+        {
+            return;
+        }
+
+        if (!isComplete)
+        {
+            var countDelta = processed - lastReportedCount;
+            if (countDelta < ProgressReportBatchSize && stopwatch.Elapsed < ProgressReportInterval)
+            {
+                return;
+            }
+        }
+
+        lastReportedCount = processed;
+        stopwatch.Restart();
+        progress.Report(new ScanProgress(processed, isIndeterminate ? 0 : processed, currentPath, isComplete, isIndeterminate));
     }
 
     private async Task<MediaFile?> ProcessFileAsync(string filePath)
@@ -210,4 +358,4 @@ public sealed class MediaLibraryService
     }
 }
 
-public readonly record struct ScanProgress(int Scanned, int Total, string CurrentPath, bool IsComplete);
+public readonly record struct ScanProgress(int Scanned, int Total, string CurrentPath, bool IsComplete, bool IsIndeterminate = false);

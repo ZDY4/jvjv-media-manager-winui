@@ -10,6 +10,7 @@ public sealed class VideoPlaybackViewModel : ObservableObject
     private string _currentTimeText = "0:00";
     private string _totalTimeText = "0:00";
     private bool _isFullScreen;
+    private bool _isVolumeFlyoutOpen;
 
     public Visibility ControlBarVisibility
     {
@@ -39,5 +40,11 @@ public sealed class VideoPlaybackViewModel : ObservableObject
     {
         get => _isFullScreen;
         set => SetProperty(ref _isFullScreen, value);
+    }
+
+    public bool IsVolumeFlyoutOpen
+    {
+        get => _isVolumeFlyoutOpen;
+        set => SetProperty(ref _isVolumeFlyoutOpen, value);
     }
 }

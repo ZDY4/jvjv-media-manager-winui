@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using JvJvMediaManager.Models;
@@ -43,6 +44,7 @@ public sealed class VideoPlaybackController
     private bool _progressSliderHandlersAttached;
     private double _lastNonZeroVolume = 0.8;
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
+    private const double VolumeWheelStep = 0.05;
 
     public VideoPlaybackController(
         LibraryShellViewModel libraryViewModel,
@@ -73,10 +75,15 @@ public sealed class VideoPlaybackController
         _transportBarView.ProgressSlider.ValueChanged += ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click += PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click += VolumeButton_Click;
+        _transportBarView.VolumeDismissLayer.PointerPressed += VolumeDismissLayer_PointerPressed;
+        _transportBarView.VolumeButton.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
+        _transportBarView.VolumeFlyoutContent.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
+        _transportBarView.VolumeSlider.PointerWheelChanged += VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeSlider.ValueChanged += VolumeSlider_ValueChanged;
         _transportBarView.PlaybackModeButton.Click += PlaybackModeButton_Click;
         _transportBarView.FullScreenButton.Click += FullScreenButton_Click;
         _transportBarView.ControlBar.PointerMoved += ControlBar_PointerMoved;
+        _transportBarView.ControlBar.PointerPressed += ControlBar_PointerPressed;
 
         _playbackTimer.Interval = TimeSpan.FromMilliseconds(250);
         _playbackTimer.Tick += PlaybackTimer_Tick;
@@ -99,10 +106,15 @@ public sealed class VideoPlaybackController
         _transportBarView.ProgressSlider.ValueChanged -= ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click -= PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click -= VolumeButton_Click;
+        _transportBarView.VolumeDismissLayer.PointerPressed -= VolumeDismissLayer_PointerPressed;
+        _transportBarView.VolumeButton.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
+        _transportBarView.VolumeFlyoutContent.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
+        _transportBarView.VolumeSlider.PointerWheelChanged -= VolumeInteraction_PointerWheelChanged;
         _transportBarView.VolumeSlider.ValueChanged -= VolumeSlider_ValueChanged;
         _transportBarView.PlaybackModeButton.Click -= PlaybackModeButton_Click;
         _transportBarView.FullScreenButton.Click -= FullScreenButton_Click;
         _transportBarView.ControlBar.PointerMoved -= ControlBar_PointerMoved;
+        _transportBarView.ControlBar.PointerPressed -= ControlBar_PointerPressed;
         _transportBarView.ProgressSlider.PointerCaptureLost -= ProgressSlider_PointerCaptureLost;
         _playbackTimer.Stop();
         _controlsHideTimer.Stop();
@@ -139,6 +151,7 @@ public sealed class VideoPlaybackController
     public void Clear()
     {
         PauseAndClearSource();
+        CloseVolumeFlyout();
         _videoPlayer.Visibility = Visibility.Collapsed;
         _transportBarView.ProgressSlider.Value = 0;
         _transportBarView.ProgressSlider.Maximum = 1;
@@ -150,6 +163,7 @@ public sealed class VideoPlaybackController
     public void ShowImageState()
     {
         PauseAndClearSource();
+        CloseVolumeFlyout();
         _videoPlayer.Visibility = Visibility.Collapsed;
         SetPassiveState(showImageNavigation: true);
     }
@@ -232,6 +246,7 @@ public sealed class VideoPlaybackController
 
     private void SetPassiveState(bool showImageNavigation)
     {
+        CloseVolumeFlyout();
         _viewModel.ControlBarVisibility = Visibility.Collapsed;
         _viewModel.ControlBarOpacity = 0;
         _transportBarView.ControlBar.IsHitTestVisible = false;
@@ -244,6 +259,7 @@ public sealed class VideoPlaybackController
     {
         return _viewModel.ControlBarVisibility == Visibility.Visible
             && !_isSeeking
+            && !_viewModel.IsVolumeFlyoutOpen
             && _canAutoHideControls();
     }
 
@@ -254,6 +270,7 @@ public sealed class VideoPlaybackController
             return;
         }
 
+        CloseVolumeFlyout();
         _viewModel.ControlBarOpacity = 0;
         _transportBarView.ControlBar.IsHitTestVisible = false;
         _areControlsVisible = false;
@@ -296,10 +313,7 @@ public sealed class VideoPlaybackController
         }
 
         var isPlaying = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
-        if (_transportBarView.PlayPauseButton.Icon is FontIcon icon)
-        {
-            icon.Glyph = isPlaying ? "\uE769" : "\uE768";
-        }
+        SetButtonGlyph(_transportBarView.PlayPauseButton, isPlaying ? "\uE769" : "\uE768");
 
         ToolTipService.SetToolTip(_transportBarView.PlayPauseButton, isPlaying ? "暂停 (Space)" : "播放 (Space)");
     }
@@ -327,7 +341,7 @@ public sealed class VideoPlaybackController
         }
 
         var percentage = (int)Math.Round(volume * 100);
-        ToolTipService.SetToolTip(_transportBarView.VolumeButton, isMuted ? "取消静音" : $"音量：{percentage}%");
+        ToolTipService.SetToolTip(_transportBarView.VolumeButton, $"音量：{percentage}%（点击调节）");
     }
 
     private void UpdateFullScreenButtonUi()
@@ -427,10 +441,15 @@ public sealed class VideoPlaybackController
 
     private void VolumeButton_Click(object sender, RoutedEventArgs e)
     {
-        var isMuted = _transportBarView.VolumeSlider.Value <= 0.001;
-        _transportBarView.VolumeSlider.Value = isMuted
-            ? Math.Clamp(_lastNonZeroVolume, 0.05, 1.0)
-            : 0;
+        if (_viewModel.IsVolumeFlyoutOpen)
+        {
+            CloseVolumeFlyout();
+        }
+        else
+        {
+            ShowVolumeFlyout();
+        }
+
         ShowControls();
     }
 
@@ -441,6 +460,7 @@ public sealed class VideoPlaybackController
 
     private void PlaybackModeButton_Click(object sender, RoutedEventArgs e)
     {
+        CloseVolumeFlyout();
         _playbackMode = _playbackMode switch
         {
             PlaybackMode.ListLoop => PlaybackMode.SingleLoop,
@@ -454,6 +474,7 @@ public sealed class VideoPlaybackController
 
     private void FullScreenButton_Click(object sender, RoutedEventArgs e)
     {
+        CloseVolumeFlyout();
         var appWindow = _getAppWindow();
         if (appWindow == null)
         {
@@ -478,6 +499,43 @@ public sealed class VideoPlaybackController
     private void ControlBar_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         ShowControls();
+    }
+
+    private void ControlBar_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (_viewModel.IsVolumeFlyoutOpen && !IsVolumeInteractionSource(e.OriginalSource as DependencyObject))
+        {
+            CloseVolumeFlyout();
+        }
+
+        ShowControls();
+    }
+
+    private void VolumeDismissLayer_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        CloseVolumeFlyout();
+        ShowControls();
+        e.Handled = true;
+    }
+
+    private void VolumeInteraction_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_viewModel.IsVolumeFlyoutOpen)
+        {
+            return;
+        }
+
+        var source = sender as UIElement ?? _transportBarView.VolumeFlyoutContent;
+        var delta = e.GetCurrentPoint(source).Properties.MouseWheelDelta;
+        if (delta == 0)
+        {
+            return;
+        }
+
+        var nextValue = _transportBarView.VolumeSlider.Value + (delta > 0 ? VolumeWheelStep : -VolumeWheelStep);
+        _transportBarView.VolumeSlider.Value = Math.Clamp(nextValue, 0, 1);
+        ShowControls();
+        e.Handled = true;
     }
 
     private void ControlsHideTimer_Tick(object? sender, object e)
@@ -600,4 +658,46 @@ public sealed class VideoPlaybackController
             Glyph = glyph
         };
     }
+
+    private void ShowVolumeFlyout()
+    {
+        _viewModel.IsVolumeFlyoutOpen = true;
+        _transportBarView.VolumeDismissLayer.Visibility = Visibility.Visible;
+        _transportBarView.VolumeFlyoutContent.Visibility = Visibility.Visible;
+        _transportBarView.VolumeFlyoutContent.IsHitTestVisible = true;
+        _transportBarView.VolumeSlider.Focus(FocusState.Programmatic);
+    }
+
+    private void CloseVolumeFlyout()
+    {
+        if (!_viewModel.IsVolumeFlyoutOpen)
+        {
+            return;
+        }
+
+        _viewModel.IsVolumeFlyoutOpen = false;
+        _transportBarView.VolumeFlyoutContent.Visibility = Visibility.Collapsed;
+        _transportBarView.VolumeFlyoutContent.IsHitTestVisible = false;
+        _transportBarView.VolumeDismissLayer.Visibility = Visibility.Collapsed;
+        RestartControlsHideTimer();
+    }
+
+    private bool IsVolumeInteractionSource(DependencyObject? source)
+    {
+        while (source != null)
+        {
+            if (ReferenceEquals(source, _transportBarView.VolumeButton)
+                || ReferenceEquals(source, _transportBarView.VolumeFlyoutContent)
+                || ReferenceEquals(source, _transportBarView.VolumeSlider)
+                || ReferenceEquals(source, _transportBarView.VolumeButtonHost))
+            {
+                return true;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
+    }
+
 }

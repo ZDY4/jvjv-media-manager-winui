@@ -26,9 +26,11 @@ public sealed class MediaBrowserController : IDisposable
     private readonly Action<IEnumerable<string>, bool> _updateWatchedFolders;
     private readonly Func<string, string, Task> _showInfoAsync;
     private readonly DebounceDispatcher _debouncer = new();
+    private readonly Dictionary<string, MediaItemViewModel> _loadedMediaById = new(StringComparer.Ordinal);
 
     private bool _isSyncingSelection;
     private ScrollViewer? _gridViewScrollViewer;
+    private HashSet<string> _selectedItemIds = new(StringComparer.Ordinal);
 
     private TextBox SearchBox => _libraryPane.FilterBarView.SearchBox;
     private ListView ListView => _libraryPane.BrowserView.ListView;
@@ -108,6 +110,7 @@ public sealed class MediaBrowserController : IDisposable
     public async Task InitializeAsync()
     {
         await _viewModel.InitializeAsync();
+        RebuildLoadedMediaIndex();
         QueueThumbnailLoads(_viewModel.FilteredMediaItems);
         UpdateMediaItemSize();
         ConfigureGridViewScrolling();
@@ -219,8 +222,15 @@ public sealed class MediaBrowserController : IDisposable
         if (_viewModel.ViewMode == MediaViewMode.Grid)
         {
             ConfigureGridViewScrolling();
-            _page.DispatcherQueue.TryEnqueue(ConfigureGridViewScrolling);
+            _page.DispatcherQueue.TryEnqueue(() =>
+            {
+                ConfigureGridViewScrolling();
+                SynchronizeSelectionToActiveView();
+            });
+            return;
         }
+
+        _page.DispatcherQueue.TryEnqueue(SynchronizeSelectionToActiveView);
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -356,12 +366,33 @@ public sealed class MediaBrowserController : IDisposable
 
     private void FilteredMediaItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            RebuildLoadedMediaIndex();
+            UpdateSelectedStateFlags(_viewModel.SelectedMedia);
+        }
+
+        if (e.OldItems != null)
+        {
+            foreach (var item in e.OldItems.OfType<MediaItemViewModel>())
+            {
+                _loadedMediaById.Remove(item.Id);
+            }
+        }
+
         if (e.NewItems == null || e.NewItems.Count == 0)
         {
             return;
         }
 
-        QueueThumbnailLoads(e.NewItems.OfType<MediaItemViewModel>());
+        var newItems = e.NewItems.OfType<MediaItemViewModel>().ToList();
+        foreach (var item in newItems)
+        {
+            _loadedMediaById[item.Id] = item;
+            item.IsSelected = _selectedItemIds.Contains(item.Id);
+        }
+
+        QueueThumbnailLoads(newItems);
     }
 
     private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -444,7 +475,7 @@ public sealed class MediaBrowserController : IDisposable
             }
 
             await _viewModel.AddFilesAsync(paths);
-            _updateWatchedFolders(paths, true);
+            _updateWatchedFolders(paths, false);
         }
         finally
         {
@@ -576,9 +607,32 @@ public sealed class MediaBrowserController : IDisposable
             selectedIds.Add(selectedMedia.Id);
         }
 
+        foreach (var removedId in _selectedItemIds.Except(selectedIds).ToList())
+        {
+            if (_loadedMediaById.TryGetValue(removedId, out var removedItem))
+            {
+                removedItem.IsSelected = false;
+            }
+        }
+
+        foreach (var addedId in selectedIds.Except(_selectedItemIds).ToList())
+        {
+            if (_loadedMediaById.TryGetValue(addedId, out var addedItem))
+            {
+                addedItem.IsSelected = true;
+            }
+        }
+
+        _selectedItemIds = selectedIds;
+    }
+
+    private void RebuildLoadedMediaIndex()
+    {
+        _loadedMediaById.Clear();
         foreach (var item in _viewModel.FilteredMediaItems)
         {
-            item.IsSelected = selectedIds.Contains(item.Id);
+            _loadedMediaById[item.Id] = item;
+            item.IsSelected = _selectedItemIds.Contains(item.Id);
         }
     }
 
@@ -599,6 +653,15 @@ public sealed class MediaBrowserController : IDisposable
         foreach (var item in items)
         {
             _ = _viewModel.EnsureThumbnailAsync(item);
+        }
+    }
+
+    private void SynchronizeSelectionToActiveView()
+    {
+        SyncSelectionFromViewModel(_viewModel.SelectedMedia);
+        if (_viewModel.SelectedMedia != null)
+        {
+            RevealSelectedMedia(_viewModel.SelectedMedia);
         }
     }
 

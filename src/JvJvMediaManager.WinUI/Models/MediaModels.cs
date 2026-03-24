@@ -8,11 +8,16 @@ public enum MediaType
     Image
 }
 
-public enum AppThemeMode
+public enum MediaViewMode
 {
-    System,
-    Light,
-    Dark
+    List,
+    Grid
+}
+
+public enum TagUpdateMode
+{
+    Replace,
+    Append
 }
 
 public sealed class WatchedFolder

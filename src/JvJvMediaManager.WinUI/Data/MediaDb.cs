@@ -6,6 +6,8 @@ namespace JvJvMediaManager.Data;
 
 public sealed class MediaDb
 {
+    public readonly record struct MediaEntryRef(string Id, string Path);
+
     private readonly string _dbPath;
     private readonly string _connectionString;
 
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS idx_media_modifiedAt ON media(modifiedAt DESC);
 CREATE INDEX IF NOT EXISTS idx_media_filename_nocase ON media(filename COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_media_path_nocase ON media(path COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS tags (
   mediaId TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -52,6 +55,8 @@ CREATE TABLE IF NOT EXISTS tags (
 );
 CREATE INDEX IF NOT EXISTS idx_tags_mediaId ON tags(mediaId);
 CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+CREATE INDEX IF NOT EXISTS idx_tags_name_nocase ON tags(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_tags_mediaId_name_nocase ON tags(mediaId, name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS playlists (
   id TEXT PRIMARY KEY,
@@ -258,6 +263,41 @@ WHERE id = $id;
             : "DELETE FROM playlist_media; DELETE FROM tags; DELETE FROM media;";
         cmd.ExecuteNonQuery();
         tx.Commit();
+    }
+
+    public IReadOnlyList<MediaEntryRef> GetMediaEntriesUnderFolders(IReadOnlyList<string> folderPaths)
+    {
+        if (folderPaths.Count == 0)
+        {
+            return Array.Empty<MediaEntryRef>();
+        }
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        using var cmd = connection.CreateCommand();
+        var filters = new List<string>(folderPaths.Count);
+        for (var i = 0; i < folderPaths.Count; i++)
+        {
+            var parameterName = $"$folder{i}";
+            filters.Add($"path LIKE {parameterName} COLLATE NOCASE");
+            cmd.Parameters.AddWithValue(parameterName, $"{folderPaths[i].TrimEnd('/')}/%");
+        }
+
+        cmd.CommandText = $@"
+SELECT id, path
+FROM media
+WHERE {string.Join(" OR ", filters)};
+";
+
+        using var reader = cmd.ExecuteReader();
+        var results = new List<MediaEntryRef>();
+        while (reader.Read())
+        {
+            results.Add(new MediaEntryRef(reader.GetString(0), reader.GetString(1)));
+        }
+
+        return results;
     }
 
     public void AddTag(string mediaId, string tag)

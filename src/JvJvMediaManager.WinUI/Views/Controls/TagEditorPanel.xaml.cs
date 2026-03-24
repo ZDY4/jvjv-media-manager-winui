@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using JvJvMediaManager.Models;
 using JvJvMediaManager.ViewModels;
 
 namespace JvJvMediaManager.Views.Controls;

@@ -10,9 +10,13 @@ namespace JvJvMediaManager.Services;
 
 public sealed class ThumbnailService
 {
+    private const int MaxMemoryCacheEntries = 256;
+
     private readonly SemaphoreSlim _loadGate = new(4, 4);
-    private readonly Dictionary<string, ImageSource?> _memoryCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ImageSource> _memoryCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, LinkedListNode<string>> _memoryCacheNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task<ImageSource?>> _inflight = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LinkedList<string> _memoryCacheLru = new();
     private readonly object _sync = new();
     private readonly string _cacheDir;
 
@@ -31,6 +35,7 @@ public sealed class ThumbnailService
         {
             if (_memoryCache.TryGetValue(cacheKey, out var cached))
             {
+                TouchMemoryCacheEntry(cacheKey);
                 return cached;
             }
 
@@ -51,6 +56,8 @@ public sealed class ThumbnailService
         lock (_sync)
         {
             _memoryCache.Clear();
+            _memoryCacheNodes.Clear();
+            _memoryCacheLru.Clear();
             _inflight.Clear();
         }
 
@@ -86,7 +93,11 @@ public sealed class ThumbnailService
 
             lock (_sync)
             {
-                _memoryCache[cacheKey] = source;
+                if (source != null)
+                {
+                    RememberInMemoryCache(cacheKey, source);
+                }
+
                 _inflight.Remove(cacheKey);
             }
 
@@ -192,5 +203,38 @@ public sealed class ThumbnailService
     private static string BuildCacheKey(MediaFile media)
     {
         return $"{media.Id}:{media.ModifiedAt}";
+    }
+
+    private void RememberInMemoryCache(string cacheKey, ImageSource source)
+    {
+        if (_memoryCache.TryGetValue(cacheKey, out _))
+        {
+            _memoryCache[cacheKey] = source;
+            TouchMemoryCacheEntry(cacheKey);
+            return;
+        }
+
+        _memoryCache[cacheKey] = source;
+        var node = _memoryCacheLru.AddLast(cacheKey);
+        _memoryCacheNodes[cacheKey] = node;
+
+        while (_memoryCache.Count > MaxMemoryCacheEntries && _memoryCacheLru.First != null)
+        {
+            var oldestKey = _memoryCacheLru.First.Value;
+            _memoryCacheLru.RemoveFirst();
+            _memoryCacheNodes.Remove(oldestKey);
+            _memoryCache.Remove(oldestKey);
+        }
+    }
+
+    private void TouchMemoryCacheEntry(string cacheKey)
+    {
+        if (!_memoryCacheNodes.TryGetValue(cacheKey, out var node))
+        {
+            return;
+        }
+
+        _memoryCacheLru.Remove(node);
+        _memoryCacheLru.AddLast(node);
     }
 }

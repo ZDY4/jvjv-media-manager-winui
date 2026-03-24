@@ -21,6 +21,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        WindowRoot.RequestedTheme = ElementTheme.Dark;
+        RootFrame.RequestedTheme = ElementTheme.Dark;
         Closed += MainWindow_Closed;
         ConfigureWindowChrome();
         ConfigureInitialWindowBounds();
@@ -194,17 +196,6 @@ public partial class MainWindow : Window
         if (_mainPage != null)
         {
             await _mainPage.HandleOpenSettingsFromTitleBarAsync();
-        }
-    }
-
-    public void ApplyTheme(ElementTheme theme)
-    {
-        WindowRoot.RequestedTheme = theme;
-        RootFrame.RequestedTheme = theme;
-
-        if (RootFrame.Content is FrameworkElement element)
-        {
-            element.RequestedTheme = theme;
         }
     }
 }

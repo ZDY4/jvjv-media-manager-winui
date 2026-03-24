@@ -29,7 +29,7 @@
         <StackPanel Spacing="16">
             <Border Style="{StaticResource SectionCardStyle}">
                 <StackPanel Spacing="12">
-                    <TextBlock Text="外观、存储与运行方式"
+                    <TextBlock Text="存储与运行方式"
                                Foreground="{ThemeResource TextBrush}"
                                FontSize="16"
                                FontWeight="SemiBold" />

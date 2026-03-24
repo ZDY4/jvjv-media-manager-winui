@@ -1,5 +1,4 @@
 using Microsoft.UI.Xaml;
-using JvJvMediaManager.Models;
 using JvJvMediaManager.Services.MainPage;
 
 namespace JvJvMediaManager;
@@ -11,7 +10,6 @@ public partial class App : Application
         "JvJvMediaManager",
         "logs");
     public static Window? MainWindow { get; private set; }
-    public static AppThemeMode CurrentThemeMode { get; private set; } = AppThemeMode.Dark;
     public MainPageModuleFactory MainPageModules { get; } = new();
 
     public App()
@@ -26,23 +24,7 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         MainWindow = new MainWindow();
-        ApplyThemeMode(AppThemeMode.Dark);
         MainWindow.Activate();
-    }
-
-    public static void ApplyThemeMode(AppThemeMode themeMode)
-    {
-        CurrentThemeMode = AppThemeMode.Dark;
-
-        if (MainWindow is MainWindow window)
-        {
-            window.ApplyTheme(MapThemeMode(AppThemeMode.Dark));
-        }
-    }
-
-    private static ElementTheme MapThemeMode(AppThemeMode themeMode)
-    {
-        return ElementTheme.Dark;
     }
 
     private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)

@@ -12,8 +12,6 @@ namespace JvJvMediaManager.ViewModels.MainPage;
 
 public sealed class LibraryShellViewModel : ObservableObject
 {
-    private static readonly Brush TransparentBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-
     private readonly SettingsService _settings;
     private readonly MediaDb _db;
     private readonly MediaLibraryService _library;
@@ -36,6 +34,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     private int _scanProgressValue;
     private int _scanProgressMaximum;
     private string _scanCurrentPath = string.Empty;
+    private bool _scanProgressIsIndeterminate;
     private bool _isLibraryPaneOpen = true;
     private double _libraryPaneWidth = 360;
     private double _libraryPaneResizerOpacity = 0.65;
@@ -162,8 +161,6 @@ public sealed class LibraryShellViewModel : ObservableObject
                 OnPropertyChanged(nameof(CurrentScopeTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitleVisibility));
-                OnPropertyChanged(nameof(MediaTabBackground));
-                OnPropertyChanged(nameof(MediaTabForeground));
                 QueueRefreshMedia(false);
             }
         }
@@ -199,6 +196,18 @@ public sealed class LibraryShellViewModel : ObservableObject
         private set => SetProperty(ref _scanProgressMaximum, value);
     }
 
+    public bool ScanProgressIsIndeterminate
+    {
+        get => _scanProgressIsIndeterminate;
+        private set
+        {
+            if (SetProperty(ref _scanProgressIsIndeterminate, value))
+            {
+                RaiseScanUiProperties();
+            }
+        }
+    }
+
     public string ScanCurrentPath
     {
         get => _scanCurrentPath;
@@ -220,8 +229,6 @@ public sealed class LibraryShellViewModel : ObservableObject
     public string LockPassword => _settings.LockPassword;
 
     public bool HasLockPassword => !string.IsNullOrWhiteSpace(LockPassword);
-
-    public AppThemeMode ThemeMode => AppThemeMode.Dark;
 
     public string CurrentScopeTitle => SelectedPlaylist?.Name ?? "全部媒体";
 
@@ -269,14 +276,6 @@ public sealed class LibraryShellViewModel : ObservableObject
     public Visibility SelectedPlaylistTitleVisibility => SelectedPlaylist == null ? Visibility.Collapsed : Visibility.Visible;
 
     public string SelectedPlaylistTitle => SelectedPlaylist?.Name ?? string.Empty;
-
-    public Brush MediaTabBackground => SelectedPlaylist == null
-        ? ResolveBrush("SurfaceMutedBrush", Microsoft.UI.ColorHelper.FromArgb(255, 46, 46, 46))
-        : TransparentBrush;
-
-    public Brush MediaTabForeground => SelectedPlaylist == null
-        ? ResolveBrush("TextBrush", Microsoft.UI.Colors.White)
-        : ResolveBrush("MutedTextBrush", Microsoft.UI.ColorHelper.FromArgb(255, 170, 170, 170));
 
     public string ViewModeToggleGlyph => ViewMode == MediaViewMode.List ? "\uECA5" : "\uE8FD";
 
@@ -561,7 +560,10 @@ public sealed class LibraryShellViewModel : ObservableObject
         if (source != null)
         {
             SetThumbnailSafe(item, source);
+            return;
         }
+
+        item.ResetThumbnailLoadState();
     }
 
     public Playlist CreatePlaylist(string name)
@@ -655,12 +657,6 @@ public sealed class LibraryShellViewModel : ObservableObject
         OnPropertyChanged(nameof(HasLockPassword));
     }
 
-    public void SetThemeMode(AppThemeMode themeMode)
-    {
-        _settings.SetThemeMode(AppThemeMode.Dark);
-        OnPropertyChanged(nameof(ThemeMode));
-    }
-
     public IReadOnlyList<WatchedFolder> GetProtectedFolders()
     {
         return WatchedFolders
@@ -752,6 +748,7 @@ public sealed class LibraryShellViewModel : ObservableObject
             ScanProgressValue = 0;
             ScanProgressMaximum = 0;
             ScanCurrentPath = string.Empty;
+            ScanProgressIsIndeterminate = false;
         });
 
         try
@@ -767,6 +764,7 @@ public sealed class LibraryShellViewModel : ObservableObject
                 IsLoading = false;
                 IsScanning = false;
                 ScanCurrentPath = string.Empty;
+                ScanProgressIsIndeterminate = false;
                 if (ScanProgressMaximum > 0)
                 {
                     ScanProgressValue = ScanProgressMaximum;
@@ -795,8 +793,9 @@ public sealed class LibraryShellViewModel : ObservableObject
         _ = RunOnUiThreadAsync(() =>
         {
             IsScanning = !progress.IsComplete;
-            ScanProgressMaximum = progress.Total;
-            ScanProgressValue = progress.Scanned;
+            ScanProgressIsIndeterminate = progress.IsIndeterminate;
+            ScanProgressMaximum = progress.Total > 0 ? progress.Total : 1;
+            ScanProgressValue = progress.IsIndeterminate ? 0 : progress.Scanned;
             ScanCurrentPath = progress.CurrentPath;
 
             if (progress.Total > 0)
@@ -807,7 +806,11 @@ public sealed class LibraryShellViewModel : ObservableObject
                 return;
             }
 
-            StatusMessage = progress.IsComplete ? "扫描完成。" : "准备扫描...";
+            StatusMessage = progress.IsComplete
+                ? "扫描完成。"
+                : progress.Scanned > 0
+                    ? $"正在扫描 {progress.Scanned} 个媒体..."
+                    : "准备扫描...";
         });
     }
 
@@ -950,11 +953,5 @@ public sealed class LibraryShellViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ScanProgressVisibility));
         OnPropertyChanged(nameof(ScanPathVisibility));
-    }
-
-    private static Brush ResolveBrush(string resourceKey, Windows.UI.Color fallbackColor)
-    {
-        return Application.Current.Resources[resourceKey] as Brush
-            ?? new SolidColorBrush(fallbackColor);
     }
 }
