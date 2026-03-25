@@ -46,7 +46,7 @@
                             VerticalAlignment="Center">
                         <FontIcon Glyph="&#xE8A5;"
                                   FontSize="13"
-                                  Foreground="{ThemeResource AccentBrush}"
+                                  Foreground="{ThemeResource MutedTextBrush}"
                                   HorizontalAlignment="Center"
                                   VerticalAlignment="Center" />
                     </Border>

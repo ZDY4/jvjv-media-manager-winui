@@ -21,7 +21,7 @@
                         HorizontalAlignment="Center">
                     <FontIcon Glyph="&#xE8B9;"
                               FontSize="24"
-                              Foreground="{ThemeResource AccentBrush}"
+                              Foreground="{ThemeResource LibraryEmphasisBrush}"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center" />
                 </Border>

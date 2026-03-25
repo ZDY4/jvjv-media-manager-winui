@@ -5,6 +5,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using JvJvMediaManager.Views;
+using JvJvMediaManager.Utilities;
 using WinRT.Interop;
 
 namespace JvJvMediaManager;
@@ -65,12 +66,12 @@ public partial class MainWindow : Window
         titleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
         titleBar.ButtonBackgroundColor = Colors.Transparent;
         titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
-        titleBar.ButtonForegroundColor = Colors.White;
-        titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(180, 225, 233, 240);
-        titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(48, 255, 255, 255);
-        titleBar.ButtonHoverForegroundColor = Colors.White;
-        titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(72, 255, 255, 255);
-        titleBar.ButtonPressedForegroundColor = Colors.White;
+        titleBar.ButtonForegroundColor = ThemeResourceHelper.GetColor("TitleBarButtonForegroundColor", Colors.White);
+        titleBar.ButtonInactiveForegroundColor = ThemeResourceHelper.GetColor("TitleBarButtonInactiveForegroundColor", ColorHelper.FromArgb(180, 209, 209, 209));
+        titleBar.ButtonHoverBackgroundColor = ThemeResourceHelper.GetColor("TitleBarButtonHoverBackgroundColor", ColorHelper.FromArgb(36, 255, 255, 255));
+        titleBar.ButtonHoverForegroundColor = ThemeResourceHelper.GetColor("TitleBarButtonForegroundColor", Colors.White);
+        titleBar.ButtonPressedBackgroundColor = ThemeResourceHelper.GetColor("TitleBarButtonPressedBackgroundColor", ColorHelper.FromArgb(54, 255, 255, 255));
+        titleBar.ButtonPressedForegroundColor = ThemeResourceHelper.GetColor("TitleBarButtonForegroundColor", Colors.White);
 
         SyncTitleBarInsets(titleBar);
         WindowTitleText.Text = Title;
@@ -79,6 +80,9 @@ public partial class MainWindow : Window
 
     private static UIElement CreateStartupErrorView(Exception ex)
     {
+        var textBrush = ThemeResourceHelper.GetBrush("TextBrush", Colors.White);
+        var backdropBrush = ThemeResourceHelper.GetBrush("WindowBackdropBrush", ColorHelper.FromArgb(255, 21, 21, 21));
+
         var stackPanel = new StackPanel
         {
             Spacing = 12,
@@ -90,14 +94,14 @@ public partial class MainWindow : Window
             Text = "JvJv Media Manager 启动失败",
             FontSize = 24,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Colors.White)
+            Foreground = textBrush
         });
 
         stackPanel.Children.Add(new TextBlock
         {
             Text = "主界面初始化时发生异常。下面是当前捕获到的错误信息：",
             TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(Colors.White)
+            Foreground = textBrush
         });
 
         stackPanel.Children.Add(new TextBox
@@ -111,7 +115,7 @@ public partial class MainWindow : Window
 
         return new Grid
         {
-            Background = new SolidColorBrush(ColorHelper.FromArgb(255, 32, 32, 32)),
+            Background = backdropBrush,
             Children =
             {
                 new ScrollViewer

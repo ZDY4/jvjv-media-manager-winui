@@ -28,7 +28,7 @@
                             Margin="0,0,4,4"
                             Padding="6,2"
                             Background="{ThemeResource FilterChipBrush}"
-                            Foreground="{ThemeResource AccentBrush}"
+                            Foreground="{ThemeResource LibraryChipForegroundBrush}"
                             BorderThickness="0"
                             CornerRadius="4"
                             Content="{Binding}" />

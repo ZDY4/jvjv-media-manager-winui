@@ -8,56 +8,70 @@
       <ResourceDictionary.MergedDictionaries>
         <XamlControlsResources />
       </ResourceDictionary.MergedDictionaries>
-      <Color x:Key="AccentColor">#8AB4F8</Color>
-      <Color x:Key="AccentStrongColor">#5B9BFF</Color>
-      <Color x:Key="SuccessColor">#7BD88F</Color>
-      <Color x:Key="WarningColor">#FFB86C</Color>
-      <Color x:Key="WindowBackdropColor">#1F1F1F</Color>
-      <Color x:Key="ShellTopBarColor">#FF1F1F1F</Color>
-      <Color x:Key="SurfaceColor">#FF262626</Color>
-      <Color x:Key="SurfaceAltColor">#FF202020</Color>
-      <Color x:Key="SurfaceMutedColor">#FF323232</Color>
-      <Color x:Key="OverlaySurfaceColor">#FF2B2B2B</Color>
-      <Color x:Key="PrimaryHoverColor">#6CA8FF</Color>
-      <Color x:Key="PrimaryPressedColor">#4B84DE</Color>
-      <Color x:Key="SecondaryHoverColor">#FF3A3A3A</Color>
-      <Color x:Key="SecondaryPressedColor">#FF454545</Color>
-      <Color x:Key="StrokeSubtleColor">#26FFFFFF</Color>
-      <Color x:Key="StrokeStrongColor">#4DFFFFFF</Color>
+      <!-- Dark palette: neutral charcoal surfaces with a restrained accent. -->
+      <Color x:Key="AccentColor">#9FB2CC</Color>
+      <Color x:Key="AccentStrongColor">#B9C7DA</Color>
+      <Color x:Key="SuccessColor">#88D7A0</Color>
+      <Color x:Key="WarningColor">#F8BE79</Color>
+      <Color x:Key="WindowBackdropColor">#FF151515</Color>
+      <Color x:Key="ShellTopBarColor">#FF181818</Color>
+      <Color x:Key="TitleBarButtonForegroundColor">#FFF3F3F3</Color>
+      <Color x:Key="TitleBarButtonInactiveForegroundColor">#BFD1D1D1</Color>
+      <Color x:Key="TitleBarButtonHoverBackgroundColor">#24FFFFFF</Color>
+      <Color x:Key="TitleBarButtonPressedBackgroundColor">#36FFFFFF</Color>
+      <Color x:Key="SurfaceColor">#FF1F1F1F</Color>
+      <Color x:Key="SurfaceAltColor">#FF232323</Color>
+      <Color x:Key="SurfaceMutedColor">#FF2D2D2D</Color>
+      <Color x:Key="OverlaySurfaceColor">#FF272727</Color>
+      <Color x:Key="InputSurfaceColor">#A6262626</Color>
+      <Color x:Key="NavigationCueColor">#CC323232</Color>
+      <Color x:Key="PrimaryHoverColor">#AABBD1</Color>
+      <Color x:Key="PrimaryPressedColor">#8D9FB7</Color>
+      <Color x:Key="SecondaryHoverColor">#FF303030</Color>
+      <Color x:Key="SecondaryPressedColor">#FF393939</Color>
+      <Color x:Key="StrokeSubtleColor">#1FFFFFFF</Color>
+      <Color x:Key="StrokeStrongColor">#33FFFFFF</Color>
       <Color x:Key="TextPrimaryColor">#FFF3F3F3</Color>
-      <Color x:Key="TextSecondaryColor">#FFC8C8C8</Color>
-      <Color x:Key="TextTertiaryColor">#FF9E9E9E</Color>
+      <Color x:Key="TextSecondaryColor">#FFD1D1D1</Color>
+      <Color x:Key="TextTertiaryColor">#FFA4A4A4</Color>
+      <Color x:Key="AccentForegroundColor">#FF111315</Color>
+      <Color x:Key="ContrastForegroundOnLightColor">#FF111315</Color>
+      <Color x:Key="ContrastForegroundOnDarkColor">#FFF7F7F7</Color>
       <Color x:Key="AppIconBadgeColor">#00000000</Color>
-      <Color x:Key="MediaCardColor">#FF2A2A2A</Color>
-      <Color x:Key="MediaCardPlaceholderColor">#FF3A3A3A</Color>
-      <Color x:Key="MediaTagChipColor">#FF32363D</Color>
-      <Color x:Key="SelectionOverlayColor">#265B9BFF</Color>
-      <Color x:Key="PlaylistItemColor">#FF2B2B2B</Color>
-      <Color x:Key="FilterChipColor">#FF2F3640</Color>
+      <Color x:Key="MediaCardColor">#FF252525</Color>
+      <Color x:Key="MediaCardPlaceholderColor">#FF303030</Color>
+      <Color x:Key="MediaTagChipColor">#FF2F2F2F</Color>
+      <Color x:Key="SelectionOverlayColor">#22FFFFFF</Color>
+      <Color x:Key="PlaylistItemColor">#FF252525</Color>
+      <Color x:Key="FilterChipColor">#FF2F2F2F</Color>
+      <Color x:Key="LibrarySelectionColor">#26FFFFFF</Color>
+      <Color x:Key="LibrarySelectionStrongColor">#3DFFFFFF</Color>
+      <Color x:Key="LibraryEmphasisColor">#FFE1E1E1</Color>
+      <Color x:Key="LibraryChipForegroundColor">#FFDADADA</Color>
       <Color x:Key="ScopeBadgeColor">#FF303030</Color>
       <Color x:Key="StatusBadgeColor">#FF303030</Color>
-      <Color x:Key="EmptyStateCardColor">#00202020</Color>
-      <Color x:Key="EmptyStateIconColor">#FF313131</Color>
-      <Color x:Key="PlayerSurfaceColor">#FF252525</Color>
-      <Color x:Key="PlayerInfoColor">#CC1F1F1F</Color>
-      <Color x:Key="ZoomBadgeColor">#E61F1F1F</Color>
-      <Color x:Key="ControlBarColor">#E61E1E1E</Color>
-      <Color x:Key="ControlBarFallbackColor">#B8141414</Color>
-      <Color x:Key="ControlBarBorderColor">#33FFFFFF</Color>
-      <Color x:Key="ControlBarTintColor">#FF161616</Color>
-      <Color x:Key="VolumeFlyoutFallbackColor">#C0141414</Color>
-      <Color x:Key="ClipBarColor">#FF2A2A2A</Color>
+      <Color x:Key="EmptyStateCardColor">#00252525</Color>
+      <Color x:Key="EmptyStateIconColor">#FF333333</Color>
+      <Color x:Key="PlayerSurfaceColor">#FF1A1A1A</Color>
+      <Color x:Key="PlayerInfoColor">#B8242424</Color>
+      <Color x:Key="ZoomBadgeColor">#D8242424</Color>
+      <Color x:Key="ControlBarColor">#D8262626</Color>
+      <Color x:Key="ControlBarFallbackColor">#BC1B1B1B</Color>
+      <Color x:Key="ControlBarBorderColor">#26FFFFFF</Color>
+      <Color x:Key="ControlBarTintColor">#FF1B1B1B</Color>
+      <Color x:Key="VolumeFlyoutFallbackColor">#C8262626</Color>
+      <Color x:Key="ClipBarColor">#FF232323</Color>
       <Color x:Key="ResizerColor">#00000000</Color>
-      <Color x:Key="PlayerEdgeTintColor">#202020</Color>
-      <Color x:Key="PlayerEdgeFallbackColor">#CC2A2A2A</Color>
-      <Color x:Key="ThumbOverlayStartColor">#05000000</Color>
-      <Color x:Key="ThumbOverlayMiddleColor">#66000000</Color>
-      <Color x:Key="ThumbOverlayEndColor">#CC071018</Color>
-      <Color x:Key="AmbientStartColor">#10101010</Color>
-      <Color x:Key="AmbientEndColor">#00101010</Color>
-      <Color x:Key="HeroPanelStartColor">#FF262626</Color>
-      <Color x:Key="HeroPanelMiddleColor">#FF262626</Color>
-      <Color x:Key="HeroPanelEndColor">#FF262626</Color>
+      <Color x:Key="PlayerEdgeTintColor">#1C1C1C</Color>
+      <Color x:Key="PlayerEdgeFallbackColor">#C0252525</Color>
+      <Color x:Key="ThumbOverlayStartColor">#08000000</Color>
+      <Color x:Key="ThumbOverlayMiddleColor">#5C060606</Color>
+      <Color x:Key="ThumbOverlayEndColor">#CC0D0D0D</Color>
+      <Color x:Key="AmbientStartColor">#141A1A1A</Color>
+      <Color x:Key="AmbientEndColor">#001A1A1A</Color>
+      <Color x:Key="HeroPanelStartColor">#FF1F1F1F</Color>
+      <Color x:Key="HeroPanelMiddleColor">#FF212121</Color>
+      <Color x:Key="HeroPanelEndColor">#FF232323</Color>
 
       <CornerRadius x:Key="RadiusSmall">6</CornerRadius>
       <CornerRadius x:Key="RadiusMedium">8</CornerRadius>
@@ -71,6 +85,8 @@
       <SolidColorBrush x:Key="WarningBrush" Color="{ThemeResource WarningColor}" />
       <SolidColorBrush x:Key="WindowBackdropBrush" Color="{ThemeResource WindowBackdropColor}" />
       <SolidColorBrush x:Key="ShellTopBarBrush" Color="{ThemeResource ShellTopBarColor}" />
+      <SolidColorBrush x:Key="InputSurfaceBrush" Color="{ThemeResource InputSurfaceColor}" />
+      <SolidColorBrush x:Key="NavigationCueBrush" Color="{ThemeResource NavigationCueColor}" />
       <SolidColorBrush x:Key="SurfaceBrush" Color="{ThemeResource SurfaceColor}" />
       <SolidColorBrush x:Key="SurfaceAltBrush" Color="{ThemeResource SurfaceAltColor}" />
       <SolidColorBrush x:Key="SurfaceMutedBrush" Color="{ThemeResource SurfaceMutedColor}" />
@@ -84,6 +100,7 @@
       <SolidColorBrush x:Key="TextBrush" Color="{ThemeResource TextPrimaryColor}" />
       <SolidColorBrush x:Key="MutedTextBrush" Color="{ThemeResource TextSecondaryColor}" />
       <SolidColorBrush x:Key="SubtleTextBrush" Color="{ThemeResource TextTertiaryColor}" />
+      <SolidColorBrush x:Key="AccentForegroundBrush" Color="{ThemeResource AccentForegroundColor}" />
       <SolidColorBrush x:Key="AppIconBadgeBrush" Color="{ThemeResource AppIconBadgeColor}" />
       <SolidColorBrush x:Key="MediaCardBrush" Color="{ThemeResource MediaCardColor}" />
       <SolidColorBrush x:Key="MediaCardPlaceholderBrush" Color="{ThemeResource MediaCardPlaceholderColor}" />
@@ -91,6 +108,10 @@
       <SolidColorBrush x:Key="SelectionOverlayBrush" Color="{ThemeResource SelectionOverlayColor}" />
       <SolidColorBrush x:Key="PlaylistItemBrush" Color="{ThemeResource PlaylistItemColor}" />
       <SolidColorBrush x:Key="FilterChipBrush" Color="{ThemeResource FilterChipColor}" />
+      <SolidColorBrush x:Key="LibrarySelectionBrush" Color="{ThemeResource LibrarySelectionColor}" />
+      <SolidColorBrush x:Key="LibrarySelectionStrongBrush" Color="{ThemeResource LibrarySelectionStrongColor}" />
+      <SolidColorBrush x:Key="LibraryEmphasisBrush" Color="{ThemeResource LibraryEmphasisColor}" />
+      <SolidColorBrush x:Key="LibraryChipForegroundBrush" Color="{ThemeResource LibraryChipForegroundColor}" />
       <SolidColorBrush x:Key="ScopeBadgeBrush" Color="{ThemeResource ScopeBadgeColor}" />
       <SolidColorBrush x:Key="StatusBadgeBrush" Color="{ThemeResource StatusBadgeColor}" />
       <SolidColorBrush x:Key="EmptyStateCardBrush" Color="{ThemeResource EmptyStateCardColor}" />
@@ -130,7 +151,7 @@
 
       <Style x:Key="PrimaryToolbarButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
-        <Setter Property="Foreground" Value="#081019" />
+        <Setter Property="Foreground" Value="{ThemeResource AccentForegroundBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
         <Setter Property="Padding" Value="12,7" />
@@ -293,7 +314,7 @@
       </Style>
 
       <Style x:Key="GlassTextBoxStyle" TargetType="TextBox">
-        <Setter Property="Background" Value="#66141D27" />
+        <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="0" />
@@ -302,7 +323,7 @@
       </Style>
 
       <Style x:Key="GlassPasswordBoxStyle" TargetType="PasswordBox">
-        <Setter Property="Background" Value="#66141D27" />
+        <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="0" />
@@ -310,7 +331,7 @@
       </Style>
 
       <Style x:Key="GlassComboBoxStyle" TargetType="ComboBox">
-        <Setter Property="Background" Value="#66141D27" />
+        <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="0" />

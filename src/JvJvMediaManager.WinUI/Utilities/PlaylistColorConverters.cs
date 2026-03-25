@@ -15,8 +15,7 @@ public sealed class PlaylistBackgroundBrushConverter : IValueConverter
             return new SolidColorBrush(color);
         }
 
-        return Application.Current.Resources["PlaylistItemBrush"] as Brush
-            ?? new SolidColorBrush(ColorHelper.FromArgb(255, 43, 43, 43));
+        return ThemeResourceHelper.GetBrush("PlaylistItemBrush", ColorHelper.FromArgb(255, 43, 43, 43));
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)
@@ -62,12 +61,15 @@ public sealed class PlaylistForegroundBrushConverter : IValueConverter
     {
         if (!PlaylistBackgroundBrushConverter.TryParseColor(value as string, out var color))
         {
-            return Application.Current.Resources["TextBrush"] as Brush
-                ?? new SolidColorBrush(Colors.White);
+            return ThemeResourceHelper.GetBrush("TextBrush", Colors.White);
         }
 
         var luminance = (0.299 * color.R) + (0.587 * color.G) + (0.114 * color.B);
-        return new SolidColorBrush(luminance >= 160 ? Colors.Black : Colors.White);
+        var foregroundColorKey = luminance >= 160
+            ? "ContrastForegroundOnLightColor"
+            : "ContrastForegroundOnDarkColor";
+        var fallbackColor = luminance >= 160 ? Colors.Black : Colors.White;
+        return new SolidColorBrush(ThemeResourceHelper.GetColor(foregroundColorKey, fallbackColor));
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)

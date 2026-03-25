@@ -113,7 +113,7 @@ public sealed class ContentDialogService : IContentDialogService
     {
         var initialColor = PlaylistBackgroundBrushConverter.TryParseColor(colorHex, out var parsedColor)
             ? parsedColor
-            : Microsoft.UI.ColorHelper.FromArgb(255, 91, 155, 255);
+            : ThemeResourceHelper.GetColor("AccentColor", Microsoft.UI.ColorHelper.FromArgb(255, 159, 178, 204));
 
         var colorPicker = new ColorPicker
         {
