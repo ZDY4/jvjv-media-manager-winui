@@ -7,14 +7,75 @@
     mc:Ignorable="d">
 
     <UserControl.Resources>
+        <Style x:Key="WatchedFolderListItemContainerStyle" TargetType="ListViewItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="UseSystemFocusVisuals" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListViewItem">
+                        <Grid Background="Transparent">
+                            <Border x:Name="SelectionChrome"
+                                    Margin="0,0,0,8"
+                                    Background="{ThemeResource LibrarySelectionBrush}"
+                                    CornerRadius="{ThemeResource RadiusMedium}"
+                                    Opacity="0"
+                                    IsHitTestVisible="False" />
+                            <ContentPresenter x:Name="ContentPresenter"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}" />
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal" />
+                                    <VisualState x:Name="PointerOver">
+                                        <VisualState.Setters>
+                                            <Setter Target="SelectionChrome.Opacity" Value="0.45" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <VisualState.Setters>
+                                            <Setter Target="SelectionChrome.Opacity" Value="0.7" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <VisualState.Setters>
+                                            <Setter Target="ContentPresenter.Opacity" Value="0.42" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                                <VisualStateGroup x:Name="SelectionStates">
+                                    <VisualState x:Name="Unselected" />
+                                    <VisualState x:Name="Selected">
+                                        <VisualState.Setters>
+                                            <Setter Target="SelectionChrome.Opacity" Value="1" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                    <VisualState x:Name="SelectedUnfocused">
+                                        <VisualState.Setters>
+                                            <Setter Target="SelectionChrome.Opacity" Value="1" />
+                                        </VisualState.Setters>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <DataTemplate x:Key="WatchedFolderTemplate">
             <Border
                 Margin="0,0,0,8"
                 Padding="12,10"
-                Background="{ThemeResource PlaylistItemBrush}"
+                Background="{ThemeResource SurfaceAltBrush}"
                 BorderBrush="{ThemeResource SurfaceStrokeBrush}"
                 BorderThickness="1"
-                CornerRadius="14">
+                CornerRadius="{ThemeResource RadiusMedium}">
                 <Grid>
                     <TextBlock Text="{Binding Path}"
                                Foreground="{ThemeResource TextBrush}"
@@ -101,7 +162,10 @@
                     <ListView x:Name="WatchedFoldersList"
                               x:FieldModifier="public"
                               MaxHeight="240"
+                              Background="Transparent"
+                              BorderThickness="0"
                               SelectionMode="Single"
+                              ItemContainerStyle="{StaticResource WatchedFolderListItemContainerStyle}"
                               ItemTemplate="{StaticResource WatchedFolderTemplate}" />
 
                     <StackPanel Orientation="Horizontal" Spacing="8">

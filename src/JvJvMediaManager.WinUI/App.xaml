@@ -13,8 +13,8 @@
       <Color x:Key="AccentStrongColor">#B9C7DA</Color>
       <Color x:Key="SuccessColor">#88D7A0</Color>
       <Color x:Key="WarningColor">#F8BE79</Color>
-      <Color x:Key="WindowBackdropColor">#FF151515</Color>
-      <Color x:Key="ShellTopBarColor">#FF181818</Color>
+      <Color x:Key="WindowBackdropColor">#F0141414</Color>
+      <Color x:Key="ShellTopBarColor">#A61A1A1A</Color>
       <Color x:Key="TitleBarButtonForegroundColor">#FFF3F3F3</Color>
       <Color x:Key="TitleBarButtonInactiveForegroundColor">#BFD1D1D1</Color>
       <Color x:Key="TitleBarButtonHoverBackgroundColor">#24FFFFFF</Color>
@@ -24,6 +24,7 @@
       <Color x:Key="SurfaceMutedColor">#FF2D2D2D</Color>
       <Color x:Key="OverlaySurfaceColor">#FF272727</Color>
       <Color x:Key="InputSurfaceColor">#A6262626</Color>
+      <Color x:Key="ButtonSurfaceColor">#12FFFFFF</Color>
       <Color x:Key="NavigationCueColor">#CC323232</Color>
       <Color x:Key="PrimaryHoverColor">#AABBD1</Color>
       <Color x:Key="PrimaryPressedColor">#8D9FB7</Color>
@@ -52,7 +53,14 @@
       <Color x:Key="StatusBadgeColor">#FF303030</Color>
       <Color x:Key="EmptyStateCardColor">#00252525</Color>
       <Color x:Key="EmptyStateIconColor">#FF333333</Color>
-      <Color x:Key="PlayerSurfaceColor">#FF1A1A1A</Color>
+      <Color x:Key="LibraryPaneSurfaceTopColor">#8A232323</Color>
+      <Color x:Key="LibraryPaneSurfaceBottomColor">#721A1A1A</Color>
+      <Color x:Key="PlaylistRailSurfaceColor">#7A202020</Color>
+      <Color x:Key="PlayerSurfaceColor">#DE151515</Color>
+      <Color x:Key="WindowSheenTopColor">#16FFFFFF</Color>
+      <Color x:Key="WindowSheenBottomColor">#00000000</Color>
+      <Color x:Key="PlayerSurfaceTintTopColor">#12000000</Color>
+      <Color x:Key="PlayerSurfaceTintBottomColor">#4A000000</Color>
       <Color x:Key="PlayerInfoColor">#B8242424</Color>
       <Color x:Key="ZoomBadgeColor">#D8242424</Color>
       <Color x:Key="ControlBarColor">#D8262626</Color>
@@ -73,9 +81,9 @@
       <Color x:Key="HeroPanelMiddleColor">#FF212121</Color>
       <Color x:Key="HeroPanelEndColor">#FF232323</Color>
 
-      <CornerRadius x:Key="RadiusSmall">6</CornerRadius>
-      <CornerRadius x:Key="RadiusMedium">8</CornerRadius>
-      <CornerRadius x:Key="RadiusLarge">12</CornerRadius>
+      <CornerRadius x:Key="RadiusSmall">4</CornerRadius>
+      <CornerRadius x:Key="RadiusMedium">5</CornerRadius>
+      <CornerRadius x:Key="RadiusLarge">6</CornerRadius>
       <Thickness x:Key="PageOuterPadding">2</Thickness>
       <Thickness x:Key="SectionCardPadding">12</Thickness>
 
@@ -95,6 +103,7 @@
       <SolidColorBrush x:Key="PrimaryPressedBrush" Color="{ThemeResource PrimaryPressedColor}" />
       <SolidColorBrush x:Key="SecondaryHoverBrush" Color="{ThemeResource SecondaryHoverColor}" />
       <SolidColorBrush x:Key="SecondaryPressedBrush" Color="{ThemeResource SecondaryPressedColor}" />
+      <SolidColorBrush x:Key="ButtonSurfaceBrush" Color="{ThemeResource ButtonSurfaceColor}" />
       <SolidColorBrush x:Key="SurfaceStrokeBrush" Color="{ThemeResource StrokeSubtleColor}" />
       <SolidColorBrush x:Key="SurfaceStrokeStrongBrush" Color="{ThemeResource StrokeStrongColor}" />
       <SolidColorBrush x:Key="TextBrush" Color="{ThemeResource TextPrimaryColor}" />
@@ -117,6 +126,7 @@
       <SolidColorBrush x:Key="EmptyStateCardBrush" Color="{ThemeResource EmptyStateCardColor}" />
       <SolidColorBrush x:Key="EmptyStateIconBrush" Color="{ThemeResource EmptyStateIconColor}" />
       <SolidColorBrush x:Key="PlayerSurfaceBrush" Color="{ThemeResource PlayerSurfaceColor}" />
+      <SolidColorBrush x:Key="PlaylistRailSurfaceBrush" Color="{ThemeResource PlaylistRailSurfaceColor}" />
       <SolidColorBrush x:Key="PlayerInfoBrush" Color="{ThemeResource PlayerInfoColor}" />
       <SolidColorBrush x:Key="ZoomBadgeBrush" Color="{ThemeResource ZoomBadgeColor}" />
       <SolidColorBrush x:Key="ControlBarBrush" Color="{ThemeResource ControlBarColor}" />
@@ -132,10 +142,27 @@
         <GradientStop Color="{ThemeResource AmbientEndColor}" Offset="1" />
       </LinearGradientBrush>
 
+      <LinearGradientBrush x:Key="WindowSheenBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="{ThemeResource WindowSheenTopColor}" Offset="0" />
+        <GradientStop Color="{ThemeResource WindowSheenBottomColor}" Offset="0.3" />
+        <GradientStop Color="#00000000" Offset="1" />
+      </LinearGradientBrush>
+
       <LinearGradientBrush x:Key="HeroPanelBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="{ThemeResource HeroPanelStartColor}" Offset="0" />
-        <GradientStop Color="{ThemeResource HeroPanelMiddleColor}" Offset="0.55" />
-        <GradientStop Color="{ThemeResource HeroPanelEndColor}" Offset="1" />
+        <GradientStop Color="#201F1F1F" Offset="0" />
+        <GradientStop Color="#12191919" Offset="0.5" />
+        <GradientStop Color="#26232323" Offset="1" />
+      </LinearGradientBrush>
+
+      <LinearGradientBrush x:Key="LibraryPaneSurfaceBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="{ThemeResource LibraryPaneSurfaceTopColor}" Offset="0" />
+        <GradientStop Color="{ThemeResource LibraryPaneSurfaceBottomColor}" Offset="1" />
+      </LinearGradientBrush>
+
+      <LinearGradientBrush x:Key="PlayerSurfaceTintBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="{ThemeResource PlayerSurfaceTintTopColor}" Offset="0" />
+        <GradientStop Color="#08000000" Offset="0.35" />
+        <GradientStop Color="{ThemeResource PlayerSurfaceTintBottomColor}" Offset="1" />
       </LinearGradientBrush>
 
       <Style x:Key="SectionCardStyle" TargetType="Border">
@@ -152,10 +179,12 @@
       <Style x:Key="PrimaryToolbarButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource AccentForegroundBrush}" />
-        <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
-        <Setter Property="Padding" Value="12,7" />
-        <Setter Property="MinHeight" Value="31" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusSmall}" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="UseSystemFocusVisuals" Value="True" />
         <Setter Property="Template">
           <Setter.Value>
@@ -185,11 +214,13 @@
                     <VisualState x:Name="PointerOver">
                       <VisualState.Setters>
                         <Setter Target="OuterBorder.Background" Value="{ThemeResource PrimaryHoverBrush}" />
+                        <Setter Target="OuterBorder.BorderBrush" Value="{ThemeResource AccentStrongBrush}" />
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Pressed">
                       <VisualState.Setters>
                         <Setter Target="OuterBorder.Background" Value="{ThemeResource PrimaryPressedBrush}" />
+                        <Setter Target="OuterBorder.BorderBrush" Value="{ThemeResource AccentBrush}" />
                         <Setter Target="ContentPresenter.Opacity" Value="0.9" />
                       </VisualState.Setters>
                     </VisualState>
@@ -220,12 +251,13 @@
       </Style>
 
       <Style x:Key="SecondaryToolbarButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Background" Value="{ThemeResource ButtonSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
-        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="{ThemeResource RadiusSmall}" />
-        <Setter Property="Padding" Value="12,7" />
-        <Setter Property="MinHeight" Value="31" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="MinHeight" Value="30" />
         <Setter Property="UseSystemFocusVisuals" Value="True" />
         <Setter Property="Template">
           <Setter.Value>
@@ -255,11 +287,13 @@
                     <VisualState x:Name="PointerOver">
                       <VisualState.Setters>
                         <Setter Target="OuterBorder.Background" Value="{ThemeResource SecondaryHoverBrush}" />
+                        <Setter Target="OuterBorder.BorderBrush" Value="{ThemeResource SurfaceStrokeStrongBrush}" />
                       </VisualState.Setters>
                     </VisualState>
                     <VisualState x:Name="Pressed">
                       <VisualState.Setters>
                         <Setter Target="OuterBorder.Background" Value="{ThemeResource SecondaryPressedBrush}" />
+                        <Setter Target="OuterBorder.BorderBrush" Value="{ThemeResource SurfaceStrokeStrongBrush}" />
                         <Setter Target="ContentPresenter.Opacity" Value="0.92" />
                       </VisualState.Setters>
                     </VisualState>
@@ -290,21 +324,33 @@
       </Style>
 
       <Style x:Key="PanelIconButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="40" />
-        <Setter Property="Height" Value="36" />
-        <Setter Property="MinWidth" Value="40" />
-        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Width" Value="36" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="MinWidth" Value="36" />
+        <Setter Property="MinHeight" Value="32" />
         <Setter Property="Padding" Value="0" />
-        <Setter Property="FontSize" Value="18" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{ThemeResource MutedTextBrush}" />
+        <Setter Property="FontSize" Value="16" />
       </Style>
 
       <Style x:Key="PrimaryIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryToolbarButtonStyle}">
-        <Setter Property="Width" Value="40" />
-        <Setter Property="Height" Value="36" />
-        <Setter Property="MinWidth" Value="40" />
-        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Width" Value="36" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="MinWidth" Value="36" />
+        <Setter Property="MinHeight" Value="32" />
         <Setter Property="Padding" Value="0" />
-        <Setter Property="FontSize" Value="18" />
+        <Setter Property="FontSize" Value="16" />
+      </Style>
+
+      <Style x:Key="TitleBarIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PanelIconButtonStyle}">
+        <Setter Property="Width" Value="32" />
+        <Setter Property="Height" Value="30" />
+        <Setter Property="MinWidth" Value="32" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="FontSize" Value="14" />
       </Style>
 
       <Style x:Key="TabStripButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
@@ -317,7 +363,7 @@
         <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="SelectionHighlightColor" Value="{ThemeResource AccentStrongBrush}" />
       </Style>
@@ -326,7 +372,7 @@
         <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
         <Setter Property="MinHeight" Value="34" />
       </Style>
 
@@ -334,7 +380,7 @@
         <Setter Property="Background" Value="{ThemeResource InputSurfaceBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="CornerRadius" Value="{ThemeResource RadiusMedium}" />
         <Setter Property="MinHeight" Value="34" />
       </Style>
 

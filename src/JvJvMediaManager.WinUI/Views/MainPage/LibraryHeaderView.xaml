@@ -19,7 +19,7 @@
                     HorizontalContentAlignment="Left"
                     Background="Transparent"
                     BorderThickness="0"
-                    CornerRadius="0"
+                    CornerRadius="{ThemeResource RadiusSmall}"
                     Foreground="{ThemeResource TextBrush}"
                     FontSize="14.3"
                     FontWeight="SemiBold"

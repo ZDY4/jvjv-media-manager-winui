@@ -21,6 +21,8 @@
 
     <Grid x:Name="RootLayoutHost"
           Padding="{ThemeResource PageOuterPadding}">
+        <Rectangle Fill="{ThemeResource HeroPanelBrush}"
+                   IsHitTestVisible="False" />
         <SplitView x:Name="LibrarySplitViewHost"
                    DisplayMode="CompactInline"
                    IsPaneOpen="{Binding Library.IsLibraryPaneOpen, Mode=TwoWay}"

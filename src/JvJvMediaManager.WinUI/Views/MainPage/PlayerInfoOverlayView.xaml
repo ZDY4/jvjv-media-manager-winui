@@ -12,7 +12,7 @@
             Padding="10,8"
             Background="{ThemeResource PlayerInfoBrush}"
             BorderThickness="0"
-            CornerRadius="0"
+            CornerRadius="{ThemeResource RadiusMedium}"
             IsHitTestVisible="False">
         <StackPanel Spacing="2">
             <TextBlock x:Name="FileNameText"

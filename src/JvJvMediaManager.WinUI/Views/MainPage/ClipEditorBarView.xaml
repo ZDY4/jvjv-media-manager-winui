@@ -10,7 +10,7 @@
             Padding="10"
             Background="{ThemeResource ClipBarBrush}"
             BorderThickness="0"
-            CornerRadius="0"
+            CornerRadius="{ThemeResource RadiusMedium}"
             Visibility="{Binding Visibility}">
         <StackPanel Spacing="8">
             <StackPanel Orientation="Horizontal" Spacing="6">
@@ -50,7 +50,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource PlayerInfoBrush}"
                         BorderThickness="0"
-                        CornerRadius="4">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <TextBlock x:Name="ClipStartText"
                                x:FieldModifier="public"
                                Text="{Binding ClipStartText}"
@@ -60,7 +60,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource PlayerInfoBrush}"
                         BorderThickness="0"
-                        CornerRadius="4">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <TextBlock x:Name="ClipEndText"
                                x:FieldModifier="public"
                                Text="{Binding ClipEndText}"
@@ -70,7 +70,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource PlayerInfoBrush}"
                         BorderThickness="0"
-                        CornerRadius="4">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <TextBlock x:Name="ClipDurationText"
                                x:FieldModifier="public"
                                Text="{Binding ClipDurationText}"
@@ -83,7 +83,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource ScopeBadgeBrush}"
                         BorderThickness="0"
-                        CornerRadius="4">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <TextBlock x:Name="ClipModeText"
                                x:FieldModifier="public"
                                Text="{Binding ClipModeText}"
@@ -93,7 +93,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource StatusBadgeBrush}"
                         BorderThickness="0"
-                        CornerRadius="4">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <TextBlock x:Name="ClipSegmentCountText"
                                x:FieldModifier="public"
                                Text="{Binding ClipSegmentCountText}"
@@ -103,7 +103,7 @@
                 <Border Padding="8,4"
                         Background="{ThemeResource StatusBadgeBrush}"
                         BorderThickness="0"
-                        CornerRadius="4"
+                        CornerRadius="{ThemeResource RadiusSmall}"
                         MaxWidth="220">
                     <TextBlock x:Name="ClipOutputText"
                                x:FieldModifier="public"

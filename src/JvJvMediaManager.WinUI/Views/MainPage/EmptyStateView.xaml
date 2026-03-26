@@ -11,13 +11,13 @@
                 Padding="24"
                 Background="{ThemeResource EmptyStateCardBrush}"
                 BorderThickness="0"
-                CornerRadius="0">
+                CornerRadius="{ThemeResource RadiusMedium}">
             <StackPanel HorizontalAlignment="Center"
                         Spacing="6">
                 <Border Width="56"
                         Height="56"
                         Background="{ThemeResource EmptyStateIconBrush}"
-                        CornerRadius="0"
+                        CornerRadius="{ThemeResource RadiusSmall}"
                         HorizontalAlignment="Center">
                     <FontIcon Glyph="&#xE8B9;"
                               FontSize="24"

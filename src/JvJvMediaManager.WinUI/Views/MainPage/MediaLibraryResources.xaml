@@ -48,7 +48,7 @@
                     <Grid Background="Transparent">
                         <Border x:Name="PlaylistSelectionBackground"
                                 Background="{ThemeResource LibrarySelectionStrongBrush}"
-                                CornerRadius="8"
+                                CornerRadius="{ThemeResource RadiusMedium}"
                                 Opacity="1"
                                 Visibility="{Binding IsSelected, RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource BooleanVisibilityConverter}}" />
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
@@ -66,7 +66,7 @@
         <Border Padding="8"
                 Background="{ThemeResource MediaCardBrush}"
                 BorderThickness="0"
-                CornerRadius="0">
+                CornerRadius="{ThemeResource RadiusMedium}">
             <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -75,7 +75,7 @@
                 <Border x:Name="ListSelectionOverlay"
                         Background="{ThemeResource LibrarySelectionBrush}"
                         BorderThickness="0"
-                        CornerRadius="0"
+                        CornerRadius="{ThemeResource RadiusMedium}"
                         Opacity="1"
                         Grid.ColumnSpan="2"
                         Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
@@ -84,7 +84,7 @@
                         Width="78"
                         Height="78"
                         Background="{ThemeResource MediaCardPlaceholderBrush}"
-                        CornerRadius="0">
+                        CornerRadius="{ThemeResource RadiusSmall}">
                     <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
                 </Border>
 
@@ -113,7 +113,7 @@
                     <Border HorizontalAlignment="Left"
                             Padding="5,2"
                             Background="{ThemeResource MediaTagChipBrush}"
-                            CornerRadius="4">
+                            CornerRadius="{ThemeResource RadiusSmall}">
                         <TextBlock Text="{Binding TagsText}"
                                    Foreground="{ThemeResource LibraryChipForegroundBrush}"
                                    FontSize="11"
@@ -133,24 +133,24 @@
                     VerticalAlignment="Center"
                     Background="{ThemeResource MediaCardBrush}"
                     BorderThickness="0"
-                    CornerRadius="0">
+                    CornerRadius="{ThemeResource RadiusLarge}">
                 <Grid>
                     <Border x:Name="GridSelectionOverlay"
                             Background="{ThemeResource LibrarySelectionBrush}"
                             BorderThickness="0"
-                            CornerRadius="0"
+                            CornerRadius="{ThemeResource RadiusLarge}"
                             Opacity="1"
                             Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
                     <Border Margin="8"
                             Background="{ThemeResource MediaCardPlaceholderBrush}"
-                            CornerRadius="0">
+                            CornerRadius="{ThemeResource RadiusMedium}">
                         <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="4" />
                     </Border>
 
                     <Border Margin="6"
                             VerticalAlignment="Bottom"
                             Background="{StaticResource MediaThumbOverlayBrush}"
-                            CornerRadius="0"
+                            CornerRadius="{ThemeResource RadiusMedium}"
                             Padding="6,5">
                         <StackPanel Spacing="2">
                             <TextBlock Text="{Binding FileName}"
@@ -182,7 +182,7 @@
         <Border Width="34"
                 Height="34"
                 Background="{Binding ColorHex, Converter={StaticResource PlaylistBackgroundBrushConverter}}"
-                CornerRadius="4"
+                CornerRadius="{ThemeResource RadiusSmall}"
                 ToolTipService.ToolTip="{Binding Name}">
             <TextBlock Text="{Binding RailDisplayText}"
                        Foreground="{Binding ColorHex, Converter={StaticResource PlaylistForegroundBrushConverter}}"

@@ -17,7 +17,7 @@
                 Background="{ThemeResource ControlBarOverlayBrush}"
                 BorderBrush="{ThemeResource ControlBarBorderBrush}"
                 BorderThickness="1"
-                CornerRadius="18"
+                CornerRadius="{ThemeResource RadiusLarge}"
                 Visibility="{Binding ControlBarVisibility}"
                 Opacity="{Binding ControlBarOpacity}">
             <Grid ColumnSpacing="12">
@@ -92,7 +92,7 @@
                                 Background="{ThemeResource VolumeFlyoutBrush}"
                                 BorderBrush="{ThemeResource ControlBarBorderBrush}"
                                 BorderThickness="1"
-                                CornerRadius="0"
+                                CornerRadius="{ThemeResource RadiusLarge}"
                                 HorizontalAlignment="Center"
                                 IsHitTestVisible="True">
                             <Slider x:Name="VolumeSlider"

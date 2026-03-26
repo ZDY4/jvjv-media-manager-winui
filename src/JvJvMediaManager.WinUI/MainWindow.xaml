@@ -9,8 +9,16 @@
     Title="媒体管理器">
 
     <Grid x:Name="WindowRoot"
-          Background="{ThemeResource WindowBackdropBrush}">
+          Background="Transparent">
+        <Rectangle Fill="{ThemeResource WindowBackdropBrush}"
+                   IsHitTestVisible="False" />
+        <Rectangle Fill="{ThemeResource HeroPanelBrush}"
+                   IsHitTestVisible="False" />
         <Rectangle Fill="{ThemeResource WindowAmbientBrush}"
+                   IsHitTestVisible="False" />
+        <Rectangle Fill="{ThemeResource WindowSheenBrush}"
+                   VerticalAlignment="Top"
+                   Height="180"
                    IsHitTestVisible="False" />
 
         <Grid RowDefinitions="Auto,*">
@@ -43,6 +51,7 @@
                     <Border Width="24"
                             Height="24"
                             Background="{ThemeResource AppIconBadgeBrush}"
+                            CornerRadius="{ThemeResource RadiusSmall}"
                             VerticalAlignment="Center">
                         <FontIcon Glyph="&#xE8A5;"
                                   FontSize="13"
@@ -62,21 +71,21 @@
 
                     <Button Grid.Column="4"
                             Click="TitleBarAddFilesButton_Click"
-                            Style="{StaticResource PanelIconButtonStyle}"
+                            Style="{StaticResource TitleBarIconButtonStyle}"
                             ToolTipService.ToolTip="添加文件">
                         <FontIcon Glyph="&#xE8B9;" />
                     </Button>
 
                     <Button Grid.Column="6"
                             Click="TitleBarAddFolderButton_Click"
-                            Style="{StaticResource PanelIconButtonStyle}"
+                            Style="{StaticResource TitleBarIconButtonStyle}"
                             ToolTipService.ToolTip="添加文件夹">
                         <FontIcon Glyph="&#xE8B7;" />
                     </Button>
 
                     <Button Grid.Column="8"
                             Click="TitleBarSettingsButton_Click"
-                            Style="{StaticResource PanelIconButtonStyle}"
+                            Style="{StaticResource TitleBarIconButtonStyle}"
                             ToolTipService.ToolTip="设置">
                         <FontIcon Glyph="&#xE713;" />
                     </Button>

@@ -4,13 +4,18 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:mainPage="using:JvJvMediaManager.Views.MainPageParts">
 
-    <Border Margin="4,0,0,0"
-            Background="{ThemeResource PlayerSurfaceBrush}"
+    <Border x:Name="PlayerShell"
+            Margin="0"
+            Background="Transparent"
             BorderThickness="0"
             CornerRadius="0">
         <Grid x:Name="PlayerRoot"
               x:FieldModifier="public"
               Background="Transparent">
+            <Rectangle Fill="{ThemeResource PlayerSurfaceBrush}"
+                       IsHitTestVisible="False" />
+            <Rectangle Fill="{ThemeResource PlayerSurfaceTintBrush}"
+                       IsHitTestVisible="False" />
             <Rectangle Fill="{ThemeResource WindowAmbientBrush}"
                        IsHitTestVisible="False" />
 
@@ -36,7 +41,7 @@
                         Padding="10,5"
                         Background="{ThemeResource ZoomBadgeBrush}"
                         BorderThickness="0"
-                        CornerRadius="0"
+                        CornerRadius="{ThemeResource RadiusMedium}"
                         Visibility="{Binding ImagePreview.ZoomBadgeVisibility}"
                         IsHitTestVisible="False">
                     <TextBlock x:Name="ImageZoomText"

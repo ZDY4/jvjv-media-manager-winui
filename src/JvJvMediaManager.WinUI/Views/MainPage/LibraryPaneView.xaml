@@ -20,7 +20,8 @@
         <Border x:Name="DropTargetBorder"
                 x:FieldModifier="public"
                 Grid.Column="1"
-                Style="{StaticResource SectionCardStyle}"
+                Background="{ThemeResource LibraryPaneSurfaceBrush}"
+                BorderThickness="0"
                 CornerRadius="0"
                 Padding="8"
                 AllowDrop="True">
@@ -47,6 +48,12 @@
                                            Grid.Row="2" />
             </Grid>
         </Border>
+
+        <Rectangle Grid.ColumnSpan="2"
+                   Width="1"
+                   HorizontalAlignment="Right"
+                   Fill="{ThemeResource SurfaceStrokeBrush}"
+                   IsHitTestVisible="False" />
 
         <Thumb x:Name="PaneResizer"
                x:FieldModifier="public"
