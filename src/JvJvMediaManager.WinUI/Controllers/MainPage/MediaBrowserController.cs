@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.Storage;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Services.MainPage;
@@ -18,6 +19,10 @@ namespace JvJvMediaManager.Controllers.MainPage;
 public sealed class MediaBrowserController : IDisposable
 {
     private const double GridViewWidthPadding = 24;
+    private const double DragSelectionActivationThreshold = 6;
+    private const double DragSelectionAutoScrollEdgeThreshold = 40;
+    private const double DragSelectionAutoScrollMaxStep = 28;
+    private static readonly TimeSpan DragSelectionAutoScrollInterval = TimeSpan.FromMilliseconds(16);
 
     private readonly JvJvMediaManager.Views.MainPage _page;
     private readonly LibraryShellViewModel _viewModel;
@@ -27,14 +32,33 @@ public sealed class MediaBrowserController : IDisposable
     private readonly Func<string, string, Task> _showInfoAsync;
     private readonly DebounceDispatcher _debouncer = new();
     private readonly Dictionary<string, MediaItemViewModel> _loadedMediaById = new(StringComparer.Ordinal);
+    private readonly DispatcherTimer _dragSelectionAutoScrollTimer = new();
 
     private bool _isSyncingSelection;
+    private ScrollViewer? _listViewScrollViewer;
     private ScrollViewer? _gridViewScrollViewer;
     private HashSet<string> _selectedItemIds = new(StringComparer.Ordinal);
+    private bool _isDragSelectionPending;
+    private bool _isDragSelecting;
+    private bool _isDragSelectionAdditive;
+    private ListViewBase? _dragSelectionView;
+    private UIElement? _dragSelectionCaptureOwner;
+    private Point _dragSelectionStartPoint;
+    private Point _dragSelectionCurrentPointerPoint;
+    private double _dragSelectionAutoScrollVelocity;
+    private HashSet<string> _dragSelectionSeedIds = new(StringComparer.Ordinal);
+    private string? _dragSelectionSeedPrimaryId;
+    private HashSet<string> _dragSelectionOriginalIds = new(StringComparer.Ordinal);
+    private string? _dragSelectionOriginalPrimaryId;
+    private bool _dragSelectionStartedOnItem;
+    private string? _dragSelectionPressedMediaId;
 
     private TextBox SearchBox => _libraryPane.FilterBarView.SearchBox;
     private ListView ListView => _libraryPane.BrowserView.ListView;
     private GridView GridView => _libraryPane.BrowserView.GridView;
+    private Grid BrowserRoot => _libraryPane.BrowserView.RootGrid;
+    private Canvas SelectionCanvas => _libraryPane.BrowserView.SelectionCanvas;
+    private Microsoft.UI.Xaml.Shapes.Rectangle SelectionRectangle => _libraryPane.BrowserView.SelectionRectangle;
 
     public MediaBrowserController(
         JvJvMediaManager.Views.MainPage page,
@@ -50,6 +74,8 @@ public sealed class MediaBrowserController : IDisposable
         _contextMenuCoordinator = contextMenuCoordinator;
         _updateWatchedFolders = updateWatchedFolders;
         _showInfoAsync = showInfoAsync;
+        _dragSelectionAutoScrollTimer.Interval = DragSelectionAutoScrollInterval;
+        _dragSelectionAutoScrollTimer.Tick += DragSelectionAutoScrollTimer_Tick;
 
         _libraryPane.HeaderView.RefreshButton.Click += Refresh_Click;
         _libraryPane.HeaderView.ViewModeToggleButton.Click += ToggleViewMode_Click;
@@ -62,6 +88,11 @@ public sealed class MediaBrowserController : IDisposable
         ListView.SelectionChanged += Media_SelectionChanged;
         ListView.RightTapped += MediaView_RightTapped;
         ListView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
+        ListView.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed), true);
+        ListView.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(MediaView_PointerMoved), true);
+        ListView.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(MediaView_PointerReleased), true);
+        ListView.PointerCaptureLost += MediaView_PointerCaptureLost;
+        ListView.PointerCanceled += MediaView_PointerCanceled;
 
         GridView.ContainerContentChanging += Media_ContainerContentChanging;
         GridView.SelectionChanged += Media_SelectionChanged;
@@ -69,6 +100,11 @@ public sealed class MediaBrowserController : IDisposable
         GridView.Loaded += GridView_Loaded;
         GridView.SizeChanged += GridView_SizeChanged;
         GridView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
+        GridView.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed), true);
+        GridView.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(MediaView_PointerMoved), true);
+        GridView.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(MediaView_PointerReleased), true);
+        GridView.PointerCaptureLost += MediaView_PointerCaptureLost;
+        GridView.PointerCanceled += MediaView_PointerCanceled;
 
         _libraryPane.DropTargetBorder.DragOver += LibraryPanel_DragOver;
         _libraryPane.DropTargetBorder.Drop += LibraryPanel_Drop;
@@ -89,6 +125,11 @@ public sealed class MediaBrowserController : IDisposable
         ListView.SelectionChanged -= Media_SelectionChanged;
         ListView.RightTapped -= MediaView_RightTapped;
         ListView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
+        ListView.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed));
+        ListView.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(MediaView_PointerMoved));
+        ListView.RemoveHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(MediaView_PointerReleased));
+        ListView.PointerCaptureLost -= MediaView_PointerCaptureLost;
+        ListView.PointerCanceled -= MediaView_PointerCanceled;
 
         GridView.ContainerContentChanging -= Media_ContainerContentChanging;
         GridView.SelectionChanged -= Media_SelectionChanged;
@@ -96,11 +137,19 @@ public sealed class MediaBrowserController : IDisposable
         GridView.Loaded -= GridView_Loaded;
         GridView.SizeChanged -= GridView_SizeChanged;
         GridView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
+        GridView.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed));
+        GridView.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(MediaView_PointerMoved));
+        GridView.RemoveHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(MediaView_PointerReleased));
+        GridView.PointerCaptureLost -= MediaView_PointerCaptureLost;
+        GridView.PointerCanceled -= MediaView_PointerCanceled;
 
         _libraryPane.DropTargetBorder.DragOver -= LibraryPanel_DragOver;
         _libraryPane.DropTargetBorder.Drop -= LibraryPanel_Drop;
         _libraryPane.PaneRoot.SizeChanged -= LibraryPaneRoot_SizeChanged;
         _viewModel.FilteredMediaItems.CollectionChanged -= FilteredMediaItems_CollectionChanged;
+        _dragSelectionAutoScrollTimer.Tick -= DragSelectionAutoScrollTimer_Tick;
+        _dragSelectionAutoScrollTimer.Stop();
+        EndDragSelection();
     }
 
     public async Task InitializeAsync()
@@ -109,6 +158,7 @@ public sealed class MediaBrowserController : IDisposable
         RebuildLoadedMediaIndex();
         QueueThumbnailLoads(_viewModel.FilteredMediaItems);
         UpdateMediaItemSize();
+        ConfigureListViewScrolling();
         ConfigureGridViewScrolling();
     }
 
@@ -218,6 +268,7 @@ public sealed class MediaBrowserController : IDisposable
 
     private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
     {
+        EndDragSelection();
         _viewModel.ViewMode = _viewModel.ViewMode == MediaViewMode.List
             ? MediaViewMode.Grid
             : MediaViewMode.List;
@@ -227,13 +278,18 @@ public sealed class MediaBrowserController : IDisposable
             ConfigureGridViewScrolling();
             _page.DispatcherQueue.TryEnqueue(() =>
             {
+                ConfigureListViewScrolling();
                 ConfigureGridViewScrolling();
                 SynchronizeSelectionToActiveView();
             });
             return;
         }
 
-        _page.DispatcherQueue.TryEnqueue(SynchronizeSelectionToActiveView);
+        _page.DispatcherQueue.TryEnqueue(() =>
+        {
+            ConfigureListViewScrolling();
+            SynchronizeSelectionToActiveView();
+        });
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -301,6 +357,12 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        if (_isDragSelectionPending && !_isDragSelecting)
+        {
+            RestoreSelectionSnapshot(_dragSelectionOriginalIds, _dragSelectionOriginalPrimaryId);
+            return;
+        }
+
         var selectedIds = listViewBase.SelectedItems
             .OfType<MediaItemViewModel>()
             .Select(item => item.Id)
@@ -320,6 +382,83 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         _viewModel.SelectedMedia = selectedMedia;
+    }
+
+    private void MediaView_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is not ListViewBase listViewBase
+            || !ReferenceEquals(listViewBase, GetActiveMediaView())
+            || !CanBeginDragSelection(listViewBase, e))
+        {
+            return;
+        }
+
+        BeginDragSelection(listViewBase, e);
+        e.Handled = true;
+    }
+
+    private void MediaView_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _dragSelectionView) || (!_isDragSelectionPending && !_isDragSelecting))
+        {
+            return;
+        }
+
+        var rawPoint = e.GetCurrentPoint(BrowserRoot).Position;
+        _dragSelectionCurrentPointerPoint = rawPoint;
+        var currentPoint = ClampToBrowserBounds(rawPoint);
+        if (_isDragSelectionPending)
+        {
+            if (!HasExceededDragSelectionThreshold(currentPoint))
+            {
+                return;
+            }
+
+            _isDragSelecting = true;
+            _isDragSelectionPending = false;
+        }
+
+        UpdateDragSelectionAutoScroll(rawPoint);
+        UpdateDragSelection(currentPoint);
+        e.Handled = true;
+    }
+
+    private void MediaView_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _dragSelectionView) || (!_isDragSelectionPending && !_isDragSelecting))
+        {
+            return;
+        }
+
+        var rawPoint = e.GetCurrentPoint(BrowserRoot).Position;
+        _dragSelectionCurrentPointerPoint = rawPoint;
+        var currentPoint = ClampToBrowserBounds(rawPoint);
+        if (_isDragSelecting)
+        {
+            StopDragSelectionAutoScroll();
+            UpdateDragSelection(currentPoint);
+        }
+        else if (_dragSelectionStartedOnItem)
+        {
+            ApplyPressedItemSelection();
+        }
+        else if (!_isDragSelectionAdditive)
+        {
+            ApplySelectionSnapshot(Array.Empty<string>(), null);
+        }
+
+        EndDragSelection();
+        e.Handled = true;
+    }
+
+    private void MediaView_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        EndDragSelection();
+    }
+
+    private void MediaView_PointerCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        EndDragSelection();
     }
 
     private void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
@@ -366,6 +505,11 @@ public sealed class MediaBrowserController : IDisposable
 
     private void FilteredMediaItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (_isDragSelectionPending || _isDragSelecting)
+        {
+            EndDragSelection();
+        }
+
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             RebuildLoadedMediaIndex();
@@ -439,6 +583,8 @@ public sealed class MediaBrowserController : IDisposable
         if (e.NewSize.Width > 0)
         {
             UpdateMediaItemSize();
+            ConfigureListViewScrolling();
+            ConfigureGridViewScrolling();
         }
     }
 
@@ -507,6 +653,13 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         _gridViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
+    }
+
+    private void ConfigureListViewScrolling()
+    {
+        ListView.ApplyTemplate();
+        ListView.UpdateLayout();
+        _listViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView);
     }
 
     private void UpdateMediaItemSize()
@@ -608,6 +761,411 @@ public sealed class MediaBrowserController : IDisposable
         var container = MainPageVisualTreeHelpers.FindAncestor<SelectorItem>(origin);
         media = container?.Content as MediaItemViewModel;
         return media != null;
+    }
+
+    private void BeginDragSelection(ListViewBase listViewBase, PointerRoutedEventArgs e)
+    {
+        EndDragSelection();
+
+        var startedOnItem = TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var pressedMedia) && pressedMedia != null;
+
+        _dragSelectionView = listViewBase;
+        _dragSelectionCaptureOwner = listViewBase;
+        _dragSelectionStartPoint = ClampToBrowserBounds(e.GetCurrentPoint(BrowserRoot).Position);
+        _dragSelectionCurrentPointerPoint = _dragSelectionStartPoint;
+        _dragSelectionAutoScrollVelocity = 0;
+        _isDragSelectionPending = true;
+        _isDragSelecting = false;
+        _isDragSelectionAdditive = IsCtrlKeyDown();
+        _dragSelectionOriginalIds = new HashSet<string>(_selectedItemIds, StringComparer.Ordinal);
+        _dragSelectionOriginalPrimaryId = _viewModel.SelectedMedia?.Id;
+        _dragSelectionSeedIds = _isDragSelectionAdditive
+            ? new HashSet<string>(_selectedItemIds, StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+        _dragSelectionSeedPrimaryId = _isDragSelectionAdditive ? _viewModel.SelectedMedia?.Id : null;
+        _dragSelectionStartedOnItem = startedOnItem;
+        _dragSelectionPressedMediaId = pressedMedia?.Id;
+
+        HideSelectionRectangle();
+        _dragSelectionCaptureOwner.CapturePointer(e.Pointer);
+    }
+
+    private bool CanBeginDragSelection(ListViewBase listViewBase, PointerRoutedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(listViewBase);
+        if (e.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse || !point.Properties.IsLeftButtonPressed)
+        {
+            return false;
+        }
+
+        if (IsShiftKeyDown())
+        {
+            return false;
+        }
+
+        var origin = e.OriginalSource as DependencyObject;
+        if (MainPageVisualTreeHelpers.FindAncestor<ScrollBar>(origin) != null)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ApplyPressedItemSelection()
+    {
+        if (string.IsNullOrWhiteSpace(_dragSelectionPressedMediaId))
+        {
+            return;
+        }
+
+        HashSet<string> nextSelection;
+        string? preferredPrimaryId;
+
+        if (_isDragSelectionAdditive)
+        {
+            nextSelection = new HashSet<string>(_dragSelectionSeedIds, StringComparer.Ordinal);
+            if (!nextSelection.Add(_dragSelectionPressedMediaId))
+            {
+                nextSelection.Remove(_dragSelectionPressedMediaId);
+            }
+
+            preferredPrimaryId = nextSelection.Contains(_dragSelectionPressedMediaId)
+                ? _dragSelectionPressedMediaId
+                : _dragSelectionSeedPrimaryId;
+        }
+        else
+        {
+            nextSelection = new HashSet<string>(StringComparer.Ordinal)
+            {
+                _dragSelectionPressedMediaId
+            };
+            preferredPrimaryId = _dragSelectionPressedMediaId;
+        }
+
+        ApplySelectionSnapshot(nextSelection, preferredPrimaryId);
+    }
+
+    private void RestoreSelectionSnapshot(IReadOnlySet<string> selectedIds, string? primaryId)
+    {
+        var selectedMedia = ResolvePrimarySelection(primaryId, selectedIds);
+
+        _isSyncingSelection = true;
+        try
+        {
+            _selectedItemIds = selectedIds.ToHashSet(StringComparer.Ordinal);
+            ApplySelectionToView(ListView, selectedMedia);
+            ApplySelectionToView(GridView, selectedMedia);
+            UpdateSelectedStateFlags();
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+
+        _viewModel.SelectedMedia = selectedMedia;
+    }
+
+    private bool HasExceededDragSelectionThreshold(Point currentPoint)
+    {
+        var deltaX = currentPoint.X - _dragSelectionStartPoint.X;
+        var deltaY = currentPoint.Y - _dragSelectionStartPoint.Y;
+        return Math.Abs(deltaX) >= DragSelectionActivationThreshold || Math.Abs(deltaY) >= DragSelectionActivationThreshold;
+    }
+
+    private void UpdateDragSelection(Point currentPoint)
+    {
+        var selectionRect = CreateNormalizedRect(_dragSelectionStartPoint, currentPoint);
+        ShowSelectionRectangle(selectionRect);
+
+        var hitItems = GetIntersectingItems(_dragSelectionView, selectionRect);
+        var nextSelection = _isDragSelectionAdditive
+            ? new HashSet<string>(_dragSelectionSeedIds, StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var item in hitItems)
+        {
+            nextSelection.Add(item.Id);
+        }
+
+        var primaryId = hitItems.LastOrDefault()?.Id;
+        if (string.IsNullOrWhiteSpace(primaryId) && !string.IsNullOrWhiteSpace(_dragSelectionSeedPrimaryId) && nextSelection.Contains(_dragSelectionSeedPrimaryId))
+        {
+            primaryId = _dragSelectionSeedPrimaryId;
+        }
+
+        ApplySelectionSnapshot(nextSelection, primaryId);
+    }
+
+    private void DragSelectionAutoScrollTimer_Tick(object? sender, object e)
+    {
+        if (!_isDragSelecting || _dragSelectionView == null)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        if (Math.Abs(_dragSelectionAutoScrollVelocity) < double.Epsilon)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        var scrollViewer = GetScrollViewer(_dragSelectionView);
+        if (scrollViewer == null || scrollViewer.ScrollableHeight <= 0)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        var currentOffset = scrollViewer.VerticalOffset;
+        var nextOffset = Math.Clamp(currentOffset + _dragSelectionAutoScrollVelocity, 0, scrollViewer.ScrollableHeight);
+        if (Math.Abs(nextOffset - currentOffset) < 0.1)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        scrollViewer.ChangeView(null, nextOffset, null, true);
+        _dragSelectionView.UpdateLayout();
+        BrowserRoot.UpdateLayout();
+        UpdateDragSelection(ClampToBrowserBounds(_dragSelectionCurrentPointerPoint));
+    }
+
+    private void UpdateDragSelectionAutoScroll(Point rawPoint)
+    {
+        if (!_isDragSelecting)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        var height = BrowserRoot.ActualHeight;
+        if (height <= 0)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        var velocity = 0d;
+        if (rawPoint.Y <= DragSelectionAutoScrollEdgeThreshold)
+        {
+            var intensity = 1 - (Math.Max(rawPoint.Y, 0) / DragSelectionAutoScrollEdgeThreshold);
+            velocity = -Math.Max(4, DragSelectionAutoScrollMaxStep * intensity);
+        }
+        else if (rawPoint.Y >= height - DragSelectionAutoScrollEdgeThreshold)
+        {
+            var distanceToEdge = Math.Max(0, height - rawPoint.Y);
+            var intensity = 1 - (distanceToEdge / DragSelectionAutoScrollEdgeThreshold);
+            velocity = Math.Max(4, DragSelectionAutoScrollMaxStep * intensity);
+        }
+
+        _dragSelectionAutoScrollVelocity = velocity;
+        if (Math.Abs(velocity) < double.Epsilon)
+        {
+            StopDragSelectionAutoScroll();
+            return;
+        }
+
+        if (!_dragSelectionAutoScrollTimer.IsEnabled)
+        {
+            _dragSelectionAutoScrollTimer.Start();
+        }
+    }
+
+    private void StopDragSelectionAutoScroll()
+    {
+        _dragSelectionAutoScrollVelocity = 0;
+        if (_dragSelectionAutoScrollTimer.IsEnabled)
+        {
+            _dragSelectionAutoScrollTimer.Stop();
+        }
+    }
+
+    private ScrollViewer? GetScrollViewer(ListViewBase listViewBase)
+    {
+        if (ReferenceEquals(listViewBase, GridView))
+        {
+            _gridViewScrollViewer ??= MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
+            return _gridViewScrollViewer;
+        }
+
+        _listViewScrollViewer ??= MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView);
+        return _listViewScrollViewer;
+    }
+
+    private IReadOnlyList<MediaItemViewModel> GetIntersectingItems(ListViewBase? listViewBase, Rect selectionRect)
+    {
+        if (listViewBase?.ItemsPanelRoot is not Panel itemsPanel)
+        {
+            return Array.Empty<MediaItemViewModel>();
+        }
+
+        var result = new List<MediaItemViewModel>(itemsPanel.Children.Count);
+        foreach (var container in itemsPanel.Children.OfType<SelectorItem>())
+        {
+            if (container.Content is not MediaItemViewModel media
+                || container.Visibility != Visibility.Visible
+                || container.ActualWidth <= 0
+                || container.ActualHeight <= 0)
+            {
+                continue;
+            }
+
+            var containerBounds = GetElementBounds(container, BrowserRoot);
+            if (containerBounds.Width <= 0 || containerBounds.Height <= 0)
+            {
+                continue;
+            }
+
+            if (DoRectsIntersect(selectionRect, containerBounds))
+            {
+                result.Add(media);
+            }
+        }
+
+        return result;
+    }
+
+    private static Rect GetElementBounds(FrameworkElement element, UIElement relativeTo)
+    {
+        var transform = element.TransformToVisual(relativeTo);
+        var origin = transform.TransformPoint(new Point(0, 0));
+        return new Rect(origin.X, origin.Y, element.ActualWidth, element.ActualHeight);
+    }
+
+    private void ApplySelectionSnapshot(IEnumerable<string> selectedIds, string? primaryId)
+    {
+        var nextSelectedIds = selectedIds.ToHashSet(StringComparer.Ordinal);
+        if (_selectedItemIds.SetEquals(nextSelectedIds)
+            && string.Equals(_viewModel.SelectedMedia?.Id, primaryId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _selectedItemIds = nextSelectedIds;
+        var selectedMedia = ResolvePrimarySelection(primaryId, nextSelectedIds);
+
+        _isSyncingSelection = true;
+        try
+        {
+            ApplySelectionToView(ListView, selectedMedia);
+            ApplySelectionToView(GridView, selectedMedia);
+            UpdateSelectedStateFlags();
+        }
+        finally
+        {
+            _isSyncingSelection = false;
+        }
+
+        _viewModel.SelectedMedia = selectedMedia;
+    }
+
+    private MediaItemViewModel? ResolvePrimarySelection(string? preferredId, IReadOnlySet<string> selectedIds)
+    {
+        if (selectedIds.Count == 0)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(preferredId)
+            && selectedIds.Contains(preferredId)
+            && _loadedMediaById.TryGetValue(preferredId, out var preferred))
+        {
+            return preferred;
+        }
+
+        if (_viewModel.SelectedMedia is { } current && selectedIds.Contains(current.Id))
+        {
+            return current;
+        }
+
+        return _selectedItemIds
+            .Select(id => _loadedMediaById.TryGetValue(id, out var item) ? item : null)
+            .OfType<MediaItemViewModel>()
+            .FirstOrDefault();
+    }
+
+    private void ShowSelectionRectangle(Rect rect)
+    {
+        SelectionCanvas.Width = BrowserRoot.ActualWidth;
+        SelectionCanvas.Height = BrowserRoot.ActualHeight;
+        Canvas.SetLeft(SelectionRectangle, rect.X);
+        Canvas.SetTop(SelectionRectangle, rect.Y);
+        SelectionRectangle.Width = rect.Width;
+        SelectionRectangle.Height = rect.Height;
+        SelectionRectangle.Visibility = Visibility.Visible;
+    }
+
+    private void HideSelectionRectangle()
+    {
+        SelectionRectangle.Visibility = Visibility.Collapsed;
+        SelectionRectangle.Width = 0;
+        SelectionRectangle.Height = 0;
+        Canvas.SetLeft(SelectionRectangle, 0);
+        Canvas.SetTop(SelectionRectangle, 0);
+    }
+
+    private void EndDragSelection()
+    {
+        StopDragSelectionAutoScroll();
+        _isDragSelectionPending = false;
+        _isDragSelecting = false;
+        _isDragSelectionAdditive = false;
+        _dragSelectionSeedIds.Clear();
+        _dragSelectionSeedPrimaryId = null;
+        _dragSelectionOriginalIds.Clear();
+        _dragSelectionOriginalPrimaryId = null;
+        _dragSelectionStartedOnItem = false;
+        _dragSelectionPressedMediaId = null;
+
+        if (_dragSelectionCaptureOwner != null)
+        {
+            _dragSelectionCaptureOwner.ReleasePointerCaptures();
+            _dragSelectionCaptureOwner = null;
+        }
+
+        _dragSelectionView = null;
+        HideSelectionRectangle();
+    }
+
+    private Point ClampToBrowserBounds(Point point)
+    {
+        return new Point(
+            Math.Clamp(point.X, 0, BrowserRoot.ActualWidth),
+            Math.Clamp(point.Y, 0, BrowserRoot.ActualHeight));
+    }
+
+    private static Rect CreateNormalizedRect(Point startPoint, Point endPoint)
+    {
+        var x = Math.Min(startPoint.X, endPoint.X);
+        var y = Math.Min(startPoint.Y, endPoint.Y);
+        var width = Math.Abs(endPoint.X - startPoint.X);
+        var height = Math.Abs(endPoint.Y - startPoint.Y);
+        return new Rect(x, y, width, height);
+    }
+
+    private static bool DoRectsIntersect(Rect first, Rect second)
+    {
+        return first.X < second.X + second.Width
+            && first.X + first.Width > second.X
+            && first.Y < second.Y + second.Height
+            && first.Y + first.Height > second.Y;
+    }
+
+    private static bool IsCtrlKeyDown()
+    {
+        return (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+    }
+
+    private static bool IsShiftKeyDown()
+    {
+        return (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+    }
+
+    private ListViewBase GetActiveMediaView()
+    {
+        return _viewModel.ViewMode == MediaViewMode.Grid ? GridView : ListView;
     }
 
     private void ApplySelectionToView(ListViewBase listViewBase, MediaItemViewModel? selectedMedia)

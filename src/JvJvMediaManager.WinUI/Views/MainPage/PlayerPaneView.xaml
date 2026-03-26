@@ -12,21 +12,33 @@
         <Grid x:Name="PlayerRoot"
               x:FieldModifier="public"
               Background="Transparent">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
             <Rectangle Fill="{ThemeResource PlayerSurfaceBrush}"
+                       Grid.RowSpan="2"
                        IsHitTestVisible="False" />
             <Rectangle Fill="{ThemeResource PlayerSurfaceTintBrush}"
+                       Grid.RowSpan="2"
                        IsHitTestVisible="False" />
             <Rectangle Fill="{ThemeResource WindowAmbientBrush}"
+                       Grid.RowSpan="2"
                        IsHitTestVisible="False" />
 
             <mainPage:EmptyStateView x:Name="EmptyStateView"
+                                     Grid.Row="0"
                                      x:FieldModifier="public" />
             <mainPage:VideoViewportView x:Name="VideoViewport"
+                                        Grid.Row="0"
                                         x:FieldModifier="public" />
             <mainPage:ImageViewportView x:Name="ImageViewport"
+                                        Grid.Row="0"
                                         x:FieldModifier="public" />
 
             <Grid x:Name="PlayerOverlay"
+                  Grid.Row="0"
                   x:FieldModifier="public">
                 <mainPage:PlayerInfoOverlayView x:Name="InfoOverlay"
                                                 x:FieldModifier="public" />
@@ -55,10 +67,12 @@
                 <mainPage:TransportControlBarView x:Name="TransportBar"
                                                   x:FieldModifier="public"
                                                   DataContext="{Binding VideoPlayback}" />
-                <mainPage:ClipEditorBarView x:Name="ClipBarView"
-                                            x:FieldModifier="public"
-                                            DataContext="{Binding ClipEditor}" />
             </Grid>
+
+            <mainPage:ClipEditorBarView x:Name="ClipBarView"
+                                        Grid.Row="1"
+                                        x:FieldModifier="public"
+                                        DataContext="{Binding ClipEditor}" />
         </Grid>
     </Border>
 </UserControl>

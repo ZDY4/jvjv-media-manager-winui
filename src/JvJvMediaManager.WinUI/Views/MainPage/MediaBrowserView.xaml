@@ -11,7 +11,8 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
-    <Grid>
+    <Grid x:Name="RootGrid"
+          x:FieldModifier="public">
         <ListView x:Name="ListView"
                   x:FieldModifier="public"
                   ItemsSource="{Binding FilteredMediaItems}"
@@ -53,5 +54,19 @@
                 </ItemsPanelTemplate>
             </GridView.ItemsPanel>
         </GridView>
+
+        <Canvas x:Name="SelectionCanvas"
+                x:FieldModifier="public"
+                IsHitTestVisible="False">
+            <Rectangle x:Name="SelectionRectangle"
+                       x:FieldModifier="public"
+                       Visibility="Collapsed"
+                       RadiusX="4"
+                       RadiusY="4"
+                       Stroke="{ThemeResource LibrarySelectionStrongBrush}"
+                       StrokeThickness="1.5"
+                       Fill="{ThemeResource LibrarySelectionBrush}"
+                       Opacity="0.45" />
+        </Canvas>
     </Grid>
 </UserControl>

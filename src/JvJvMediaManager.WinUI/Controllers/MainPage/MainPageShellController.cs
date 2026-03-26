@@ -81,6 +81,7 @@ public sealed class MainPageShellController
     private Button ClipModeToggleButton => _playerPane.TransportBar.ClipModeToggleButton;
     private Button SetClipStartButton => _playerPane.ClipBarView.SetClipStartButton;
     private Button SetClipEndButton => _playerPane.ClipBarView.SetClipEndButton;
+    private Button SplitClipButton => _playerPane.ClipBarView.SplitClipButton;
     private Button ClipPlanButton => _playerPane.ClipBarView.ClipPlanButton;
     private Button ClearClipButton => _playerPane.ClipBarView.ClearClipButton;
     private Button ExportClipButton => _playerPane.ClipBarView.ExportClipButton;
@@ -135,7 +136,8 @@ public sealed class MainPageShellController
             () => ViewModel.SelectedMedia?.Type == MediaType.Video && _shell.Player.EmptyStateVisibility != Visibility.Visible,
             () => _page.Focus(FocusState.Programmatic),
             RefreshPlayerNavigationHotspots,
-            duration => _clipEditorController!.HandleMediaOpened(duration));
+            duration => _clipEditorController!.HandleMediaOpened(duration),
+            () => _clipEditorController!.Refresh());
         _clipEditorController = _modules.CreateClipEditorController(
             shell.Library,
             shell.Player.ClipEditor,
@@ -144,6 +146,10 @@ public sealed class MainPageShellController
             _dialogCoordinator,
             _videoPlaybackController.GetCurrentPlaybackPosition,
             _videoPlaybackController.GetCurrentVideoDuration,
+            _videoPlaybackController.SeekTo,
+            _videoPlaybackController.TogglePlayPause,
+            () => _videoPlaybackController.IsPlaying,
+            _videoPlaybackController.SetTransportSuppressed,
             paths => UpdateWatchedFolders(paths),
             ShowControls);
         _imagePreviewController = _modules.CreateImagePreviewController(
@@ -171,6 +177,7 @@ public sealed class MainPageShellController
         ClipModeToggleButton.Click += ToggleClipMode_Click;
         SetClipStartButton.Click += SetClipStart_Click;
         SetClipEndButton.Click += SetClipEnd_Click;
+        SplitClipButton.Click += SplitClip_Click;
         ClipPlanButton.Click += ClipPlan_Click;
         ClearClipButton.Click += ClearClip_Click;
         ExportClipButton.Click += ExportClip_Click;
@@ -199,6 +206,7 @@ public sealed class MainPageShellController
         _playlistRailCoordinator.Dispose();
         _libraryPaneController.Dispose();
         _videoPlaybackController.Dispose();
+        _clipEditorController.Dispose();
         _imagePreviewController.Dispose();
     }
 
@@ -383,19 +391,14 @@ public sealed class MainPageShellController
             await NavigateRelativeAsync(1);
             e.Handled = true;
         }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.I)
-        {
-            _clipEditorController.SetClipStartToCurrent();
-            e.Handled = true;
-        }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.O)
-        {
-            _clipEditorController.SetClipEndToCurrent();
-            e.Handled = true;
-        }
         else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.E)
         {
             await _clipEditorController.ExportCurrentClipAsync();
+            e.Handled = true;
+        }
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.S)
+        {
+            _clipEditorController.SplitSegmentAtCurrentPosition();
             e.Handled = true;
         }
         else if (ViewModel.SelectedMedia.Type == MediaType.Image)
@@ -464,6 +467,11 @@ public sealed class MainPageShellController
         if (ViewModel.SelectedMedia == null)
         {
             return false;
+        }
+
+        if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive)
+        {
+            return _clipEditorController.DeleteSelectedSegment();
         }
 
         await DeleteSelectedAsync();
@@ -579,6 +587,11 @@ public sealed class MainPageShellController
 
     private async Task NavigateRelativeAsync(int offset)
     {
+        if (_clipEditorController.IsClipModeActive)
+        {
+            return;
+        }
+
         var list = ViewModel.FilteredMediaItems;
         if (list.Count == 0 || ViewModel.SelectedMedia == null)
         {
@@ -756,6 +769,11 @@ public sealed class MainPageShellController
         await _clipEditorController.ShowClipPlanDialogAsync();
     }
 
+    private void SplitClip_Click(object sender, RoutedEventArgs e)
+    {
+        _clipEditorController.SplitSegmentAtCurrentPosition();
+    }
+
     private Task DeleteSelectedAsync()
     {
         return DeleteSelectionAsync(_mediaBrowserController.GetSelectedItems());
@@ -895,6 +913,7 @@ public sealed class MainPageShellController
     {
         return ViewModel.SelectedMedia != null
             && ViewModel.FilteredMediaItems.Count > 1
+            && !_clipEditorController.IsClipModeActive
             && _shell.Player.EmptyStateVisibility != Visibility.Visible;
     }
 

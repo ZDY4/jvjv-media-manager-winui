@@ -35,6 +35,7 @@ public sealed class VideoPlaybackController
     private readonly Action _focusHost;
     private readonly Action _refreshNavigationHotspots;
     private readonly Action<TimeSpan> _handleMediaOpened;
+    private readonly Action _notifyPlaybackProgressChanged;
     private readonly Random _random = new();
     private readonly DispatcherTimer _playbackTimer = new();
     private readonly DispatcherTimer _controlsHideTimer = new();
@@ -42,6 +43,7 @@ public sealed class VideoPlaybackController
     private MediaPlayer? _player;
     private bool _isSeeking;
     private bool _areControlsVisible = true;
+    private bool _isTransportSuppressed;
     private bool _progressSliderHandlersAttached;
     private double _lastNonZeroVolume = 0.8;
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
@@ -59,7 +61,8 @@ public sealed class VideoPlaybackController
         Func<bool> canAutoHideControls,
         Action focusHost,
         Action refreshNavigationHotspots,
-        Action<TimeSpan> handleMediaOpened)
+        Action<TimeSpan> handleMediaOpened,
+        Action notifyPlaybackProgressChanged)
     {
         _libraryViewModel = libraryViewModel;
         _viewModel = viewModel;
@@ -73,6 +76,7 @@ public sealed class VideoPlaybackController
         _focusHost = focusHost;
         _refreshNavigationHotspots = refreshNavigationHotspots;
         _handleMediaOpened = handleMediaOpened;
+        _notifyPlaybackProgressChanged = notifyPlaybackProgressChanged;
 
         _transportBarView.ProgressSlider.Loaded += ProgressSlider_Loaded;
         _transportBarView.ProgressSlider.ValueChanged += ProgressSlider_ValueChanged;
@@ -103,6 +107,8 @@ public sealed class VideoPlaybackController
     public bool AreControlsVisible => _areControlsVisible;
 
     public bool IsSeeking => _isSeeking;
+
+    public bool IsPlaying => _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
     public void Dispose()
     {
@@ -165,6 +171,7 @@ public sealed class VideoPlaybackController
         _viewModel.CurrentTimeText = "0:00";
         _viewModel.TotalTimeText = "0:00";
         SetPassiveState(showImageNavigation: false);
+        _notifyPlaybackProgressChanged();
     }
 
     public void ShowImageState()
@@ -178,6 +185,14 @@ public sealed class VideoPlaybackController
 
     public void ShowControls()
     {
+        if (_isTransportSuppressed)
+        {
+            _areControlsVisible = true;
+            _refreshNavigationHotspots();
+            _controlsHideTimer.Stop();
+            return;
+        }
+
         if (_viewModel.ControlBarVisibility != Visibility.Visible)
         {
             return;
@@ -197,6 +212,14 @@ public sealed class VideoPlaybackController
 
     public void HideControlsImmediately()
     {
+        if (_isTransportSuppressed)
+        {
+            _controlsHideTimer.Stop();
+            _areControlsVisible = true;
+            _refreshNavigationHotspots();
+            return;
+        }
+
         if (_viewModel.ControlBarVisibility != Visibility.Visible)
         {
             return;
@@ -230,6 +253,36 @@ public sealed class VideoPlaybackController
         ShowControls();
     }
 
+    public void SetTransportSuppressed(bool suppressed)
+    {
+        if (_isTransportSuppressed == suppressed)
+        {
+            return;
+        }
+
+        _isTransportSuppressed = suppressed;
+        CloseVolumeFlyout();
+
+        if (suppressed)
+        {
+            _viewModel.ControlBarVisibility = Visibility.Collapsed;
+            _viewModel.ControlBarOpacity = 0;
+            _transportBarView.ControlBar.IsHitTestVisible = false;
+            _areControlsVisible = true;
+            _controlsHideTimer.Stop();
+            _refreshNavigationHotspots();
+            return;
+        }
+
+        if (_videoPlayer.Visibility == Visibility.Visible)
+        {
+            SetVideoState();
+            return;
+        }
+
+        SetPassiveState(showImageNavigation: false);
+    }
+
     public void SeekRelative(double seconds)
     {
         var player = _player;
@@ -239,12 +292,7 @@ public sealed class VideoPlaybackController
         }
 
         var next = player.PlaybackSession.Position + TimeSpan.FromSeconds(seconds);
-        if (next < TimeSpan.Zero)
-        {
-            next = TimeSpan.Zero;
-        }
-
-        player.PlaybackSession.Position = next;
+        SeekTo(next);
     }
 
     public TimeSpan GetCurrentPlaybackPosition()
@@ -257,8 +305,47 @@ public sealed class VideoPlaybackController
         return _player?.PlaybackSession.NaturalDuration ?? TimeSpan.Zero;
     }
 
+    public void SeekTo(TimeSpan position)
+    {
+        var player = _player;
+        if (player == null)
+        {
+            return;
+        }
+
+        var duration = player.PlaybackSession.NaturalDuration;
+        if (position < TimeSpan.Zero)
+        {
+            position = TimeSpan.Zero;
+        }
+        else if (duration > TimeSpan.Zero && position > duration)
+        {
+            position = duration;
+        }
+
+        player.PlaybackSession.Position = position;
+        if (!_isSeeking)
+        {
+            _transportBarView.ProgressSlider.Value = position.TotalSeconds;
+        }
+
+        _viewModel.CurrentTimeText = FormatTime(position);
+        _notifyPlaybackProgressChanged();
+    }
+
     private void SetVideoState()
     {
+        if (_isTransportSuppressed)
+        {
+            _viewModel.ControlBarVisibility = Visibility.Collapsed;
+            _viewModel.ControlBarOpacity = 0;
+            _transportBarView.ControlBar.IsHitTestVisible = false;
+            _areControlsVisible = true;
+            _refreshNavigationHotspots();
+            _controlsHideTimer.Stop();
+            return;
+        }
+
         _viewModel.ControlBarVisibility = Visibility.Visible;
         _viewModel.ControlBarOpacity = 1;
         _transportBarView.ControlBar.IsHitTestVisible = true;
@@ -280,7 +367,8 @@ public sealed class VideoPlaybackController
 
     private bool ShouldAutoHideControls()
     {
-        return _viewModel.ControlBarVisibility == Visibility.Visible
+        return !_isTransportSuppressed
+            && _viewModel.ControlBarVisibility == Visibility.Visible
             && !_isSeeking
             && !_viewModel.IsVolumeFlyoutOpen
             && _canAutoHideControls();
@@ -421,14 +509,8 @@ public sealed class VideoPlaybackController
 
     private void SeekToSlider()
     {
-        if (_player == null)
-        {
-            return;
-        }
-
         var target = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
-        _player.PlaybackSession.Position = target;
-        _viewModel.CurrentTimeText = FormatTime(target);
+        SeekTo(target);
     }
 
     private void ProgressSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -439,8 +521,7 @@ public sealed class VideoPlaybackController
         }
 
         var target = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
-        _player.PlaybackSession.Position = target;
-        _viewModel.CurrentTimeText = FormatTime(target);
+        SeekTo(target);
     }
 
     private void VolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -578,6 +659,7 @@ public sealed class VideoPlaybackController
 
         _viewModel.CurrentTimeText = FormatTime(player.PlaybackSession.Position);
         _viewModel.TotalTimeText = FormatTime(duration);
+        _notifyPlaybackProgressChanged();
     }
 
     private void Player_MediaOpened(MediaPlayer sender, object args)
@@ -590,6 +672,7 @@ public sealed class VideoPlaybackController
             _viewModel.TotalTimeText = FormatTime(duration);
             _viewModel.CurrentTimeText = "0:00";
             _handleMediaOpened(duration);
+            _notifyPlaybackProgressChanged();
         });
     }
 

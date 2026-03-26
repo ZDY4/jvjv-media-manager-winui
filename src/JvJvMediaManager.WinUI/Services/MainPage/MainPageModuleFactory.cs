@@ -82,7 +82,8 @@ public sealed class MainPageModuleFactory
         Func<bool> canAutoHideControls,
         Action focusHost,
         Action refreshNavigationHotspots,
-        Action<TimeSpan> handleMediaOpened)
+        Action<TimeSpan> handleMediaOpened,
+        Action notifyPlaybackProgressChanged)
     {
         return new VideoPlaybackController(
             library,
@@ -96,7 +97,8 @@ public sealed class MainPageModuleFactory
             canAutoHideControls,
             focusHost,
             refreshNavigationHotspots,
-            handleMediaOpened);
+            handleMediaOpened,
+            notifyPlaybackProgressChanged);
     }
 
     public ClipEditorController CreateClipEditorController(
@@ -107,6 +109,10 @@ public sealed class MainPageModuleFactory
         DialogWorkflowCoordinator dialogCoordinator,
         Func<TimeSpan> getCurrentPlaybackPosition,
         Func<TimeSpan> getCurrentVideoDuration,
+        Action<TimeSpan> seekPlaybackPosition,
+        Action togglePlayPause,
+        Func<bool> isPlaybackPlaying,
+        Action<bool> setTransportSuppressed,
         Action<IEnumerable<string>> updateWatchedFolders,
         Action showControls)
     {
@@ -118,6 +124,10 @@ public sealed class MainPageModuleFactory
             dialogCoordinator,
             getCurrentPlaybackPosition,
             getCurrentVideoDuration,
+            seekPlaybackPosition,
+            togglePlayPause,
+            isPlaybackPlaying,
+            setTransportSuppressed,
             updateWatchedFolders,
             showControls);
     }

@@ -82,6 +82,13 @@ public sealed class SettingsService
         return dir;
     }
 
+    public string GetTimelineThumbnailCacheDir()
+    {
+        var dir = Path.Combine(DataDir, "timeline-thumb-cache");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
     private SettingsModel LoadInternal()
     {
         try
