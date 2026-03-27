@@ -422,7 +422,7 @@ public sealed class VideoPlaybackController
         var isPlaying = _player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
         SetButtonGlyph(_transportBarView.PlayPauseButton, isPlaying ? "\uE769" : "\uE768");
 
-        ToolTipService.SetToolTip(_transportBarView.PlayPauseButton, isPlaying ? "暂停 (Space)" : "播放 (Space)");
+        ToolTipService.SetToolTip(_transportBarView.PlayPauseButton, isPlaying ? "暂停" : "播放");
     }
 
     private void UpdatePlaybackModeUi()

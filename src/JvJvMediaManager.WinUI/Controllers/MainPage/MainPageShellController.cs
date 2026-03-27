@@ -396,7 +396,7 @@ public sealed class MainPageShellController
             await _clipEditorController.ExportCurrentClipAsync();
             e.Handled = true;
         }
-        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.S)
+        else if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && e.Key == Windows.System.VirtualKey.K)
         {
             _clipEditorController.SplitSegmentAtCurrentPosition();
             e.Handled = true;

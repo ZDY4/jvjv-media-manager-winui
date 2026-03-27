@@ -3,6 +3,19 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <UserControl.Resources>
+        <Style x:Key="TimelineHandleThumbStyle"
+               TargetType="Thumb">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
     <Border x:Name="ClipBar"
             x:FieldModifier="public"
             Margin="16,0,16,16"
@@ -60,7 +73,7 @@
                     <Button x:Name="SplitClipButton"
                             x:FieldModifier="public"
                             Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="切开当前片段 (S)">
+                            ToolTipService.ToolTip="切开当前片段 (K)">
                         <FontIcon Glyph="&#xE16C;" />
                     </Button>
                     <Button x:Name="ClipPlanButton"
@@ -195,35 +208,35 @@
 
                                 <Border x:Name="TimelineStartHandle"
                                         x:FieldModifier="public"
-                                        Width="16"
-                                        Height="34"
+                                        Width="6"
+                                        Height="52"
                                         Background="{ThemeResource AccentBrush}"
                                         BorderBrush="{ThemeResource AccentForegroundBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="{ThemeResource RadiusSmall}">
-                                    <TextBlock Text="I"
-                                               Foreground="{ThemeResource AccentForegroundBrush}"
-                                               FontSize="11"
-                                               FontWeight="Bold"
-                                               HorizontalAlignment="Center"
-                                               VerticalAlignment="Center" />
-                                </Border>
+                                        CornerRadius="3" />
+                                <Thumb x:Name="TimelineStartHandleThumb"
+                                       x:FieldModifier="public"
+                                       Width="18"
+                                       Height="52"
+                                       IsHitTestVisible="True"
+                                       IsTabStop="False"
+                                       Style="{StaticResource TimelineHandleThumbStyle}" />
 
                                 <Border x:Name="TimelineEndHandle"
                                         x:FieldModifier="public"
-                                        Width="16"
-                                        Height="34"
+                                        Width="6"
+                                        Height="52"
                                         Background="{ThemeResource AccentStrongBrush}"
                                         BorderBrush="{ThemeResource AccentForegroundBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="{ThemeResource RadiusSmall}">
-                                    <TextBlock Text="O"
-                                               Foreground="{ThemeResource AccentForegroundBrush}"
-                                               FontSize="11"
-                                               FontWeight="Bold"
-                                               HorizontalAlignment="Center"
-                                               VerticalAlignment="Center" />
-                                </Border>
+                                        CornerRadius="3" />
+                                <Thumb x:Name="TimelineEndHandleThumb"
+                                       x:FieldModifier="public"
+                                       Width="18"
+                                       Height="52"
+                                       IsHitTestVisible="True"
+                                       IsTabStop="False"
+                                       Style="{StaticResource TimelineHandleThumbStyle}" />
                             </Canvas>
                         </ScrollViewer>
                     </Grid>
