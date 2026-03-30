@@ -463,17 +463,12 @@ public sealed class MediaBrowserController : IDisposable
 
     private void MediaView_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (sender is not ListViewBase listViewBase || sender is not FrameworkElement target)
+        if (sender is not FrameworkElement target)
         {
             return;
         }
 
-        if (TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var media) && media != null)
-        {
-            EnsureRightTappedSelection(listViewBase, media);
-        }
-
-        var selected = GetSelectedItems();
+        var selected = ResolveContextMenuSelection(e.OriginalSource as DependencyObject);
         if (selected.Count == 0)
         {
             return;
@@ -736,6 +731,22 @@ public sealed class MediaBrowserController : IDisposable
         var size = Math.Clamp((int)Math.Round(_viewModel.IconSize * 0.6), 48, 180);
         thumbnailHost.Width = size;
         thumbnailHost.Height = size;
+    }
+
+    private IReadOnlyList<MediaItemViewModel> ResolveContextMenuSelection(DependencyObject? origin)
+    {
+        if (!TryGetMediaFromElement(origin, out var media) || media == null)
+        {
+            return GetSelectedItems();
+        }
+
+        var selected = GetSelectedItems();
+        if (selected.Any(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal)))
+        {
+            return selected;
+        }
+
+        return new[] { media };
     }
 
     private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)

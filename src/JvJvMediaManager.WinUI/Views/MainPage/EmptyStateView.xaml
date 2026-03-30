@@ -36,7 +36,7 @@
                            HorizontalAlignment="Center"
                            TextAlignment="Center"
                            TextWrapping="Wrap" />
-                <TextBlock Text="PageUp / PageDown 切换上一个或下一个"
+                <TextBlock Text="左右键切换媒体，上下键快进快退"
                            Foreground="{ThemeResource SubtleTextBrush}"
                            FontSize="12"
                            HorizontalAlignment="Center" />

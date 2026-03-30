@@ -7,15 +7,36 @@ namespace JvJvMediaManager.Views.Controls;
 
 public sealed partial class SettingsPanel : UserControl
 {
+    private readonly TextBox[] _numpadTagTextBoxes;
+
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
 
     public SettingsPanel(LibraryShellViewModel viewModel)
     {
         InitializeComponent();
 
+        _numpadTagTextBoxes =
+        [
+            NumpadTag1TextBox,
+            NumpadTag2TextBox,
+            NumpadTag3TextBox,
+            NumpadTag4TextBox,
+            NumpadTag5TextBox,
+            NumpadTag6TextBox,
+            NumpadTag7TextBox,
+            NumpadTag8TextBox,
+            NumpadTag9TextBox
+        ];
+
         PortableToggle.IsOn = viewModel.PortableMode;
         DataDirTextBox.Text = viewModel.ConfiguredDataDir ?? viewModel.DataDir;
         GlobalPasswordBox.Password = viewModel.LockPassword;
+        for (var i = 0; i < _numpadTagTextBoxes.Length; i++)
+        {
+            _numpadTagTextBoxes[i].Text = i < viewModel.NumpadTagShortcuts.Count
+                ? viewModel.NumpadTagShortcuts[i]
+                : string.Empty;
+        }
 
         WatchedFolders = new ObservableCollection<WatchedFolder>(
             viewModel.WatchedFolders.Select(item => new WatchedFolder
@@ -83,10 +104,7 @@ public sealed partial class SettingsPanel : UserControl
             return;
         }
 
-        var nextIndex = Math.Max(0, WatchedFolders.IndexOf(folder) - 1);
-        WatchedFolders.Remove(folder);
-        WatchedFoldersList.SelectedIndex = WatchedFolders.Count == 0 ? -1 : Math.Min(nextIndex, WatchedFolders.Count - 1);
-        RefreshWatchedFolderStatus();
+        RemoveWatchedFolder(folder);
     }
 
     public void ClearWatchedFolders()
@@ -142,9 +160,26 @@ public sealed partial class SettingsPanel : UserControl
         return WatchedFolders.ToList();
     }
 
+    public IReadOnlyList<string> GetNumpadTagShortcuts()
+    {
+        return _numpadTagTextBoxes
+            .Select(textBox => textBox.Text.Trim())
+            .ToList();
+    }
+
     private void WatchedFoldersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         RefreshWatchedFolderStatus();
+    }
+
+    private void RemoveWatchedFolderItemButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: WatchedFolder folder })
+        {
+            return;
+        }
+
+        RemoveWatchedFolder(folder);
     }
 
     private void RefreshWatchedFolderStatus()
@@ -165,5 +200,28 @@ public sealed partial class SettingsPanel : UserControl
         WatchedFoldersList.ItemsSource = null;
         WatchedFoldersList.ItemsSource = WatchedFolders;
         WatchedFoldersList.SelectedItem = selectedFolder;
+    }
+
+    private void RemoveWatchedFolder(WatchedFolder folder)
+    {
+        var removedIndex = WatchedFolders.IndexOf(folder);
+        if (removedIndex < 0)
+        {
+            return;
+        }
+
+        var wasSelected = ReferenceEquals(SelectedWatchedFolder, folder);
+        WatchedFolders.RemoveAt(removedIndex);
+
+        if (WatchedFolders.Count == 0)
+        {
+            WatchedFoldersList.SelectedIndex = -1;
+        }
+        else if (wasSelected)
+        {
+            WatchedFoldersList.SelectedIndex = Math.Min(removedIndex, WatchedFolders.Count - 1);
+        }
+
+        RefreshWatchedFolderStatus();
     }
 }

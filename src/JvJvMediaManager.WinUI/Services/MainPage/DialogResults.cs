@@ -16,30 +16,6 @@ public sealed class PlaylistPickerResult
     public required Playlist Playlist { get; init; }
 }
 
-public sealed class ClipPlanResult
-{
-    public required IReadOnlyList<VideoClipSegment> Segments { get; init; }
-
-    public required VideoClipMode Mode { get; init; }
-
-    public required string? OutputDirectory { get; init; }
-}
-
-public sealed class ClipPlanDialogRequest
-{
-    public required TimeSpan Duration { get; init; }
-
-    public required VideoClipMode Mode { get; init; }
-
-    public required IReadOnlyList<VideoClipSegment> Segments { get; init; }
-
-    public required string StartText { get; init; }
-
-    public required string EndText { get; init; }
-
-    public required string OutputDirectory { get; init; }
-}
-
 public sealed class SettingsDialogResult
 {
     public required bool PortableModeEnabled { get; init; }
@@ -49,6 +25,8 @@ public sealed class SettingsDialogResult
     public required string GlobalPassword { get; init; }
 
     public required IReadOnlyList<WatchedFolder> WatchedFolders { get; init; }
+
+    public required IReadOnlyList<string> NumpadTagShortcuts { get; init; }
 }
 
 public sealed class FolderLockResult

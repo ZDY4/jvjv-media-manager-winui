@@ -1,365 +1,443 @@
 <UserControl
     x:Class="JvJvMediaManager.Views.MainPageParts.ClipEditorBarView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-
-    <UserControl.Resources>
-        <Style x:Key="TimelineHandleThumbStyle"
-               TargetType="Thumb">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Thumb">
-                        <Border Background="Transparent" />
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-    </UserControl.Resources>
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls">
 
     <Border x:Name="ClipBar"
             x:FieldModifier="public"
-            Margin="16,0,16,16"
-            VerticalAlignment="Bottom"
-            Padding="14,12"
+            Margin="12,0,12,12"
+            VerticalAlignment="Stretch"
+            Padding="0"
             Background="{ThemeResource ClipBarBrush}"
             BorderBrush="{ThemeResource ControlBarBorderBrush}"
             BorderThickness="1"
-            CornerRadius="{ThemeResource RadiusMedium}"
+            CornerRadius="{ThemeResource RadiusLarge}"
             Visibility="{Binding Visibility}">
-        <Grid RowSpacing="10">
+        <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="0" />
             </Grid.RowDefinitions>
 
-            <Grid ColumnSpacing="12">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Orientation="Horizontal"
-                            Spacing="6">
-                    <Button x:Name="ExitClipModeButton"
-                            x:FieldModifier="public"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="退出剪辑">
-                        <FontIcon Glyph="&#xE711;" />
-                    </Button>
-                    <Button x:Name="ClipPlayPauseButton"
-                            x:FieldModifier="public"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="播放 / 暂停">
-                        <FontIcon Glyph="&#xE768;" />
-                    </Button>
-                    <Button x:Name="SetClipStartButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="标记入点 (I)">
-                        <FontIcon Glyph="&#xE7C1;" />
-                    </Button>
-                    <Button x:Name="SetClipEndButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="标记出点 (O)">
-                        <FontIcon Glyph="&#xE7C5;" />
-                    </Button>
-                    <Button x:Name="SplitClipButton"
-                            x:FieldModifier="public"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="切开当前片段 (K)">
-                        <FontIcon Glyph="&#xE16C;" />
-                    </Button>
-                    <Button x:Name="ClipPlanButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="片段方案">
-                        <FontIcon Glyph="&#xE8A5;" />
-                    </Button>
-                    <Button x:Name="ClearClipButton"
-                            x:FieldModifier="public"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="重置片段">
-                        <FontIcon Glyph="&#xE894;" />
-                    </Button>
-                    <Button x:Name="ExportClipButton"
-                            x:FieldModifier="public"
-                            Style="{StaticResource PrimaryIconButtonStyle}"
-                            ToolTipService.ToolTip="导出剪辑 (E)">
-                        <FontIcon Glyph="&#xEDE1;" />
-                    </Button>
-                </StackPanel>
-
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            Spacing="8"
-                            HorizontalAlignment="Center">
-                    <Button x:Name="TimelineZoomOutButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="缩小时间线">
-                        <FontIcon Glyph="&#xE1D6;" />
-                    </Button>
-                    <Border Padding="10,5"
-                            Background="{ThemeResource PlayerInfoBrush}"
-                            CornerRadius="{ThemeResource RadiusSmall}">
-                        <TextBlock x:Name="TimelineZoomText"
-                                   x:FieldModifier="public"
-                                   Text="缩放：100%"
-                                   Foreground="{ThemeResource TextBrush}"
-                                   FontSize="12"
-                                   FontWeight="SemiBold" />
-                    </Border>
-                    <Button x:Name="TimelineZoomInButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="放大时间线">
-                        <FontIcon Glyph="&#xE114;" />
-                    </Button>
-                    <Button x:Name="TimelineZoomResetButton"
-                            x:FieldModifier="public"
-                            Visibility="Collapsed"
-                            Style="{StaticResource PanelIconButtonStyle}"
-                            ToolTipService.ToolTip="重置缩放">
-                        <FontIcon Glyph="&#xE777;" />
-                    </Button>
-                </StackPanel>
-
-                <StackPanel Grid.Column="2"
-                            Spacing="2"
-                            HorizontalAlignment="Right">
-                    <TextBlock x:Name="TimelineCursorText"
-                               x:FieldModifier="public"
-                               Text="游标：0:00 / 0:00"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12"
-                               FontWeight="SemiBold"
-                               HorizontalAlignment="Right" />
-                    <TextBlock Text="拖边界微调，单击片段后可 Delete 删除，Ctrl+滚轮缩放，右键按住平移"
-                               Foreground="{ThemeResource MutedTextBrush}"
-                               FontSize="11"
-                               HorizontalAlignment="Right" />
-                </StackPanel>
-            </Grid>
-
-            <Border Grid.Row="1"
-                    Padding="12,10"
+            <Border Grid.Row="0"
+                    Padding="16,14"
                     Background="{ThemeResource ControlBarOverlayBrush}"
                     BorderBrush="{ThemeResource SurfaceStrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="{ThemeResource RadiusMedium}">
-                <Grid RowSpacing="8">
-                    <TextBlock Text="剪辑时间线"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12"
-                               FontWeight="SemiBold" />
+                    BorderThickness="0,0,0,1">
+                <Grid ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                    <Grid x:Name="TimelineViewport"
-                          x:FieldModifier="public"
-                          Height="92"
-                          Margin="0,2,0,0"
-                          Grid.Row="1">
-                        <ScrollViewer x:Name="TimelineScrollViewer"
-                                      x:FieldModifier="public"
-                                      HorizontalScrollMode="Enabled"
-                                      HorizontalScrollBarVisibility="Hidden"
-                                      VerticalScrollMode="Disabled"
-                                      VerticalScrollBarVisibility="Disabled"
-                                      ZoomMode="Disabled"
-                                      IsTabStop="False">
-                            <Canvas x:Name="TimelineContentCanvas"
-                                    x:FieldModifier="public"
-                                    Height="92">
-                                <Border x:Name="TimelineScrubSurface"
-                                        x:FieldModifier="public"
-                                        Background="Transparent" />
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="8">
+                        <Button x:Name="ExitClipModeButton"
+                                x:FieldModifier="public"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="退出剪辑">
+                            <FontIcon Glyph="&#xE711;" />
+                        </Button>
+                        <Button x:Name="ClipPlayPauseButton"
+                                x:FieldModifier="public"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="播放 / 暂停">
+                            <FontIcon Glyph="&#xE768;" />
+                        </Button>
+                        <Button x:Name="SplitClipButton"
+                                x:FieldModifier="public"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="切开当前片段 (K)">
+                            <FontIcon Glyph="&#xE16C;" />
+                        </Button>
+                        <Button x:Name="ClearClipButton"
+                                x:FieldModifier="public"
+                                Style="{StaticResource PanelIconButtonStyle}"
+                                ToolTipService.ToolTip="重置片段">
+                            <FontIcon Glyph="&#xE894;" />
+                        </Button>
+                        <Button x:Name="ExportClipButton"
+                                x:FieldModifier="public"
+                                Style="{StaticResource PrimaryIconButtonStyle}"
+                                ToolTipService.ToolTip="导出剪辑 (E)">
+                            <FontIcon Glyph="&#xEDE1;" />
+                        </Button>
+                    </StackPanel>
 
-                                <Canvas x:Name="TimelineThumbnailCanvas"
-                                        x:FieldModifier="public"
-                                        IsHitTestVisible="False" />
-
-                                <Border x:Name="TimelineTrackBackground"
-                                        x:FieldModifier="public"
-                                        Height="10"
-                                        Background="{ThemeResource PlayerInfoBrush}"
-                                        CornerRadius="5"
-                                        IsHitTestVisible="False" />
-
-                                <Canvas x:Name="TimelineSegmentsCanvas"
-                                        x:FieldModifier="public"
-                                        IsHitTestVisible="True" />
-
-                                <Rectangle x:Name="TimelinePlayhead"
-                                           x:FieldModifier="public"
-                                           Width="2"
-                                           RadiusX="1"
-                                           RadiusY="1"
-                                           Fill="{ThemeResource AccentStrongBrush}"
-                                           IsHitTestVisible="False" />
-
-                                <Border x:Name="TimelineStartHandle"
-                                        x:FieldModifier="public"
-                                        Width="6"
-                                        Height="52"
-                                        Background="{ThemeResource AccentBrush}"
-                                        BorderBrush="{ThemeResource AccentForegroundBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="3" />
-                                <Thumb x:Name="TimelineStartHandleThumb"
-                                       x:FieldModifier="public"
-                                       Width="18"
-                                       Height="52"
-                                       IsHitTestVisible="True"
-                                       IsTabStop="False"
-                                       Style="{StaticResource TimelineHandleThumbStyle}" />
-
-                                <Border x:Name="TimelineEndHandle"
-                                        x:FieldModifier="public"
-                                        Width="6"
-                                        Height="52"
-                                        Background="{ThemeResource AccentStrongBrush}"
-                                        BorderBrush="{ThemeResource AccentForegroundBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="3" />
-                                <Thumb x:Name="TimelineEndHandleThumb"
-                                       x:FieldModifier="public"
-                                       Width="18"
-                                       Height="52"
-                                       IsHitTestVisible="True"
-                                       IsTabStop="False"
-                                       Style="{StaticResource TimelineHandleThumbStyle}" />
-                            </Canvas>
-                        </ScrollViewer>
-                    </Grid>
-
-                    <Grid Grid.Row="2">
+                    <Grid Grid.Column="1"
+                          ColumnSpacing="10"
+                          HorizontalAlignment="Center">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock x:Name="TimelineStartLabel"
-                                   x:FieldModifier="public"
-                                   Text="0:00"
-                                   Foreground="{ThemeResource MutedTextBrush}"
-                                   FontSize="11" />
-                        <TextBlock x:Name="TimelineMidLabel"
-                                   x:FieldModifier="public"
-                                   Grid.Column="1"
-                                   Text="0:00"
+                        <Border Padding="12,6"
+                                Background="{ThemeResource PlayerInfoBrush}"
+                                CornerRadius="{ThemeResource RadiusSmall}">
+                            <StackPanel Orientation="Horizontal"
+                                        Spacing="8">
+                                <TextBlock Text="游标"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11" />
+                                <TextBlock x:Name="TimelineCursorText"
+                                           x:FieldModifier="public"
+                                           Text="游标：0:00 / 0:00"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="1"
+                                Padding="12,6"
+                                Background="{ThemeResource PlayerInfoBrush}"
+                                CornerRadius="{ThemeResource RadiusSmall}">
+                            <StackPanel Orientation="Horizontal"
+                                        Spacing="8">
+                                <TextBlock Text="缩放"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11" />
+                                <TextBlock x:Name="TimelineZoomText"
+                                           x:FieldModifier="public"
+                                           Text="缩放：100%"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <StackPanel Grid.Column="2"
+                                HorizontalAlignment="Right"
+                                Spacing="4">
+                        <TextBlock Text="Trim Workspace"
                                    Foreground="{ThemeResource MutedTextBrush}"
                                    FontSize="11"
-                                   HorizontalAlignment="Center" />
-                        <TextBlock x:Name="TimelineEndLabel"
-                                   x:FieldModifier="public"
-                                   Grid.Column="2"
-                                   Text="0:00"
-                                   Foreground="{ThemeResource MutedTextBrush}"
-                                   FontSize="11" />
-                    </Grid>
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Right" />
+                        <TextBlock Text="{Binding TimelineGuideText}"
+                                   Foreground="{ThemeResource TextBrush}"
+                                   FontSize="12"
+                                   Opacity="0.86"
+                                   MaxWidth="420"
+                                   TextWrapping="WrapWholeWords"
+                                   HorizontalAlignment="Right" />
+                    </StackPanel>
                 </Grid>
             </Border>
 
-            <StackPanel Grid.Row="2"
-                        Orientation="Horizontal"
-                        Spacing="8">
-                <Border Padding="8,4"
-                        Background="{ThemeResource PlayerInfoBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}">
-                    <TextBlock x:Name="ClipStartText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipStartText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12" />
-                </Border>
-                <Border Padding="8,4"
-                        Background="{ThemeResource PlayerInfoBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}">
-                    <TextBlock x:Name="ClipEndText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipEndText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12" />
-                </Border>
-                <Border Padding="8,4"
-                        Background="{ThemeResource PlayerInfoBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}">
-                    <TextBlock x:Name="ClipDurationText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipDurationText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12" />
-                </Border>
-            </StackPanel>
+            <Grid Grid.Row="1"
+                  Padding="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="300" />
+                </Grid.ColumnDefinitions>
 
-            <StackPanel Grid.Row="3"
-                        Orientation="Horizontal"
-                        Spacing="8">
-                <Border Padding="8,4"
-                        Background="{ThemeResource ScopeBadgeBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}">
-                    <TextBlock x:Name="ClipModeText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipModeText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12" />
-                </Border>
-                <Border Padding="8,4"
-                        Background="{ThemeResource StatusBadgeBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}">
-                    <TextBlock x:Name="ClipSegmentCountText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipSegmentCountText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12" />
-                </Border>
-                <Border Padding="8,4"
-                        Background="{ThemeResource StatusBadgeBrush}"
-                        BorderThickness="0"
-                        CornerRadius="{ThemeResource RadiusSmall}"
-                        MaxWidth="220">
-                    <TextBlock x:Name="ClipOutputText"
-                               x:FieldModifier="public"
-                               Text="{Binding ClipOutputText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="12"
-                               TextTrimming="CharacterEllipsis" />
-                </Border>
-            </StackPanel>
+                <Grid Grid.Column="0"
+                      RowSpacing="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="4"
-                        Orientation="Horizontal"
-                        Spacing="12"
-                        VerticalAlignment="Center">
-                <ProgressBar x:Name="ClipExportProgressBar"
-                             x:FieldModifier="public"
-                             Width="220"
-                             Minimum="0"
-                             Maximum="100"
-                             Value="{Binding ProgressValue}"
-                             Visibility="{Binding ProgressVisibility}" />
-                <TextBlock x:Name="ClipStatusText"
+                    <Border Padding="14,12"
+                            Background="{ThemeResource HeroPanelBrush}"
+                            BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{ThemeResource RadiusLarge}">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="专业剪切工作区"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="16"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="单击只选中片段，拖动边界修剪，拖动主体移动，边界会吸附到播放头和相邻片段，Ctrl+滚轮以鼠标为中心缩放，右键拖动画布平移。"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+
+                            <Button x:Name="ClipModeActionButton"
+                                    x:FieldModifier="public"
+                                    Grid.Column="1"
+                                    Style="{StaticResource PanelIconButtonStyle}"
+                                    Padding="14,8"
+                                    MinWidth="112"
+                                    HorizontalAlignment="Right"
+                                    ToolTipService.ToolTip="切换输出模式">
+                                <StackPanel Orientation="Horizontal"
+                                            Spacing="8">
+                                    <FontIcon Glyph="&#xE8D2;" />
+                                    <TextBlock x:Name="ClipModeActionText"
+                                               x:FieldModifier="public"
+                                               Text="保留模式"
+                                               FontSize="12"
+                                               FontWeight="SemiBold" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Row="1"
+                            Background="{ThemeResource ControlBarOverlayBrush}"
+                            BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{ThemeResource RadiusLarge}">
+                        <Grid>
+                            <controls:WebView2 x:Name="TimelineWebView"
+                                               x:FieldModifier="public"
+                                               DefaultBackgroundColor="Transparent"
+                                               HorizontalAlignment="Stretch"
+                                               VerticalAlignment="Stretch" />
+
+                            <Grid x:Name="TimelineWebLoadingOverlay"
+                                  x:FieldModifier="public"
+                                  Background="#0E000000"
+                                  IsHitTestVisible="False">
+                                <StackPanel HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Spacing="12">
+                                    <ProgressRing IsActive="True"
+                                                  Width="32"
+                                                  Height="32" />
+                                    <TextBlock x:Name="TimelineWebStatusText"
+                                               x:FieldModifier="public"
+                                               Text="正在加载时间线编辑器..."
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="12"
+                                               HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Column="1"
+                        Margin="16,0,0,0"
+                        Padding="16"
+                        Background="{ThemeResource ControlBarOverlayBrush}"
+                        BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                        BorderThickness="1"
+                        CornerRadius="{ThemeResource RadiusLarge}">
+                    <Grid RowSpacing="14">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Spacing="2">
+                                <TextBlock Text="Inspector"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11"
+                                           FontWeight="SemiBold" />
+                            <TextBlock Text="当前输出与选中片段"
+                                       Foreground="{ThemeResource TextBrush}"
+                                       FontSize="16"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+
+                        <Border Grid.Row="1"
+                                Padding="12"
+                                Background="{ThemeResource PlayerInfoBrush}"
+                                CornerRadius="{ThemeResource RadiusMedium}">
+                            <Grid RowSpacing="8">
+                                <TextBlock Text="片段范围"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11"
+                                           FontWeight="SemiBold" />
+                                <StackPanel Spacing="6">
+                                    <TextBlock x:Name="ClipStartText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipStartText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13" />
+                                    <TextBlock x:Name="ClipEndText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipEndText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13" />
+                                    <TextBlock x:Name="ClipDurationText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipDurationText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="2"
+                                Padding="12"
+                                Background="{ThemeResource PlayerInfoBrush}"
+                                CornerRadius="{ThemeResource RadiusMedium}">
+                            <Grid RowSpacing="8">
+                                <TextBlock Text="输出配置"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11"
+                                           FontWeight="SemiBold" />
+                                <StackPanel Spacing="6">
+                                    <TextBlock x:Name="ClipModeText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipModeText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13" />
+                                    <TextBlock x:Name="ClipSegmentCountText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipSegmentCountText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13" />
+                                    <TextBlock x:Name="ClipOutputText"
+                                               x:FieldModifier="public"
+                                               Text="{Binding ClipOutputText}"
+                                               Foreground="{ThemeResource TextBrush}"
+                                               FontSize="13"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="3"
+                                Padding="12"
+                                Background="{ThemeResource HeroPanelBrush}"
+                                CornerRadius="{ThemeResource RadiusMedium}">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="状态"
+                                           Foreground="{ThemeResource MutedTextBrush}"
+                                           FontSize="11"
+                                           FontWeight="SemiBold" />
+                                <TextBlock x:Name="ClipStatusText"
+                                           x:FieldModifier="public"
+                                           Text="{Binding StatusText}"
+                                           Foreground="{ThemeResource TextBrush}"
+                                           FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+
+                        <ProgressBar x:Name="ClipExportProgressBar"
+                                     x:FieldModifier="public"
+                                     Grid.Row="4"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Height="8"
+                                     Value="{Binding ProgressValue}"
+                                     Visibility="{Binding ProgressVisibility}" />
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Grid Grid.Row="2"
+                  Visibility="Collapsed"
+                  IsHitTestVisible="False">
+                <Grid x:Name="TimelineViewport"
+                      x:FieldModifier="public"
+                      Width="1"
+                      Height="92">
+                    <ScrollViewer x:Name="TimelineScrollViewer"
+                                  x:FieldModifier="public"
+                                  HorizontalScrollMode="Enabled"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  VerticalScrollMode="Disabled"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  ZoomMode="Disabled"
+                                  IsTabStop="False">
+                        <Canvas x:Name="TimelineContentCanvas"
+                                x:FieldModifier="public"
+                                Width="1"
+                                Height="92">
+                            <Border x:Name="TimelineScrubSurface"
+                                    x:FieldModifier="public"
+                                    Background="Transparent" />
+
+                            <Canvas x:Name="TimelineThumbnailCanvas"
+                                    x:FieldModifier="public"
+                                    IsHitTestVisible="False" />
+
+                            <Border x:Name="TimelineTrackBackground"
+                                    x:FieldModifier="public"
+                                    Height="10"
+                                    Background="{ThemeResource PlayerInfoBrush}"
+                                    CornerRadius="5"
+                                    IsHitTestVisible="False" />
+
+                            <Canvas x:Name="TimelineSegmentsCanvas"
+                                    x:FieldModifier="public"
+                                    IsHitTestVisible="True" />
+
+                            <Rectangle x:Name="TimelinePlayhead"
+                                       x:FieldModifier="public"
+                                       Width="2"
+                                       RadiusX="1"
+                                       RadiusY="1"
+                                       Fill="{ThemeResource AccentStrongBrush}"
+                                       IsHitTestVisible="False" />
+
+                            <Border x:Name="TimelineStartHandle"
+                                    x:FieldModifier="public"
+                                    Width="16"
+                                    Height="34"
+                                    Background="{ThemeResource AccentBrush}"
+                                    BorderBrush="{ThemeResource AccentForegroundBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="Collapsed"
+                                    IsHitTestVisible="False" />
+
+                            <Thumb x:Name="TimelineStartHandleThumb"
+                                   x:FieldModifier="public"
+                                   Width="24"
+                                   Height="42"
+                                   Background="Transparent"
+                                   BorderBrush="Transparent"
+                                   Visibility="Collapsed"
+                                   Opacity="0.01"
+                                   IsTabStop="False" />
+
+                            <Border x:Name="TimelineEndHandle"
+                                    x:FieldModifier="public"
+                                    Width="16"
+                                    Height="34"
+                                    Background="{ThemeResource AccentStrongBrush}"
+                                    BorderBrush="{ThemeResource AccentForegroundBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Visibility="Collapsed"
+                                    IsHitTestVisible="False" />
+
+                            <Thumb x:Name="TimelineEndHandleThumb"
+                                   x:FieldModifier="public"
+                                   Width="24"
+                                   Height="42"
+                                   Background="Transparent"
+                                   BorderBrush="Transparent"
+                                   Visibility="Collapsed"
+                                   Opacity="0.01"
+                                   IsTabStop="False" />
+                        </Canvas>
+                    </ScrollViewer>
+                </Grid>
+
+                <TextBlock x:Name="TimelineStartLabel"
                            x:FieldModifier="public"
-                           Text="{Binding StatusText}"
-                           Foreground="{ThemeResource MutedTextBrush}"
-                           FontSize="12"
-                           TextWrapping="WrapWholeWords" />
-            </StackPanel>
+                           Text="0:00" />
+                <TextBlock x:Name="TimelineMidLabel"
+                           x:FieldModifier="public"
+                           Text="0:00" />
+                <TextBlock x:Name="TimelineEndLabel"
+                           x:FieldModifier="public"
+                           Text="0:00" />
+            </Grid>
         </Grid>
     </Border>
 </UserControl>

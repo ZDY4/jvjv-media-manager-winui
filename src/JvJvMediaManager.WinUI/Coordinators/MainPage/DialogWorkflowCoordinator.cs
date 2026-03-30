@@ -11,7 +11,6 @@ public sealed class DialogWorkflowCoordinator
     private readonly LockManagerDialogCoordinator _lockManagerCoordinator;
     private readonly TagEditorDialogCoordinator _tagEditorCoordinator;
     private readonly PlaylistDialogCoordinator _playlistCoordinator;
-    private readonly ClipPlanDialogCoordinator _clipPlanCoordinator;
 
     public DialogWorkflowCoordinator(LibraryShellViewModel libraryViewModel, IContentDialogService dialogService)
     {
@@ -19,7 +18,6 @@ public sealed class DialogWorkflowCoordinator
         _lockManagerCoordinator = new LockManagerDialogCoordinator(libraryViewModel, dialogService);
         _tagEditorCoordinator = new TagEditorDialogCoordinator(dialogService);
         _playlistCoordinator = new PlaylistDialogCoordinator(dialogService);
-        _clipPlanCoordinator = new ClipPlanDialogCoordinator(dialogService);
     }
 
     public Task<SettingsDialogResult?> ShowSettingsDialogAsync()
@@ -40,10 +38,5 @@ public sealed class DialogWorkflowCoordinator
     public Task<PlaylistPickerResult?> ShowPlaylistPickerDialogAsync(string title, IReadOnlyList<Playlist> playlists)
     {
         return _playlistCoordinator.ShowAsync(title, playlists);
-    }
-
-    public Task<ClipPlanResult?> ShowClipPlanDialogAsync(ClipPlanDialogRequest request)
-    {
-        return _clipPlanCoordinator.ShowAsync(request);
     }
 }

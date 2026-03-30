@@ -1,8 +1,9 @@
 using System.Collections.ObjectModel;
-using JvJvMediaManager.Coordinators.MainPage;
+using System.Text.Json;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Services;
 using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
@@ -16,7 +17,7 @@ using Windows.Foundation;
 
 namespace JvJvMediaManager.Controllers.MainPage;
 
-public sealed class ClipEditorController : IDisposable
+public sealed class ClipEditorController : IClipTimelineEditor
 {
     private const double TimelineTrackHeight = 10;
     private const double TimelineHandleWidth = 16;
@@ -29,10 +30,12 @@ public sealed class ClipEditorController : IDisposable
     private const double TimelineZoomMin = 1;
     private const double TimelineZoomMax = 12;
     private const double TimelineZoomStep = 1.25;
+    private const double TimelineDragActivationDistance = 4;
     private const double TimelineThumbnailTileWidth = 96;
     private const int TimelineThumbnailMinCount = 6;
     private const int TimelineThumbnailMaxCount = 48;
     private static readonly TimeSpan MinTimelineSelectionDuration = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan MinTimelineSplitBoundaryGap = TimeSpan.FromMilliseconds(33);
 
     private enum TimelineInteractionMode
     {
@@ -40,34 +43,31 @@ public sealed class ClipEditorController : IDisposable
         Seek,
         StartHandle,
         EndHandle,
+        MoveSegment,
         Pan
     }
 
     private readonly record struct SegmentBodyTag(int SegmentIndex);
 
-    private readonly LibraryShellViewModel _libraryViewModel;
+    private readonly IClipEditorHost _host;
     private readonly ClipEditorViewModel _viewModel;
-    private readonly DialogWorkflowCoordinator _dialogCoordinator;
     private readonly VideoClipService _clipService = new();
     private readonly TimelineThumbnailStripService _timelineThumbnailStripService = new();
+    private readonly IClipTimelineWebBridge _webBridge = new ClipTimelineWebBridge();
     private readonly ClipEditorBarView _clipBarView;
     private readonly Button _clipModeToggleButton;
+    private readonly Button _clipModeActionButton;
     private readonly Button _exitClipModeButton;
     private readonly Button _clipPlayPauseButton;
     private readonly Button _splitClipButton;
-    private readonly Button _setClipStartButton;
-    private readonly Button _setClipEndButton;
-    private readonly Button _clipPlanButton;
     private readonly Button _clearClipButton;
     private readonly Button _exportClipButton;
-    private readonly Button _timelineZoomOutButton;
-    private readonly Button _timelineZoomInButton;
-    private readonly Button _timelineZoomResetButton;
     private readonly Func<TimeSpan> _getCurrentPlaybackPosition;
     private readonly Func<TimeSpan> _getCurrentVideoDuration;
     private readonly Action<TimeSpan> _seekPlaybackPosition;
     private readonly Action _togglePlayPause;
     private readonly Func<bool> _isPlaybackPlaying;
+    private readonly Action<string?, string?, double?, double?, Func<TimeSpan, TimeSpan>?> _setPlaybackDisplayOverride;
     private readonly Action<bool> _setTransportSuppressed;
     private readonly Action<IEnumerable<string>> _registerOutputPaths;
     private readonly Action _showControls;
@@ -90,6 +90,10 @@ public sealed class ClipEditorController : IDisposable
     private bool _isStartHandlePointerOver;
     private bool _isEndHandlePointerOver;
     private bool _isPreviewPlaybackSyncInProgress;
+    private TimeSpan _segmentDragPointerOffset;
+    private bool _timelineInteractionRequiresDragActivation;
+    private bool _timelineInteractionHasActivatedDrag;
+    private Point _timelineInteractionStartPoint;
     private double _timelineZoomFactor = TimelineZoomMin;
     private Point _timelinePanStartPoint;
     private double _timelinePanStartHorizontalOffset;
@@ -99,47 +103,35 @@ public sealed class ClipEditorController : IDisposable
     private readonly List<ImageSource?> _timelineThumbnails = new();
 
     public ClipEditorController(
-        LibraryShellViewModel libraryViewModel,
+        IClipEditorHost host,
         ClipEditorViewModel viewModel,
         Button clipModeToggleButton,
-        ClipEditorBarView clipBarView,
-        DialogWorkflowCoordinator dialogCoordinator,
-        Func<TimeSpan> getCurrentPlaybackPosition,
-        Func<TimeSpan> getCurrentVideoDuration,
-        Action<TimeSpan> seekPlaybackPosition,
-        Action togglePlayPause,
-        Func<bool> isPlaybackPlaying,
-        Action<bool> setTransportSuppressed,
-        Action<IEnumerable<string>> registerOutputPaths,
-        Action showControls)
+        ClipEditorBarView clipBarView)
     {
-        _libraryViewModel = libraryViewModel;
+        _host = host;
         _viewModel = viewModel;
         _clipModeToggleButton = clipModeToggleButton;
         _clipBarView = clipBarView;
+        _clipModeActionButton = clipBarView.ClipModeActionButton;
         _exitClipModeButton = clipBarView.ExitClipModeButton;
         _clipPlayPauseButton = clipBarView.ClipPlayPauseButton;
         _splitClipButton = clipBarView.SplitClipButton;
-        _setClipStartButton = clipBarView.SetClipStartButton;
-        _setClipEndButton = clipBarView.SetClipEndButton;
-        _clipPlanButton = clipBarView.ClipPlanButton;
         _clearClipButton = clipBarView.ClearClipButton;
         _exportClipButton = clipBarView.ExportClipButton;
-        _timelineZoomOutButton = clipBarView.TimelineZoomOutButton;
-        _timelineZoomInButton = clipBarView.TimelineZoomInButton;
-        _timelineZoomResetButton = clipBarView.TimelineZoomResetButton;
-        _dialogCoordinator = dialogCoordinator;
-        _getCurrentPlaybackPosition = getCurrentPlaybackPosition;
-        _getCurrentVideoDuration = getCurrentVideoDuration;
-        _seekPlaybackPosition = seekPlaybackPosition;
-        _togglePlayPause = togglePlayPause;
-        _isPlaybackPlaying = isPlaybackPlaying;
-        _setTransportSuppressed = setTransportSuppressed;
-        _registerOutputPaths = registerOutputPaths;
-        _showControls = showControls;
+        _getCurrentPlaybackPosition = () => _host.CurrentPlaybackPosition;
+        _getCurrentVideoDuration = () => _host.CurrentVideoDuration;
+        _seekPlaybackPosition = _host.SeekPlaybackPosition;
+        _togglePlayPause = _host.TogglePlayPause;
+        _isPlaybackPlaying = () => _host.IsPlaybackPlaying;
+        _setPlaybackDisplayOverride = _host.SetPlaybackDisplayOverride;
+        _setTransportSuppressed = _host.SetTransportSuppressed;
+        _registerOutputPaths = _host.RegisterOutputPaths;
+        _showControls = _host.ShowControls;
         _keepSegmentBrush = ResolveBrush("AccentBrush");
         _deleteSegmentBrush = ResolveBrush("LibrarySelectionStrongBrush") ?? _keepSegmentBrush;
 
+        _webBridge.CommandReceived += WebBridge_CommandReceived;
+        _webBridge.Attach(_clipBarView.TimelineWebView);
         AttachTimelineEvents();
     }
 
@@ -148,8 +140,11 @@ public sealed class ClipEditorController : IDisposable
     public void Dispose()
     {
         DetachTimelineEvents();
+        _webBridge.CommandReceived -= WebBridge_CommandReceived;
+        _webBridge.Dispose();
         EndTimelineInteraction();
         ClearTimelineThumbnailState(clearCanvas: true);
+        _setPlaybackDisplayOverride(null, null, null, null, null);
         _setTransportSuppressed(false);
     }
 
@@ -208,7 +203,7 @@ public sealed class ClipEditorController : IDisposable
 
     public void ToggleClipMode()
     {
-        if (_libraryViewModel.SelectedMedia?.Type != MediaType.Video || _isExportingClip)
+        if (_host.SelectedMedia?.Type != MediaType.Video || _isExportingClip)
         {
             return;
         }
@@ -219,64 +214,25 @@ public sealed class ClipEditorController : IDisposable
         }
 
         _isClipModeActive = !_isClipModeActive;
+        if (_isClipModeActive)
+        {
+            PausePlaybackForClipInteraction("Enter clip mode");
+        }
+
+        LogClipTrace($"ToggleClipMode active={_isClipModeActive} media={_host.SelectedMedia?.FileName ?? "<none>"} segments={DescribeSegments(_clipSegments)}");
         UpdateUi();
         _showControls();
     }
 
-    public void SetClipStartToCurrent()
+    public void HandlePreviewSurfaceInteraction()
     {
-        var duration = _getCurrentVideoDuration();
-        if (duration <= TimeSpan.Zero)
+        if (!_isClipModeActive)
         {
-            _clipStatusMessage = "视频时长尚未就绪，请稍后再试。";
-            UpdateUi();
             return;
         }
 
-        var switchedFromPlan = PrepareSingleSegmentEditing(duration);
-        var position = ClampToDuration(_getCurrentPlaybackPosition(), duration);
-        var minimumGap = GetMinimumSelectionGap(duration);
-        var maxStart = _clipEnd.HasValue
-            ? Max(TimeSpan.Zero, _clipEnd.Value - minimumGap)
-            : Max(TimeSpan.Zero, duration - minimumGap);
-        _clipStart = position > maxStart ? maxStart : position;
-
-        if (!_clipEnd.HasValue || _clipEnd.Value <= _clipStart.Value)
-        {
-            _clipEnd = ClampToDuration(_clipStart.Value + minimumGap, duration);
-        }
-
-        var prefix = switchedFromPlan ? "已切换为单段时间线编辑，" : string.Empty;
-        _clipStatusMessage = $"{prefix}入点已设置为 {FormatTime(_clipStart.Value)}。";
+        PausePlaybackForClipInteraction("Preview surface interaction");
         UpdateUi();
-        _showControls();
-    }
-
-    public void SetClipEndToCurrent()
-    {
-        var duration = _getCurrentVideoDuration();
-        if (duration <= TimeSpan.Zero)
-        {
-            _clipStatusMessage = "视频时长尚未就绪，请稍后再试。";
-            UpdateUi();
-            return;
-        }
-
-        var switchedFromPlan = PrepareSingleSegmentEditing(duration);
-        var position = ClampToDuration(_getCurrentPlaybackPosition(), duration);
-        var minimumGap = GetMinimumSelectionGap(duration);
-        var minEnd = (_clipStart ?? TimeSpan.Zero) + minimumGap;
-        _clipEnd = position < minEnd ? ClampToDuration(minEnd, duration) : position;
-
-        if (!_clipStart.HasValue || _clipStart.Value >= _clipEnd.Value)
-        {
-            _clipStart = Max(TimeSpan.Zero, _clipEnd.Value - minimumGap);
-        }
-
-        var prefix = switchedFromPlan ? "已切换为单段时间线编辑，" : string.Empty;
-        _clipStatusMessage = $"{prefix}出点已设置为 {FormatTime(_clipEnd.Value)}。";
-        UpdateUi();
-        _showControls();
     }
 
     public void Clear()
@@ -293,26 +249,15 @@ public sealed class ClipEditorController : IDisposable
 
     public void SplitSegmentAtCurrentPosition()
     {
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         if (duration <= TimeSpan.Zero || _isExportingClip)
         {
             return;
         }
 
-        var segments = GetEditableSegments(duration);
-        if (segments.Count == 0)
+        if (!TryResolveSplitTarget(duration, out var segments, out var targetIndex, out var position, out var failureReason))
         {
-            return;
-        }
-
-        var gap = GetMinimumSelectionGap(duration);
-        var position = ClampToDuration(_getCurrentPlaybackPosition(), duration);
-        var targetIndex = segments.FindIndex(segment =>
-            position > segment.Start + gap
-            && position < segment.End - gap);
-        if (targetIndex < 0)
-        {
-            _clipStatusMessage = "游标需要落在某个片段内部，且离边界稍微远一点，才能切开。";
+            _clipStatusMessage = failureReason;
             UpdateUi();
             return;
         }
@@ -332,6 +277,24 @@ public sealed class ClipEditorController : IDisposable
         SetEditableSegments(segments, duration);
         _selectedSegmentIndex = Math.Clamp(targetIndex + 1, 0, segments.Count - 1);
         _clipStatusMessage = $"已在 {FormatTime(position)} 切开当前片段，共 {segments.Count} 段。";
+        LogClipTrace($"SplitSegmentAtCurrentPosition success position={position.TotalSeconds:F3}s targetIndex={targetIndex} segments={DescribeSegments(segments)}");
+        UpdateUi();
+        _showControls();
+    }
+
+    private void ToggleClipOutputMode()
+    {
+        if (!_isClipModeActive || _isExportingClip)
+        {
+            return;
+        }
+
+        _clipMode = _clipMode == VideoClipMode.Keep
+            ? VideoClipMode.Delete
+            : VideoClipMode.Keep;
+        _clipStatusMessage = _clipMode == VideoClipMode.Keep
+            ? "当前为保留片段模式，亮色片段会输出。"
+            : "当前为删除片段模式，淡色预览区会被删除。";
         UpdateUi();
         _showControls();
     }
@@ -350,7 +313,7 @@ public sealed class ClipEditorController : IDisposable
             return true;
         }
 
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         if (duration <= TimeSpan.Zero)
         {
             _clipStatusMessage = "视频时长尚未就绪，请稍后再试。";
@@ -399,7 +362,7 @@ public sealed class ClipEditorController : IDisposable
 
     public async Task ExportCurrentClipAsync()
     {
-        var media = _libraryViewModel.SelectedMedia;
+        var media = _host.SelectedMedia;
         if (media?.Type != MediaType.Video)
         {
             return;
@@ -450,7 +413,7 @@ public sealed class ClipEditorController : IDisposable
             _clipStatusMessage = $"导出完成：{Path.GetFileName(result.OutputPath)}";
             _viewModel.ProgressValue = 100;
 
-            await _libraryViewModel.AddFilesAsync(new[] { result.OutputPath });
+            await _host.AddOutputFilesAsync(new[] { result.OutputPath });
             _registerOutputPaths(new[] { result.OutputPath });
         }
         catch (Exception ex)
@@ -464,66 +427,12 @@ public sealed class ClipEditorController : IDisposable
         }
     }
 
-    public async Task ShowClipPlanDialogAsync()
-    {
-        var media = _libraryViewModel.SelectedMedia;
-        if (media?.Type != MediaType.Video)
-        {
-            return;
-        }
-
-        var duration = GetBestKnownVideoDuration(media);
-        var result = await _dialogCoordinator.ShowClipPlanDialogAsync(new ClipPlanDialogRequest
-        {
-            Duration = duration,
-            Mode = _clipMode,
-            Segments = _clipSegments.ToList(),
-            StartText = FormatEditableTime(_clipStart ?? TimeSpan.Zero),
-            EndText = FormatEditableTime(_clipEnd ?? duration),
-            OutputDirectory = _clipOutputDirectory ?? Path.GetDirectoryName(media.FileSystemPath) ?? string.Empty
-        });
-        if (result == null)
-        {
-            return;
-        }
-
-        _clipSegments.Clear();
-        foreach (var segment in result.Segments)
-        {
-            _clipSegments.Add(segment);
-        }
-
-        _clipMode = result.Mode;
-        _clipOutputDirectory = string.IsNullOrWhiteSpace(result.OutputDirectory)
-            ? Path.GetDirectoryName(media.FileSystemPath)
-            : result.OutputDirectory;
-
-        var normalized = NormalizeSegments(result.Segments, duration);
-        if (normalized.Count > 0)
-        {
-            _clipStart = normalized[0].Start;
-            _clipEnd = normalized[^1].End;
-        }
-        else
-        {
-            ResetClipRangeToFullDuration();
-        }
-
-        _clipStatusMessage = result.Segments.Count == 0
-            ? "片段配置已清空，当前没有可导出的片段。"
-            : $"片段配置已保存，共 {result.Segments.Count} 段。";
-        UpdateUi();
-        _showControls();
-    }
-
     private void AttachTimelineEvents()
     {
+        _clipModeActionButton.Click += ClipModeActionButton_Click;
         _exitClipModeButton.Click += ExitClipModeButton_Click;
         _clipPlayPauseButton.Click += ClipPlayPauseButton_Click;
         _splitClipButton.Click += SplitClipButton_Click;
-        _timelineZoomOutButton.Click += TimelineZoomOutButton_Click;
-        _timelineZoomInButton.Click += TimelineZoomInButton_Click;
-        _timelineZoomResetButton.Click += TimelineZoomResetButton_Click;
         _clipBarView.TimelineViewport.SizeChanged += TimelineViewport_SizeChanged;
         _clipBarView.TimelineScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(TimelineViewport_PointerWheelChanged), true);
         _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(TimelineContentCanvas_PointerPressed), true);
@@ -545,12 +454,10 @@ public sealed class ClipEditorController : IDisposable
 
     private void DetachTimelineEvents()
     {
+        _clipModeActionButton.Click -= ClipModeActionButton_Click;
         _exitClipModeButton.Click -= ExitClipModeButton_Click;
         _clipPlayPauseButton.Click -= ClipPlayPauseButton_Click;
         _splitClipButton.Click -= SplitClipButton_Click;
-        _timelineZoomOutButton.Click -= TimelineZoomOutButton_Click;
-        _timelineZoomInButton.Click -= TimelineZoomInButton_Click;
-        _timelineZoomResetButton.Click -= TimelineZoomResetButton_Click;
         _clipBarView.TimelineViewport.SizeChanged -= TimelineViewport_SizeChanged;
         _clipBarView.TimelineScrollViewer.RemoveHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(TimelineViewport_PointerWheelChanged));
         _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(TimelineContentCanvas_PointerPressed));
@@ -575,6 +482,11 @@ public sealed class ClipEditorController : IDisposable
         ToggleClipMode();
     }
 
+    private void ClipModeActionButton_Click(object sender, RoutedEventArgs e)
+    {
+        ToggleClipOutputMode();
+    }
+
     private void ClipPlayPauseButton_Click(object sender, RoutedEventArgs e)
     {
         if (!_isPlaybackPlaying())
@@ -590,21 +502,6 @@ public sealed class ClipEditorController : IDisposable
     private void SplitClipButton_Click(object sender, RoutedEventArgs e)
     {
         SplitSegmentAtCurrentPosition();
-    }
-
-    private void TimelineZoomOutButton_Click(object sender, RoutedEventArgs e)
-    {
-        SetTimelineZoom(_timelineZoomFactor / TimelineZoomStep);
-    }
-
-    private void TimelineZoomInButton_Click(object sender, RoutedEventArgs e)
-    {
-        SetTimelineZoom(_timelineZoomFactor * TimelineZoomStep);
-    }
-
-    private void TimelineZoomResetButton_Click(object sender, RoutedEventArgs e)
-    {
-        SetTimelineZoom(TimelineZoomMin);
     }
 
     private void TimelineViewport_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -676,10 +573,7 @@ public sealed class ClipEditorController : IDisposable
                 return;
             }
 
-            _selectedSegmentIndex = bodyTag.SegmentIndex;
-            _clipStatusMessage = $"已选中片段 {bodyTag.SegmentIndex + 1}。拖动左右边界微调，按 Delete 删除。";
-            BeginTimelineInteraction(TimelineInteractionMode.Seek, owner, e);
-            UpdateTimelineInteraction(e.GetCurrentPoint(owner).Position, finalize: false);
+            BeginSegmentBodyInteraction(bodyTag.SegmentIndex, owner, e);
             e.Handled = true;
             return;
         }
@@ -695,6 +589,70 @@ public sealed class ClipEditorController : IDisposable
         e.Handled = true;
     }
 
+    private void SegmentBody_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is not Border segmentBody
+            || segmentBody.Tag is not SegmentBodyTag tag
+            || !CanInteractWithTimeline(segmentBody, e, requireLeftButtonForMouse: true))
+        {
+            return;
+        }
+
+        BeginSegmentBodyInteraction(tag.SegmentIndex, _clipBarView.TimelineContentCanvas, e);
+        e.Handled = true;
+    }
+
+    private void BeginSegmentBodyInteraction(int segmentIndex, UIElement owner, PointerRoutedEventArgs e)
+    {
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var segments = GetEditableSegments(duration);
+        if (segmentIndex < 0 || segmentIndex >= segments.Count)
+        {
+            return;
+        }
+
+        var point = e.GetCurrentPoint(_clipBarView.TimelineContentCanvas).Position;
+        var pointerTime = PositionToTimelineTime(point.X, duration);
+        var segment = segments[segmentIndex];
+        var gap = GetMinimumSelectionGap(duration);
+        var leftSlack = segmentIndex == 0
+            ? segment.Start
+            : segment.Start - segments[segmentIndex - 1].End;
+        var rightSlack = segmentIndex == segments.Count - 1
+            ? duration - segment.End
+            : segments[segmentIndex + 1].Start - segment.End;
+        var canMoveSegment = leftSlack > gap && rightSlack > gap;
+        var innerMoveZone = TimeSpan.FromTicks(Math.Max(gap.Ticks, segment.Duration.Ticks / 4));
+        var distanceToStart = pointerTime > segment.Start ? pointerTime - segment.Start : TimeSpan.Zero;
+        var distanceToEnd = segment.End > pointerTime ? segment.End - pointerTime : TimeSpan.Zero;
+
+        var mode = canMoveSegment
+            && distanceToStart >= innerMoveZone
+            && distanceToEnd >= innerMoveZone
+                ? TimelineInteractionMode.MoveSegment
+                : (distanceToStart <= distanceToEnd
+                    ? TimelineInteractionMode.StartHandle
+                    : TimelineInteractionMode.EndHandle);
+
+        BeginTimelineInteraction(mode, owner, e);
+        _activeSegmentIndex = segmentIndex;
+        _selectedSegmentIndex = segmentIndex;
+        _segmentDragPointerOffset = ClampToRange(pointerTime - segment.Start, TimeSpan.Zero, segment.Duration);
+        _timelineInteractionRequiresDragActivation = true;
+        _timelineInteractionHasActivatedDrag = false;
+        _timelineInteractionStartPoint = point;
+        _clipStatusMessage = mode == TimelineInteractionMode.MoveSegment
+            ? $"已选中片段 {segmentIndex + 1}。拖动片段整体移动，拖动左右边界微调，按 Delete 删除。"
+            : $"已选中片段 {segmentIndex + 1}。当前拖动会调整{(mode == TimelineInteractionMode.StartHandle ? "左" : "右")}边界。";
+        LogClipTrace($"SegmentBody Begin mode={mode} activeIndex={segmentIndex} pointer={pointerTime.TotalSeconds:F3}s offset={_segmentDragPointerOffset.TotalSeconds:F3}s leftSlack={leftSlack.TotalSeconds:F3}s rightSlack={rightSlack.TotalSeconds:F3}s segment={segment.Start.TotalSeconds:F3}-{segment.End.TotalSeconds:F3}s allSegments={DescribeSegments(segments)}");
+        UpdateUi();
+    }
+
     private void TimelineStartHandleThumb_DragStarted(object sender, DragStartedEventArgs e)
     {
         if (!_isClipModeActive || _isExportingClip)
@@ -702,11 +660,20 @@ public sealed class ClipEditorController : IDisposable
             return;
         }
 
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
         var segments = GetEditableSegments(duration);
         _activeSegmentIndex = ResolveHandleSegmentIndex(isStartHandle: true, segments.Count);
         _selectedSegmentIndex = _activeSegmentIndex;
         _timelineInteractionMode = TimelineInteractionMode.StartHandle;
+        _timelineInteractionRequiresDragActivation = false;
+        _timelineInteractionHasActivatedDrag = false;
+        PausePlaybackForClipInteraction("Start handle drag started");
+        LogClipTrace($"StartHandle DragStarted activeIndex={_activeSegmentIndex} duration={duration.TotalSeconds:F3}s segments={DescribeSegments(segments)}");
         _showControls();
     }
 
@@ -718,6 +685,7 @@ public sealed class ClipEditorController : IDisposable
         }
 
         var boundaryX = Canvas.GetLeft(_clipBarView.TimelineStartHandleThumb) + (_clipBarView.TimelineStartHandleThumb.Width / 2) + e.HorizontalChange;
+        LogClipTrace($"StartHandle DragDelta activeIndex={_activeSegmentIndex} horizontalChange={e.HorizontalChange:F2} boundaryX={boundaryX:F2}");
         UpdateTimelineInteraction(new Point(boundaryX, 0), finalize: false);
     }
 
@@ -729,6 +697,7 @@ public sealed class ClipEditorController : IDisposable
         }
 
         var boundaryX = Canvas.GetLeft(_clipBarView.TimelineStartHandleThumb) + (_clipBarView.TimelineStartHandleThumb.Width / 2);
+        LogClipTrace($"StartHandle DragCompleted activeIndex={_activeSegmentIndex} boundaryX={boundaryX:F2}");
         UpdateTimelineInteraction(new Point(boundaryX, 0), finalize: true);
         EndTimelineInteraction();
     }
@@ -740,7 +709,7 @@ public sealed class ClipEditorController : IDisposable
             return;
         }
 
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         if (duration <= TimeSpan.Zero)
         {
             return;
@@ -750,6 +719,10 @@ public sealed class ClipEditorController : IDisposable
         _activeSegmentIndex = ResolveHandleSegmentIndex(isStartHandle: false, segments.Count);
         _selectedSegmentIndex = _activeSegmentIndex;
         _timelineInteractionMode = TimelineInteractionMode.EndHandle;
+        _timelineInteractionRequiresDragActivation = false;
+        _timelineInteractionHasActivatedDrag = false;
+        PausePlaybackForClipInteraction("End handle drag started");
+        LogClipTrace($"EndHandle DragStarted activeIndex={_activeSegmentIndex} duration={duration.TotalSeconds:F3}s segments={DescribeSegments(segments)}");
         _showControls();
     }
 
@@ -761,6 +734,7 @@ public sealed class ClipEditorController : IDisposable
         }
 
         var boundaryX = Canvas.GetLeft(_clipBarView.TimelineEndHandleThumb) + (_clipBarView.TimelineEndHandleThumb.Width / 2) + e.HorizontalChange;
+        LogClipTrace($"EndHandle DragDelta activeIndex={_activeSegmentIndex} horizontalChange={e.HorizontalChange:F2} boundaryX={boundaryX:F2}");
         UpdateTimelineInteraction(new Point(boundaryX, 0), finalize: false);
     }
 
@@ -772,24 +746,9 @@ public sealed class ClipEditorController : IDisposable
         }
 
         var boundaryX = Canvas.GetLeft(_clipBarView.TimelineEndHandleThumb) + (_clipBarView.TimelineEndHandleThumb.Width / 2);
+        LogClipTrace($"EndHandle DragCompleted activeIndex={_activeSegmentIndex} boundaryX={boundaryX:F2}");
         UpdateTimelineInteraction(new Point(boundaryX, 0), finalize: true);
         EndTimelineInteraction();
-    }
-
-    private void SegmentBody_PointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        if (sender is not Border segmentBody
-            || segmentBody.Tag is not SegmentBodyTag tag
-            || !CanInteractWithTimeline(segmentBody, e, requireLeftButtonForMouse: true))
-        {
-            return;
-        }
-
-        _selectedSegmentIndex = tag.SegmentIndex;
-        _clipStatusMessage = $"已选中片段 {tag.SegmentIndex + 1}。拖动左右边界微调，按 Delete 删除。";
-        BeginTimelineInteraction(TimelineInteractionMode.Seek, _clipBarView.TimelineContentCanvas, e);
-        UpdateTimelineInteraction(e.GetCurrentPoint(_clipBarView.TimelineContentCanvas).Position, finalize: false);
-        e.Handled = true;
     }
 
     private void TimelineStartHandle_PointerEntered(object sender, PointerRoutedEventArgs e)
@@ -829,7 +788,24 @@ public sealed class ClipEditorController : IDisposable
         }
         else
         {
-            UpdateTimelineInteraction(e.GetCurrentPoint(_clipBarView.TimelineContentCanvas).Position, finalize: false);
+            var position = e.GetCurrentPoint(_clipBarView.TimelineContentCanvas).Position;
+            if (_timelineInteractionRequiresDragActivation && !_timelineInteractionHasActivatedDrag)
+            {
+                var deltaX = position.X - _timelineInteractionStartPoint.X;
+                var deltaY = position.Y - _timelineInteractionStartPoint.Y;
+                var distance = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+                if (distance < TimelineDragActivationDistance)
+                {
+                    e.Handled = true;
+                    return;
+                }
+
+                _timelineInteractionHasActivatedDrag = true;
+                _timelineInteractionRequiresDragActivation = false;
+                LogClipTrace($"TimelineInteraction drag activated mode={_timelineInteractionMode} distance={distance:F2}px");
+            }
+
+            UpdateTimelineInteraction(position, finalize: false);
         }
 
         e.Handled = true;
@@ -845,6 +821,10 @@ public sealed class ClipEditorController : IDisposable
         if (_timelineInteractionMode == TimelineInteractionMode.Pan)
         {
             UpdateTimelinePan(e.GetCurrentPoint(_clipBarView.TimelineViewport).Position);
+        }
+        else if (_timelineInteractionRequiresDragActivation && !_timelineInteractionHasActivatedDrag)
+        {
+            LogClipTrace($"TimelineInteraction click-only selection mode={_timelineInteractionMode} activeIndex={_activeSegmentIndex}");
         }
         else
         {
@@ -913,30 +893,6 @@ public sealed class ClipEditorController : IDisposable
         return isStartHandle ? 0 : segmentCount - 1;
     }
 
-    private bool CanInteractWithTimeline(UIElement? owner, PointerRoutedEventArgs e, bool requireLeftButtonForMouse)
-    {
-        if (owner == null || !_isClipModeActive || _isExportingClip)
-        {
-            return false;
-        }
-
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
-        if (duration <= TimeSpan.Zero)
-        {
-            return false;
-        }
-
-        var point = e.GetCurrentPoint(owner);
-        if (requireLeftButtonForMouse
-            && e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
-            && !point.Properties.IsLeftButtonPressed)
-        {
-            return false;
-        }
-
-        return true;
-    }
-
     private bool IsWithinTimelineHandleThumb(DependencyObject? source)
     {
         return IsDescendantOf(source, _clipBarView.TimelineStartHandleThumb)
@@ -958,6 +914,30 @@ public sealed class ClipEditorController : IDisposable
         return false;
     }
 
+    private bool CanInteractWithTimeline(UIElement? owner, PointerRoutedEventArgs e, bool requireLeftButtonForMouse)
+    {
+        if (owner == null || !_isClipModeActive || _isExportingClip)
+        {
+            return false;
+        }
+
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        var point = e.GetCurrentPoint(owner);
+        if (requireLeftButtonForMouse
+            && e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
+            && !point.Properties.IsLeftButtonPressed)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private void BeginTimelinePan(UIElement? owner, PointerRoutedEventArgs e)
     {
         EndTimelineInteraction();
@@ -972,7 +952,11 @@ public sealed class ClipEditorController : IDisposable
     private void BeginTimelineInteraction(TimelineInteractionMode mode, UIElement? owner, PointerRoutedEventArgs e)
     {
         EndTimelineInteraction();
+        PausePlaybackForClipInteraction($"Begin timeline interaction mode={mode}");
         _timelineInteractionMode = mode;
+        _timelineInteractionRequiresDragActivation = false;
+        _timelineInteractionHasActivatedDrag = false;
+        _timelineInteractionStartPoint = e.GetCurrentPoint(_clipBarView.TimelineContentCanvas).Position;
         _timelineCaptureOwner = owner;
         _timelineCaptureOwner?.CapturePointer(e.Pointer);
         _showControls();
@@ -988,6 +972,10 @@ public sealed class ClipEditorController : IDisposable
 
         _timelineInteractionMode = TimelineInteractionMode.None;
         _activeSegmentIndex = -1;
+        _segmentDragPointerOffset = TimeSpan.Zero;
+        _timelineInteractionRequiresDragActivation = false;
+        _timelineInteractionHasActivatedDrag = false;
+        _timelineInteractionStartPoint = default;
     }
 
     private void UpdateTimelinePan(Point point)
@@ -1007,7 +995,7 @@ public sealed class ClipEditorController : IDisposable
 
     private void UpdateTimelineInteraction(Point point, bool finalize)
     {
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         if (duration <= TimeSpan.Zero)
         {
             return;
@@ -1015,6 +1003,7 @@ public sealed class ClipEditorController : IDisposable
 
         EnsureClipSegments(duration);
         var value = PositionToTimelineTime(point.X, duration);
+        LogClipTrace($"UpdateTimelineInteraction mode={_timelineInteractionMode} finalize={finalize} pointX={point.X:F2} mapped={value.TotalSeconds:F3}s activeIndex={_activeSegmentIndex} selectedIndex={_selectedSegmentIndex}");
         switch (_timelineInteractionMode)
         {
             case TimelineInteractionMode.Seek:
@@ -1041,18 +1030,10 @@ public sealed class ClipEditorController : IDisposable
                     End = current.End
                 };
                 updatedSegments[_activeSegmentIndex] = current;
-                if (_activeSegmentIndex > 0)
-                {
-                    var previous = updatedSegments[_activeSegmentIndex - 1];
-                    updatedSegments[_activeSegmentIndex - 1] = new VideoClipSegment
-                    {
-                        Start = previous.Start,
-                        End = current.Start
-                    };
-                }
 
                 SetEditableSegments(updatedSegments, duration);
                 _selectedSegmentIndex = _activeSegmentIndex;
+                LogClipTrace($"StartHandle Applied activeIndex={_activeSegmentIndex} start={current.Start.TotalSeconds:F3}s end={current.End.TotalSeconds:F3}s segments={DescribeSegments(updatedSegments)}");
 
                 SeekPlayback(current.Start);
                 _clipStatusMessage = finalize
@@ -1081,23 +1062,50 @@ public sealed class ClipEditorController : IDisposable
                     End = ClampToRange(value, minEnd, maxEnd)
                 };
                 updatedSegments[_activeSegmentIndex] = current;
-                if (_activeSegmentIndex < updatedSegments.Count - 1)
-                {
-                    var next = updatedSegments[_activeSegmentIndex + 1];
-                    updatedSegments[_activeSegmentIndex + 1] = new VideoClipSegment
-                    {
-                        Start = current.End,
-                        End = next.End
-                    };
-                }
 
                 SetEditableSegments(updatedSegments, duration);
                 _selectedSegmentIndex = _activeSegmentIndex;
+                LogClipTrace($"EndHandle Applied activeIndex={_activeSegmentIndex} start={current.Start.TotalSeconds:F3}s end={current.End.TotalSeconds:F3}s segments={DescribeSegments(updatedSegments)}");
 
                 SeekPlayback(current.End);
                 _clipStatusMessage = finalize
                     ? $"片段 {_activeSegmentIndex + 1} 终点已更新为 {FormatTime(current.End)}。"
                     : $"片段 {_activeSegmentIndex + 1} 终点：{FormatTime(current.End)}";
+                break;
+            }
+
+            case TimelineInteractionMode.MoveSegment:
+            {
+                var updatedSegments = GetEditableSegments(duration);
+                if (_activeSegmentIndex < 0 || _activeSegmentIndex >= updatedSegments.Count)
+                {
+                    break;
+                }
+
+                var current = updatedSegments[_activeSegmentIndex];
+                var segmentDuration = current.Duration;
+                var minStart = _activeSegmentIndex == 0
+                    ? TimeSpan.Zero
+                    : updatedSegments[_activeSegmentIndex - 1].End;
+                var maxStart = _activeSegmentIndex == updatedSegments.Count - 1
+                    ? Max(TimeSpan.Zero, duration - segmentDuration)
+                    : updatedSegments[_activeSegmentIndex + 1].Start - segmentDuration;
+                var nextStart = ClampToRange(value - _segmentDragPointerOffset, minStart, maxStart);
+                current = new VideoClipSegment
+                {
+                    Start = nextStart,
+                    End = nextStart + segmentDuration
+                };
+                updatedSegments[_activeSegmentIndex] = current;
+
+                SetEditableSegments(updatedSegments, duration);
+                _selectedSegmentIndex = _activeSegmentIndex;
+                LogClipTrace($"MoveSegment Applied activeIndex={_activeSegmentIndex} start={current.Start.TotalSeconds:F3}s end={current.End.TotalSeconds:F3}s offset={_segmentDragPointerOffset.TotalSeconds:F3}s segments={DescribeSegments(updatedSegments)}");
+
+                SeekPlayback(ClampToRange(current.Start + _segmentDragPointerOffset, current.Start, current.End));
+                _clipStatusMessage = finalize
+                    ? $"片段 {_activeSegmentIndex + 1} 已移动到 {FormatTime(current.Start)} - {FormatTime(current.End)}。"
+                    : $"片段 {_activeSegmentIndex + 1}：{FormatTime(current.Start)} - {FormatTime(current.End)}";
                 break;
             }
         }
@@ -1107,26 +1115,12 @@ public sealed class ClipEditorController : IDisposable
 
     private void SeekPlayback(TimeSpan value)
     {
-        _seekPlaybackPosition(value);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        var previewSegments = GetPreviewSegments(duration);
+        var target = ResolvePreviewSeekTarget(value, previewSegments);
+        LogClipTrace($"SeekPlayback requested={value.TotalSeconds:F3}s target={target.TotalSeconds:F3}s previewSegments={DescribeSegments(previewSegments)}");
+        _seekPlaybackPosition(target);
         _showControls();
-    }
-
-    private bool PrepareSingleSegmentEditing(TimeSpan duration)
-    {
-        if (_clipSegments.Count == 0)
-        {
-            return false;
-        }
-
-        var normalized = NormalizeSegments(_clipSegments, duration);
-        if (normalized.Count > 0)
-        {
-            _clipStart = normalized[0].Start;
-            _clipEnd = normalized[^1].End;
-        }
-
-        _clipSegments.Clear();
-        return true;
     }
 
     private void ResetClipRangeToFullDuration()
@@ -1146,14 +1140,9 @@ public sealed class ClipEditorController : IDisposable
         SyncClipBoundsFromSegments(duration);
     }
 
-    private void InitializeClipRange(TimeSpan duration)
-    {
-        EnsureClipSegments(duration);
-    }
-
     private void SetTimelineZoom(double nextZoomFactor)
     {
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         var currentPosition = duration > TimeSpan.Zero
             ? ClampToDuration(_getCurrentPlaybackPosition(), duration)
             : TimeSpan.Zero;
@@ -1166,7 +1155,7 @@ public sealed class ClipEditorController : IDisposable
 
     private void ScrollTimelineToTime(TimeSpan value, bool centerInViewport)
     {
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         var viewportWidth = _clipBarView.TimelineViewport.ActualWidth;
         var contentWidth = ResolveTimelineContentWidth();
         if (duration <= TimeSpan.Zero || viewportWidth <= 0 || contentWidth <= viewportWidth)
@@ -1185,7 +1174,7 @@ public sealed class ClipEditorController : IDisposable
 
     private void UpdateUi()
     {
-        var media = _libraryViewModel.SelectedMedia;
+        var media = _host.SelectedMedia;
         var isVideo = media?.Type == MediaType.Video;
         var showClipBar = isVideo && _isClipModeActive;
 
@@ -1197,8 +1186,11 @@ public sealed class ClipEditorController : IDisposable
         _viewModel.Visibility = showClipBar ? Visibility.Visible : Visibility.Collapsed;
         if (!showClipBar)
         {
+            _setPlaybackDisplayOverride(null, null, null, null, null);
             _viewModel.ProgressVisibility = Visibility.Collapsed;
             _viewModel.StatusText = _clipStatusMessage;
+            _clipBarView.TimelineWebLoadingOverlay.Visibility = Visibility.Visible;
+            _clipBarView.TimelineWebStatusText.Text = "等待进入剪辑模式...";
             ResetTimelineVisuals();
             return;
         }
@@ -1213,6 +1205,7 @@ public sealed class ClipEditorController : IDisposable
         var clipLength = clipEnd > clipStart ? clipEnd - clipStart : TimeSpan.Zero;
         var currentPosition = ClampToDuration(_getCurrentPlaybackPosition(), duration);
         var summaryDuration = CalculateEffectiveOutputDuration(configuredSegments, duration, _clipMode);
+        ApplyPreviewTimeDisplayOverride(duration, currentPosition);
 
         _viewModel.ClipStartText = $"起点：{FormatTime(clipStart)}";
         _viewModel.ClipEndText = clipEnd > TimeSpan.Zero ? $"终点：{FormatTime(clipEnd)}" : "终点：--";
@@ -1224,6 +1217,9 @@ public sealed class ClipEditorController : IDisposable
         _viewModel.ClipModeText = $"模式：{(_clipMode == VideoClipMode.Keep ? "保留片段" : "删除片段")}";
         _viewModel.ClipSegmentCountText = $"片段：{configuredSegments.Count}";
         _viewModel.ClipOutputText = $"输出：{(string.IsNullOrWhiteSpace(_clipOutputDirectory) ? "原目录" : Path.GetFileName(_clipOutputDirectory))}";
+        _viewModel.TimelineGuideText = _clipMode == VideoClipMode.Keep
+            ? "亮色片段会输出；拖边界会吸附到播放头和相邻片段，Ctrl+滚轮以鼠标为中心缩放，右键拖动画布平移，方向键逐帧，Shift+方向键按秒移动"
+            : "亮色片段会保留并输出，淡色片段会删除；拖边界会吸附到播放头和相邻片段，Ctrl+滚轮以鼠标为中心缩放，右键拖动画布平移，方向键逐帧，Shift+方向键按秒移动";
         _viewModel.ProgressVisibility = _isExportingClip ? Visibility.Visible : Visibility.Collapsed;
 
         if (!_isExportingClip && string.IsNullOrWhiteSpace(_clipStatusMessage))
@@ -1235,14 +1231,11 @@ public sealed class ClipEditorController : IDisposable
         _exitClipModeButton.IsEnabled = !_isExportingClip;
         _clipPlayPauseButton.IsEnabled = !_isExportingClip && duration > TimeSpan.Zero;
         _splitClipButton.IsEnabled = !_isExportingClip && CanSplitAtCurrentPosition(duration);
-        _setClipStartButton.IsEnabled = false;
-        _setClipEndButton.IsEnabled = false;
-        _clipPlanButton.IsEnabled = false;
         _clearClipButton.IsEnabled = !_isExportingClip;
         _exportClipButton.IsEnabled = !_isExportingClip && _clipService.IsAvailable && configuredSegments.Count > 0;
-        _timelineZoomOutButton.IsEnabled = false;
-        _timelineZoomInButton.IsEnabled = false;
-        _timelineZoomResetButton.IsEnabled = false;
+        _clipModeActionButton.IsEnabled = !_isExportingClip && configuredSegments.Count > 0;
+        _clipBarView.ClipModeActionText.Text = _clipMode == VideoClipMode.Keep ? "保留模式" : "删除模式";
+        ToolTipService.SetToolTip(_clipModeActionButton, _clipMode == VideoClipMode.Keep ? "切换到删除模式" : "切换到保留模式");
 
         SetButtonGlyph(_clipPlayPauseButton, _isPlaybackPlaying() ? "\uE769" : "\uE768");
         ToolTipService.SetToolTip(_clipPlayPauseButton, _isPlaybackPlaying() ? "暂停" : "播放");
@@ -1252,6 +1245,306 @@ public sealed class ClipEditorController : IDisposable
         UpdateTimelineLabels(duration, currentPosition);
         UpdateTimelineVisuals(duration, currentPosition, configuredSegments);
         EnsureTimelineThumbnails(media, duration);
+        UpdateWebTimelineSurfaceState(media, duration, currentPosition, configuredSegments);
+    }
+
+    private void UpdateWebTimelineSurfaceState(
+        MediaItemViewModel? media,
+        TimeSpan duration,
+        TimeSpan currentPosition,
+        IReadOnlyList<VideoClipSegment> configuredSegments)
+    {
+        if (!_webBridge.IsReady)
+        {
+            _clipBarView.TimelineWebLoadingOverlay.Visibility = Visibility.Visible;
+            _clipBarView.TimelineWebStatusText.Text = "正在连接时间线编辑器...";
+        }
+        else
+        {
+            _clipBarView.TimelineWebLoadingOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        if (media?.Type != MediaType.Video || duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        _ = PublishWebTimelineStateAsync(media, duration, currentPosition, configuredSegments);
+    }
+
+    private Task PublishWebTimelineStateAsync(
+        MediaItemViewModel media,
+        TimeSpan duration,
+        TimeSpan currentPosition,
+        IReadOnlyList<VideoClipSegment> configuredSegments)
+    {
+        var previewSegments = GetPreviewSegments(duration);
+        var webState = new ClipTimelineWebState(
+            media.Id,
+            media.FileName,
+            _clipMode == VideoClipMode.Keep ? "keep" : "delete",
+            _isPlaybackPlaying(),
+            _isExportingClip,
+            duration.TotalSeconds,
+            currentPosition.TotalSeconds,
+            _timelineZoomFactor,
+            _selectedSegmentIndex,
+            _clipStatusMessage,
+            configuredSegments.Select((segment, index) => new ClipTimelineWebSegment(
+                index,
+                segment.Start.TotalSeconds,
+                segment.End.TotalSeconds,
+                index == _selectedSegmentIndex,
+                false)).ToList(),
+            previewSegments.Select((segment, index) => new ClipTimelineWebSegment(
+                index,
+                segment.Start.TotalSeconds,
+                segment.End.TotalSeconds,
+                false,
+                true)).ToList());
+        return _webBridge.PublishStateAsync(webState);
+    }
+
+    private void WebBridge_CommandReceived(object? sender, ClipTimelineWebCommand command)
+    {
+        switch (command.Type)
+        {
+            case "ready":
+                UpdateUi();
+                _webBridge.FocusPlayhead();
+                break;
+
+            case "requestSeek":
+                if (TryReadPayloadSeconds(command.Payload, "positionSeconds", out var seekSeconds))
+                {
+                    SeekPlayback(TimeSpan.FromSeconds(seekSeconds));
+                    UpdateUi();
+                }
+                break;
+
+            case "selectSegment":
+                if (TryReadPayloadInt(command.Payload, "segmentIndex", out var selectSegmentIndex))
+                {
+                    SelectSegment(selectSegmentIndex);
+                }
+                break;
+
+            case "trimSegment":
+                if (TryReadPayloadInt(command.Payload, "segmentIndex", out var trimSegmentIndex)
+                    && TryReadPayloadSeconds(command.Payload, "positionSeconds", out var trimPositionSeconds)
+                    && TryReadPayloadString(command.Payload, "edge", out var edge))
+                {
+                    ApplyTrimSegmentFromWeb(trimSegmentIndex, string.Equals(edge, "start", StringComparison.OrdinalIgnoreCase), TimeSpan.FromSeconds(trimPositionSeconds));
+                }
+                break;
+
+            case "moveSegment":
+                if (TryReadPayloadInt(command.Payload, "segmentIndex", out var moveSegmentIndex)
+                    && TryReadPayloadSeconds(command.Payload, "startSeconds", out var moveStartSeconds))
+                {
+                    ApplyMoveSegmentFromWeb(moveSegmentIndex, TimeSpan.FromSeconds(moveStartSeconds));
+                }
+                break;
+
+            case "splitAt":
+                if (TryReadPayloadSeconds(command.Payload, "positionSeconds", out var splitPositionSeconds))
+                {
+                    SplitSegmentAtPosition(TimeSpan.FromSeconds(splitPositionSeconds));
+                }
+                else
+                {
+                    SplitSegmentAtCurrentPosition();
+                }
+                break;
+
+            case "deleteSegment":
+                if (TryReadPayloadInt(command.Payload, "segmentIndex", out var deleteSegmentIndex))
+                {
+                    DeleteSegmentByIndex(deleteSegmentIndex);
+                }
+                else
+                {
+                    DeleteSelectedSegment();
+                }
+                break;
+
+            case "setZoom":
+                if (TryReadPayloadDouble(command.Payload, "zoomFactor", out var zoomFactor))
+                {
+                    SetTimelineZoom(zoomFactor);
+                    _webBridge.FocusPlayhead();
+                }
+                break;
+
+            case "requestExport":
+                _ = ExportCurrentClipAsync();
+                break;
+
+            case "requestPlayPause":
+                TogglePlaybackFromTimeline();
+                break;
+        }
+    }
+
+    private void SelectSegment(int segmentIndex)
+    {
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        var segments = GetEditableSegments(duration);
+        if (segmentIndex < 0 || segmentIndex >= segments.Count)
+        {
+            return;
+        }
+
+        _selectedSegmentIndex = segmentIndex;
+        var segment = segments[segmentIndex];
+        _clipStatusMessage = $"已选中片段 {segmentIndex + 1}：{FormatTime(segment.Start)} - {FormatTime(segment.End)}";
+        UpdateUi();
+    }
+
+    private void ApplyTrimSegmentFromWeb(int segmentIndex, bool isStart, TimeSpan position)
+    {
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var updatedSegments = GetEditableSegments(duration);
+        if (segmentIndex < 0 || segmentIndex >= updatedSegments.Count)
+        {
+            return;
+        }
+
+        var gap = GetMinimumSelectionGap(duration);
+        var current = updatedSegments[segmentIndex];
+        if (isStart)
+        {
+            var minStart = segmentIndex == 0
+                ? TimeSpan.Zero
+                : updatedSegments[segmentIndex - 1].End;
+            var maxStart = current.End - gap;
+            current = new VideoClipSegment
+            {
+                Start = ClampToRange(position, minStart, maxStart),
+                End = current.End
+            };
+            _clipStatusMessage = $"片段 {segmentIndex + 1} 起点：{FormatTime(current.Start)}";
+            SeekPlayback(current.Start);
+        }
+        else
+        {
+            var minEnd = current.Start + gap;
+            var maxEnd = segmentIndex == updatedSegments.Count - 1
+                ? duration
+                : updatedSegments[segmentIndex + 1].Start;
+            current = new VideoClipSegment
+            {
+                Start = current.Start,
+                End = ClampToRange(position, minEnd, maxEnd)
+            };
+            _clipStatusMessage = $"片段 {segmentIndex + 1} 终点：{FormatTime(current.End)}";
+            SeekPlayback(current.End);
+        }
+
+        updatedSegments[segmentIndex] = current;
+        SetEditableSegments(updatedSegments, duration);
+        _selectedSegmentIndex = segmentIndex;
+        LogClipTrace($"ApplyTrimSegmentFromWeb index={segmentIndex} edge={(isStart ? "start" : "end")} start={current.Start.TotalSeconds:F3}s end={current.End.TotalSeconds:F3}s");
+        UpdateUi();
+    }
+
+    private void ApplyMoveSegmentFromWeb(int segmentIndex, TimeSpan start)
+    {
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        var updatedSegments = GetEditableSegments(duration);
+        if (segmentIndex < 0 || segmentIndex >= updatedSegments.Count)
+        {
+            return;
+        }
+
+        var current = updatedSegments[segmentIndex];
+        var segmentDuration = current.Duration;
+        var minStart = segmentIndex == 0
+            ? TimeSpan.Zero
+            : updatedSegments[segmentIndex - 1].End;
+        var maxStart = segmentIndex == updatedSegments.Count - 1
+            ? Max(TimeSpan.Zero, duration - segmentDuration)
+            : updatedSegments[segmentIndex + 1].Start - segmentDuration;
+        var nextStart = ClampToRange(start, minStart, maxStart);
+        current = new VideoClipSegment
+        {
+            Start = nextStart,
+            End = nextStart + segmentDuration
+        };
+        updatedSegments[segmentIndex] = current;
+        SetEditableSegments(updatedSegments, duration);
+        _selectedSegmentIndex = segmentIndex;
+        _clipStatusMessage = $"片段 {segmentIndex + 1}：{FormatTime(current.Start)} - {FormatTime(current.End)}";
+        SeekPlayback(current.Start);
+        LogClipTrace($"ApplyMoveSegmentFromWeb index={segmentIndex} start={current.Start.TotalSeconds:F3}s end={current.End.TotalSeconds:F3}s");
+        UpdateUi();
+    }
+
+    private void SplitSegmentAtPosition(TimeSpan position)
+    {
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
+        if (duration <= TimeSpan.Zero || _isExportingClip)
+        {
+            return;
+        }
+
+        if (!TryResolveSplitTarget(duration, position, out var segments, out var targetIndex, out var splitPosition, out var failureReason))
+        {
+            _clipStatusMessage = failureReason;
+            UpdateUi();
+            return;
+        }
+
+        var segment = segments[targetIndex];
+        segments[targetIndex] = new VideoClipSegment
+        {
+            Start = segment.Start,
+            End = splitPosition
+        };
+        segments.Insert(targetIndex + 1, new VideoClipSegment
+        {
+            Start = splitPosition,
+            End = segment.End
+        });
+
+        SetEditableSegments(segments, duration);
+        _selectedSegmentIndex = Math.Clamp(targetIndex + 1, 0, segments.Count - 1);
+        _clipStatusMessage = $"已在 {FormatTime(splitPosition)} 切开当前片段，共 {segments.Count} 段。";
+        SeekPlayback(splitPosition);
+        UpdateUi();
+        _showControls();
+    }
+
+    private void DeleteSegmentByIndex(int segmentIndex)
+    {
+        if (segmentIndex >= 0)
+        {
+            _selectedSegmentIndex = segmentIndex;
+        }
+
+        DeleteSelectedSegment();
+    }
+
+    private void TogglePlaybackFromTimeline()
+    {
+        if (!_isPlaybackPlaying())
+        {
+            MovePlaybackToPreviewStartIfNeeded();
+        }
+
+        _togglePlayPause();
+        UpdateUi();
+        _showControls();
     }
 
     private void UpdateTimelineLabels(TimeSpan duration, TimeSpan currentPosition)
@@ -1298,6 +1591,31 @@ public sealed class ClipEditorController : IDisposable
 
         _clipBarView.TimelineSegmentsCanvas.Children.Clear();
         var canInteract = !_isExportingClip && duration > TimeSpan.Zero;
+        var previewSegments = _clipMode == VideoClipMode.Delete
+            ? GetPreviewSegments(duration)
+            : configuredSegments;
+
+        for (var i = 0; i < previewSegments.Count; i++)
+        {
+            var segment = previewSegments[i];
+            var startX = TimeToTimelineX(segment.Start, duration, contentWidth);
+            var endX = TimeToTimelineX(segment.End, duration, contentWidth);
+            var width = Math.Max(2, endX - startX);
+            var trackVisual = new Border
+            {
+                Width = width,
+                Height = TimelineTrackHeight,
+                CornerRadius = new CornerRadius(TimelineTrackHeight / 2),
+                Background = _keepSegmentBrush,
+                Opacity = _clipMode == VideoClipMode.Delete ? 0.92 : 0.82,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(trackVisual, startX);
+            Canvas.SetTop(trackVisual, TimelineTrackTop);
+            Canvas.SetZIndex(trackVisual, 1);
+            _clipBarView.TimelineSegmentsCanvas.Children.Add(trackVisual);
+        }
+
         for (var i = 0; i < configuredSegments.Count; i++)
         {
             var segment = configuredSegments[i];
@@ -1305,24 +1623,29 @@ public sealed class ClipEditorController : IDisposable
             var endX = TimeToTimelineX(segment.End, duration, contentWidth);
             var width = Math.Max(2, endX - startX);
             var isSelected = i == _selectedSegmentIndex;
+            var isDeleteMode = _clipMode == VideoClipMode.Delete;
             var segmentVisual = new Border
             {
                 Width = width,
                 Height = TimelineThumbnailHeight + 8,
-                BorderThickness = new Thickness(isSelected ? 2 : 0),
+                BorderThickness = new Thickness(isSelected ? 2 : (isDeleteMode ? 1 : 0)),
                 BorderBrush = isSelected
-                    ? ResolveBrush("AccentStrongBrush") ?? ResolveBrush("AccentBrush") ?? (_clipMode == VideoClipMode.Keep ? _keepSegmentBrush : _deleteSegmentBrush)
+                    ? ResolveBrush("AccentStrongBrush") ?? ResolveBrush("AccentBrush") ?? (isDeleteMode ? _deleteSegmentBrush : _keepSegmentBrush)
+                    : isDeleteMode
+                        ? _deleteSegmentBrush ?? ResolveBrush("SurfaceStrokeBrush") ?? new SolidColorBrush(Colors.Transparent)
+                        : new SolidColorBrush(Colors.Transparent),
+                Background = isDeleteMode
+                    ? _deleteSegmentBrush ?? new SolidColorBrush(Colors.Transparent)
                     : new SolidColorBrush(Colors.Transparent),
-                Background = new SolidColorBrush(Colors.Transparent),
                 CornerRadius = new CornerRadius(10),
-                Opacity = 1,
+                Opacity = isDeleteMode ? (isSelected ? 0.28 : 0.16) : 1,
                 IsHitTestVisible = canInteract,
                 Tag = new SegmentBodyTag(i)
             };
             segmentVisual.PointerPressed += SegmentBody_PointerPressed;
             Canvas.SetLeft(segmentVisual, startX);
             Canvas.SetTop(segmentVisual, TimelineThumbnailTop - 4);
-            Canvas.SetZIndex(segmentVisual, 0);
+            Canvas.SetZIndex(segmentVisual, isDeleteMode ? 2 : 0);
             _clipBarView.TimelineSegmentsCanvas.Children.Add(segmentVisual);
 
             var trackVisual = new Border
@@ -1331,14 +1654,16 @@ public sealed class ClipEditorController : IDisposable
                 Height = isSelected ? TimelineTrackHeight + 2 : TimelineTrackHeight,
                 CornerRadius = new CornerRadius(TimelineTrackHeight / 2),
                 Background = isSelected
-                    ? ResolveBrush("AccentStrongBrush") ?? ResolveBrush("AccentBrush") ?? (_clipMode == VideoClipMode.Keep ? _keepSegmentBrush : _deleteSegmentBrush)
-                    : (_clipMode == VideoClipMode.Keep ? _keepSegmentBrush : _deleteSegmentBrush),
-                Opacity = isSelected ? 0.95 : (_clipMode == VideoClipMode.Keep ? 0.82 : 0.62),
+                    ? ResolveBrush("AccentStrongBrush") ?? ResolveBrush("AccentBrush") ?? (isDeleteMode ? _deleteSegmentBrush : _keepSegmentBrush)
+                    : (isDeleteMode ? _deleteSegmentBrush : _keepSegmentBrush),
+                Opacity = isDeleteMode
+                    ? (isSelected ? 0.72 : 0.38)
+                    : (isSelected ? 0.95 : 0.82),
                 IsHitTestVisible = false
             };
             Canvas.SetLeft(trackVisual, startX);
             Canvas.SetTop(trackVisual, isSelected ? TimelineTrackTop - 1 : TimelineTrackTop);
-            Canvas.SetZIndex(trackVisual, 1);
+            Canvas.SetZIndex(trackVisual, isDeleteMode ? 3 : 1);
             _clipBarView.TimelineSegmentsCanvas.Children.Add(trackVisual);
 
         }
@@ -1453,12 +1778,6 @@ public sealed class ClipEditorController : IDisposable
         _clipBarView.TimelineThumbnailCanvas.Children.Clear();
         _clipBarView.TimelineSegmentsCanvas.Children.Clear();
         _clipBarView.TimelinePlayhead.Height = 0;
-        _clipBarView.TimelineStartHandle.Visibility = Visibility.Collapsed;
-        _clipBarView.TimelineEndHandle.Visibility = Visibility.Collapsed;
-        _clipBarView.TimelineStartHandleThumb.Visibility = Visibility.Collapsed;
-        _clipBarView.TimelineEndHandleThumb.Visibility = Visibility.Collapsed;
-        _isStartHandlePointerOver = false;
-        _isEndHandlePointerOver = false;
     }
 
     private void EnsureTimelineThumbnails(MediaItemViewModel? media, TimeSpan duration)
@@ -1574,10 +1893,27 @@ public sealed class ClipEditorController : IDisposable
 
     private IReadOnlyList<VideoClipSegment> GetConfiguredSegments()
     {
-        var duration = GetBestKnownVideoDuration(_libraryViewModel.SelectedMedia);
+        var duration = GetBestKnownVideoDuration(_host.SelectedMedia);
         if (_clipSegments.Count > 0)
         {
             return NormalizeSegments(_clipSegments, duration);
+        }
+
+        if (duration > TimeSpan.Zero && (_clipStart.HasValue || _clipEnd.HasValue))
+        {
+            var start = ClampToDuration(_clipStart ?? TimeSpan.Zero, duration);
+            var end = ClampToDuration(_clipEnd ?? duration, duration);
+            if (end > start)
+            {
+                return new[]
+                {
+                    new VideoClipSegment
+                    {
+                        Start = start,
+                        End = end
+                    }
+                };
+            }
         }
 
         if (duration > TimeSpan.Zero)
@@ -1605,7 +1941,7 @@ public sealed class ClipEditorController : IDisposable
         if (_isPreviewPlaybackSyncInProgress
             || !_isClipModeActive
             || _isExportingClip
-            || _libraryViewModel.SelectedMedia?.Type != MediaType.Video
+            || _host.SelectedMedia?.Type != MediaType.Video
             || duration <= TimeSpan.Zero)
         {
             return;
@@ -1616,6 +1952,7 @@ public sealed class ClipEditorController : IDisposable
         {
             if (_isPlaybackPlaying())
             {
+                LogClipTrace("SyncPreviewPlaybackIfNeeded no preview segments while playing; rewinding to zero and pausing");
                 _isPreviewPlaybackSyncInProgress = true;
                 try
                 {
@@ -1648,10 +1985,12 @@ public sealed class ClipEditorController : IDisposable
 
             if (activeSegmentIndex < previewSegments.Count - 1)
             {
+                LogClipTrace($"SyncPreviewPlaybackIfNeeded jumping to next preview segment from {currentPosition.TotalSeconds:F3}s to {previewSegments[activeSegmentIndex + 1].Start.TotalSeconds:F3}s");
                 SeekPreviewPlaybackSilently(previewSegments[activeSegmentIndex + 1].Start);
             }
             else
             {
+                LogClipTrace($"SyncPreviewPlaybackIfNeeded pausing at final preview segment end {previewSegments[^1].End.TotalSeconds:F3}s from current {currentPosition.TotalSeconds:F3}s");
                 PausePreviewPlaybackAt(previewSegments[^1].End);
             }
 
@@ -1666,16 +2005,19 @@ public sealed class ClipEditorController : IDisposable
         var nextSegment = previewSegments.FirstOrDefault(segment => segment.Start > currentPosition);
         if (nextSegment != null)
         {
+            LogClipTrace($"SyncPreviewPlaybackIfNeeded outside preview; seeking forward from {currentPosition.TotalSeconds:F3}s to next segment {nextSegment.Start.TotalSeconds:F3}s");
             SeekPreviewPlaybackSilently(nextSegment.Start);
             return;
         }
 
         if (currentPosition < previewSegments[0].Start)
         {
+            LogClipTrace($"SyncPreviewPlaybackIfNeeded before first preview; seeking from {currentPosition.TotalSeconds:F3}s to {previewSegments[0].Start.TotalSeconds:F3}s");
             SeekPreviewPlaybackSilently(previewSegments[0].Start);
             return;
         }
 
+        LogClipTrace($"SyncPreviewPlaybackIfNeeded after preview end; pausing at {previewSegments[^1].End.TotalSeconds:F3}s from {currentPosition.TotalSeconds:F3}s");
         PausePreviewPlaybackAt(previewSegments[^1].End);
     }
 
@@ -1727,11 +2069,79 @@ public sealed class ClipEditorController : IDisposable
         return InvertSegments(configuredSegments, duration);
     }
 
+    private void ApplyPreviewTimeDisplayOverride(TimeSpan duration, TimeSpan currentPosition)
+    {
+        var previewSegments = GetPreviewSegments(duration);
+        var previewDuration = previewSegments.Aggregate(TimeSpan.Zero, (current, segment) => current + segment.Duration);
+        var previewPosition = MapToPreviewTimelinePosition(currentPosition, previewSegments);
+        _setPlaybackDisplayOverride(
+            FormatTime(previewPosition),
+            FormatTime(previewDuration),
+            previewPosition.TotalSeconds,
+            previewDuration.TotalSeconds,
+            displayPosition => MapFromPreviewTimelinePosition(displayPosition, previewSegments));
+    }
+
+    private static TimeSpan MapToPreviewTimelinePosition(TimeSpan absolutePosition, IReadOnlyList<VideoClipSegment> previewSegments)
+    {
+        if (previewSegments.Count == 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var elapsed = TimeSpan.Zero;
+        foreach (var segment in previewSegments)
+        {
+            if (absolutePosition <= segment.Start)
+            {
+                return elapsed;
+            }
+
+            if (absolutePosition < segment.End)
+            {
+                return elapsed + (absolutePosition - segment.Start);
+            }
+
+            elapsed += segment.Duration;
+        }
+
+        return elapsed;
+    }
+
+    private static TimeSpan MapFromPreviewTimelinePosition(TimeSpan previewPosition, IReadOnlyList<VideoClipSegment> previewSegments)
+    {
+        if (previewSegments.Count == 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        if (previewPosition <= TimeSpan.Zero)
+        {
+            return previewSegments[0].Start;
+        }
+
+        var elapsed = TimeSpan.Zero;
+        foreach (var segment in previewSegments)
+        {
+            var nextElapsed = elapsed + segment.Duration;
+            if (previewPosition <= nextElapsed)
+            {
+                var offset = previewPosition - elapsed;
+                return segment.Start + ClampToRange(offset, TimeSpan.Zero, segment.Duration);
+            }
+
+            elapsed = nextElapsed;
+        }
+
+        return previewSegments[^1].End;
+    }
+
     private void SeekPreviewPlaybackSilently(TimeSpan position)
     {
         _isPreviewPlaybackSyncInProgress = true;
         try
         {
+            LogClipTrace($"SeekPreviewPlaybackSilently position={position.TotalSeconds:F3}s");
             _seekPlaybackPosition(position);
         }
         finally
@@ -1745,6 +2155,7 @@ public sealed class ClipEditorController : IDisposable
         _isPreviewPlaybackSyncInProgress = true;
         try
         {
+            LogClipTrace($"PausePreviewPlaybackAt position={position.TotalSeconds:F3}s isPlaying={_isPlaybackPlaying()}");
             _seekPlaybackPosition(position);
             if (_isPlaybackPlaying())
             {
@@ -1792,6 +2203,7 @@ public sealed class ClipEditorController : IDisposable
     private void SetEditableSegments(IEnumerable<VideoClipSegment> segments, TimeSpan duration)
     {
         var normalized = NormalizeSegments(segments, duration);
+        LogClipTrace($"SetEditableSegments duration={duration.TotalSeconds:F3}s incoming={DescribeSegments(segments)} normalized={DescribeSegments(normalized)}");
         _clipSegments.Clear();
         foreach (var segment in normalized)
         {
@@ -1830,18 +2242,125 @@ public sealed class ClipEditorController : IDisposable
         _clipEnd = normalized[^1].End;
     }
 
-    private bool CanSplitAtCurrentPosition(TimeSpan duration)
+    private bool TryResolveSplitTarget(
+        TimeSpan duration,
+        out List<VideoClipSegment> segments,
+        out int targetIndex,
+        out TimeSpan splitPosition,
+        out string failureReason)
     {
+        return TryResolveSplitTarget(
+            duration,
+            ClampToDuration(_getCurrentPlaybackPosition(), duration),
+            out segments,
+            out targetIndex,
+            out splitPosition,
+            out failureReason);
+    }
+
+    private bool TryResolveSplitTarget(
+        TimeSpan duration,
+        TimeSpan requestedPosition,
+        out List<VideoClipSegment> segments,
+        out int targetIndex,
+        out TimeSpan splitPosition,
+        out string failureReason)
+    {
+        segments = new List<VideoClipSegment>();
+        targetIndex = -1;
+        splitPosition = TimeSpan.Zero;
+        failureReason = "当前没有可切开的片段。";
+
         if (duration <= TimeSpan.Zero)
+        {
+            failureReason = "视频时长尚未就绪，请稍后再试。";
+            return false;
+        }
+
+        segments = GetEditableSegments(duration);
+        if (segments.Count == 0)
         {
             return false;
         }
 
-        var position = ClampToDuration(_getCurrentPlaybackPosition(), duration);
-        var gap = GetMinimumSelectionGap(duration);
-        return GetConfiguredSegments().Any(segment =>
-            position > segment.Start + gap
-            && position < segment.End - gap);
+        var position = ClampToDuration(requestedPosition, duration);
+        targetIndex = FindSegmentIndexContaining(position, segments);
+        if (targetIndex < 0)
+        {
+            failureReason = "游标需要落在某个片段内部，才能切开。";
+            LogClipTrace($"TryResolveSplitTarget miss position={position.TotalSeconds:F3}s segments={DescribeSegments(segments)}");
+            return false;
+        }
+
+        var segment = segments[targetIndex];
+        var splitGap = GetMinimumSplitBoundaryGap(duration, segment.Duration);
+        var minSplitPosition = segment.Start + splitGap;
+        var maxSplitPosition = segment.End - splitGap;
+        if (maxSplitPosition <= minSplitPosition)
+        {
+            failureReason = "当前片段太短，不能再切开了。";
+            LogClipTrace($"TryResolveSplitTarget segment too short index={targetIndex} duration={segment.Duration.TotalSeconds:F3}s splitGap={splitGap.TotalSeconds:F3}s segment={segment.Start.TotalSeconds:F3}-{segment.End.TotalSeconds:F3}");
+            return false;
+        }
+
+        if (position <= minSplitPosition || position >= maxSplitPosition)
+        {
+            failureReason = "游标需要落在片段内部，且离边界稍微远一点，才能切开。";
+            LogClipTrace($"TryResolveSplitTarget near boundary index={targetIndex} position={position.TotalSeconds:F3}s allowed={minSplitPosition.TotalSeconds:F3}-{maxSplitPosition.TotalSeconds:F3}s segment={segment.Start.TotalSeconds:F3}-{segment.End.TotalSeconds:F3}");
+            return false;
+        }
+
+        splitPosition = position;
+        return true;
+    }
+
+    private bool CanSplitAtCurrentPosition(TimeSpan duration)
+    {
+        return TryResolveSplitTarget(duration, out _, out _, out _, out _);
+    }
+
+    private static bool TryReadPayloadSeconds(JsonElement payload, string propertyName, out double value)
+    {
+        if (payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(propertyName, out var property)
+            && property.TryGetDouble(out value))
+        {
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private static bool TryReadPayloadDouble(JsonElement payload, string propertyName, out double value)
+    {
+        return TryReadPayloadSeconds(payload, propertyName, out value);
+    }
+
+    private static bool TryReadPayloadInt(JsonElement payload, string propertyName, out int value)
+    {
+        if (payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(propertyName, out var property)
+            && property.TryGetInt32(out value))
+        {
+            return true;
+        }
+
+        value = -1;
+        return false;
+    }
+
+    private static bool TryReadPayloadString(JsonElement payload, string propertyName, out string value)
+    {
+        if (payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty(propertyName, out var property))
+        {
+            value = property.GetString() ?? string.Empty;
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
     }
 
     private static int FindSegmentIndexContaining(TimeSpan position, IReadOnlyList<VideoClipSegment> segments)
@@ -1856,6 +2375,45 @@ public sealed class ClipEditorController : IDisposable
         }
 
         return -1;
+    }
+
+    private static TimeSpan ResolvePreviewSeekTarget(TimeSpan requested, IReadOnlyList<VideoClipSegment> previewSegments)
+    {
+        if (previewSegments.Count == 0)
+        {
+            return requested;
+        }
+
+        if (requested <= previewSegments[0].Start)
+        {
+            return previewSegments[0].Start;
+        }
+
+        for (var i = 0; i < previewSegments.Count; i++)
+        {
+            var segment = previewSegments[i];
+            if (requested >= segment.Start && requested <= segment.End)
+            {
+                return requested;
+            }
+
+            if (i >= previewSegments.Count - 1)
+            {
+                continue;
+            }
+
+            var nextSegment = previewSegments[i + 1];
+            if (requested > segment.End && requested < nextSegment.Start)
+            {
+                var distanceToCurrentEnd = requested - segment.End;
+                var distanceToNextStart = nextSegment.Start - requested;
+                return distanceToCurrentEnd <= distanceToNextStart
+                    ? segment.End
+                    : nextSegment.Start;
+            }
+        }
+
+        return previewSegments[^1].End;
     }
 
     private TimeSpan GetBestKnownVideoDuration(MediaItemViewModel? media)
@@ -2028,15 +2586,19 @@ public sealed class ClipEditorController : IDisposable
         return duration < MinTimelineSelectionDuration ? duration : MinTimelineSelectionDuration;
     }
 
-    private static string FormatEditableTime(TimeSpan value)
+    private static TimeSpan GetMinimumSplitBoundaryGap(TimeSpan duration, TimeSpan segmentDuration)
     {
-        if (value < TimeSpan.Zero)
+        if (duration <= TimeSpan.Zero || segmentDuration <= TimeSpan.Zero)
         {
-            value = TimeSpan.Zero;
+            return TimeSpan.Zero;
         }
 
-        var hours = (int)value.TotalHours;
-        return $"{hours:00}:{value.Minutes:00}:{value.Seconds:00}.{value.Milliseconds:000}";
+        var selectionGap = GetMinimumSelectionGap(duration);
+        var boundaryGap = selectionGap <= MinTimelineSplitBoundaryGap
+            ? selectionGap
+            : MinTimelineSplitBoundaryGap;
+        var maxAllowedGap = TimeSpan.FromTicks(Math.Max(0, (segmentDuration.Ticks / 2) - 1));
+        return boundaryGap <= maxAllowedGap ? boundaryGap : maxAllowedGap;
     }
 
     private static TimeSpan ClampToDuration(TimeSpan value, TimeSpan duration)
@@ -2115,5 +2677,27 @@ public sealed class ClipEditorController : IDisposable
     private static double GetTimelineTrackWidth(double canvasWidth)
     {
         return Math.Max(1, canvasWidth - TimelineHandleWidth);
+    }
+
+    private void LogClipTrace(string message)
+    {
+        var mediaId = _host.SelectedMedia?.Id ?? "<none>";
+        AppTraceLogger.Log("ClipEditor", $"mediaId={mediaId} {message}");
+    }
+
+    private void PausePlaybackForClipInteraction(string reason)
+    {
+        if (!_isPlaybackPlaying())
+        {
+            return;
+        }
+
+        LogClipTrace($"PausePlaybackForClipInteraction reason={reason}");
+        _togglePlayPause();
+    }
+
+    private static string DescribeSegments(IEnumerable<VideoClipSegment> segments)
+    {
+        return string.Join(", ", segments.Select(segment => $"[{segment.Start.TotalSeconds:F3}-{segment.End.TotalSeconds:F3}]"));
     }
 }

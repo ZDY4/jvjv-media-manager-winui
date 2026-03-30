@@ -59,6 +59,7 @@
                         Value="0"
                         SmallChange="1"
                         LargeChange="10"
+                        IsTabStop="False"
                         VerticalAlignment="Center"
                         Margin="2,0" />
 

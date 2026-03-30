@@ -76,10 +76,29 @@
                 BorderBrush="{ThemeResource SurfaceStrokeBrush}"
                 BorderThickness="1"
                 CornerRadius="{ThemeResource RadiusMedium}">
-                <Grid>
-                    <TextBlock Text="{Binding Path}"
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                               Text="{Binding Path}"
                                Foreground="{ThemeResource TextBrush}"
+                               VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" />
+
+                    <Button Grid.Column="1"
+                            Padding="6"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            VerticalAlignment="Center"
+                            Click="RemoveWatchedFolderItemButton_Click"
+                            Tag="{Binding}"
+                            ToolTipService.ToolTip="删除这个监控文件夹">
+                        <FontIcon Glyph="&#xE711;"
+                                  FontSize="12" />
+                    </Button>
                 </Grid>
             </Border>
         </DataTemplate>
@@ -169,10 +188,6 @@
                               ItemTemplate="{StaticResource WatchedFolderTemplate}" />
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button x:Name="RemoveWatchedFolderButton"
-                                x:FieldModifier="public"
-                                Content="移除选中"
-                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
                         <Button x:Name="ClearWatchedFoldersButton"
                                 x:FieldModifier="public"
                                 Content="清空监控列表"
@@ -186,6 +201,105 @@
                                 Content="取消保护"
                                 Style="{StaticResource SecondaryToolbarButtonStyle}" />
                     </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionCardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="快捷标签"
+                               Foreground="{ThemeResource TextBrush}"
+                               FontSize="16"
+                               FontWeight="SemiBold" />
+
+                    <TextBlock Text="设置后，可在媒体库中按小键盘 1-9，为当前选中的媒体追加对应标签。留空表示不启用该数字。"
+                               Foreground="{ThemeResource MutedTextBrush}"
+                               TextWrapping="Wrap" />
+
+                    <Grid ColumnSpacing="12"
+                          RowSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.Column="0" Spacing="6">
+                            <TextBlock Text="小键盘 1"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag1TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="0" Grid.Column="1" Spacing="6">
+                            <TextBlock Text="小键盘 2"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag2TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="0" Grid.Column="2" Spacing="6">
+                            <TextBlock Text="小键盘 3"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag3TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="0" Spacing="6">
+                            <TextBlock Text="小键盘 4"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag4TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="6">
+                            <TextBlock Text="小键盘 5"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag5TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="2" Spacing="6">
+                            <TextBlock Text="小键盘 6"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag6TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Grid.Column="0" Spacing="6">
+                            <TextBlock Text="小键盘 7"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag7TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Grid.Column="1" Spacing="6">
+                            <TextBlock Text="小键盘 8"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag8TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Grid.Column="2" Spacing="6">
+                            <TextBlock Text="小键盘 9"
+                                       Foreground="{ThemeResource MutedTextBrush}" />
+                            <TextBox x:Name="NumpadTag9TextBox"
+                                     PlaceholderText="未设置"
+                                     Style="{StaticResource GlassTextBoxStyle}" />
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
             </Border>
 

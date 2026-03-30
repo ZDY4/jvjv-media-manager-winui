@@ -18,9 +18,14 @@ public sealed class LibraryShellViewModel : ObservableObject
     private readonly ThumbnailService _thumbnails;
     private readonly HashSet<string> _sessionUnlockedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly SelectionViewModel _selection;
+    private readonly SemaphoreSlim _scanRefreshLock = new(1, 1);
+    private static readonly TimeSpan IncrementalScanRefreshInterval = TimeSpan.FromMilliseconds(350);
 
     private DispatcherQueue? _dispatcher;
     private int _refreshVersion;
+    private int _scanSessionId;
+    private int _pendingIncrementalScanRefresh;
+    private DateTimeOffset _lastIncrementalScanRefreshAt = DateTimeOffset.MinValue;
 
     private string _searchQuery = string.Empty;
     private bool _isLoading;
@@ -228,6 +233,8 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public string LockPassword => _settings.LockPassword;
 
+    public IReadOnlyList<string> NumpadTagShortcuts => _settings.NumpadTagShortcuts;
+
     public bool HasLockPassword => !string.IsNullOrWhiteSpace(LockPassword);
 
     public string CurrentScopeTitle => SelectedPlaylist?.Name ?? "全部媒体";
@@ -337,6 +344,9 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders, bool refreshMedia = true)
     {
+        var previousFolderPaths = WatchedFolders
+            .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
+            .ToList();
         var normalized = folders
             .Where(folder => !string.IsNullOrWhiteSpace(folder.Path))
             .GroupBy(folder => PathHelpers.NormalizeFolderPath(folder.Path), StringComparer.OrdinalIgnoreCase)
@@ -347,6 +357,11 @@ public sealed class LibraryShellViewModel : ObservableObject
             })
             .OrderBy(folder => folder.Path, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var currentFolderPaths = normalized
+            .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
+            .ToList();
+
+        RemoveMediaOutsideWatchedFolders(previousFolderPaths, currentFolderPaths);
 
         WatchedFolders.Clear();
         foreach (var folder in normalized)
@@ -360,6 +375,31 @@ public sealed class LibraryShellViewModel : ObservableObject
         {
             QueueRefreshMedia(false);
         }
+    }
+
+    private void RemoveMediaOutsideWatchedFolders(
+        IReadOnlyList<string> previousFolderPaths,
+        IReadOnlyList<string> currentFolderPaths)
+    {
+        var removedFolderPaths = previousFolderPaths
+            .Where(previous => currentFolderPaths.All(current => !string.Equals(current, previous, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (removedFolderPaths.Count == 0)
+        {
+            return;
+        }
+
+        var staleIds = _db.GetMediaEntriesUnderFolders(removedFolderPaths)
+            .Where(entry => currentFolderPaths.All(folder => !PathHelpers.IsPathUnderFolder(entry.Path, folder)))
+            .Select(entry => entry.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (staleIds.Count == 0)
+        {
+            return;
+        }
+
+        _db.DeleteMedia(staleIds);
     }
 
     public void RemoveSelectedTagFilter(string tag)
@@ -473,6 +513,36 @@ public sealed class LibraryShellViewModel : ObservableObject
         }
     }
 
+    public async Task<bool> TryApplyNumpadTagShortcutAsync(int digit, IEnumerable<MediaItemViewModel> items)
+    {
+        if (digit is < 1 or > 9)
+        {
+            return false;
+        }
+
+        var tag = NumpadTagShortcuts[digit - 1];
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return false;
+        }
+
+        var mediaItems = items
+            .Where(item => item != null)
+            .GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (mediaItems.Count == 0)
+        {
+            return false;
+        }
+
+        await UpdateTagsAsync(mediaItems, new[] { tag }, TagUpdateMode.Append);
+        StatusMessage = mediaItems.Count == 1
+            ? $"已为当前媒体追加标签：{tag}"
+            : $"已为 {mediaItems.Count} 个媒体追加标签：{tag}";
+        return true;
+    }
+
     public async Task<MediaItemViewModel?> DeleteMediaAsync(IEnumerable<MediaItemViewModel> items)
     {
         var list = items.ToList();
@@ -522,11 +592,15 @@ public sealed class LibraryShellViewModel : ObservableObject
         return replacement;
     }
 
-    public async Task RefreshMediaAsync(bool preserveSelection)
+    public async Task RefreshMediaAsync(bool preserveSelection, bool updateLoadingState = true)
     {
         var refreshVersion = Interlocked.Increment(ref _refreshVersion);
         var selectedId = preserveSelection ? SelectedMedia?.Id : null;
-        await RunOnUiThreadAsync(() => IsLoading = true);
+        if (updateLoadingState)
+        {
+            await RunOnUiThreadAsync(() => IsLoading = true);
+        }
+
         try
         {
             await FilteredMediaItems.RefreshAsync();
@@ -537,7 +611,7 @@ public sealed class LibraryShellViewModel : ObservableObject
         }
         finally
         {
-            if (refreshVersion == _refreshVersion)
+            if (updateLoadingState && refreshVersion == _refreshVersion)
             {
                 await RunOnUiThreadAsync(() => IsLoading = false);
             }
@@ -657,6 +731,12 @@ public sealed class LibraryShellViewModel : ObservableObject
         OnPropertyChanged(nameof(HasLockPassword));
     }
 
+    public void SetNumpadTagShortcuts(IReadOnlyList<string> shortcuts)
+    {
+        _settings.SetNumpadTagShortcuts(shortcuts);
+        OnPropertyChanged(nameof(NumpadTagShortcuts));
+    }
+
     public IReadOnlyList<WatchedFolder> GetProtectedFolders()
     {
         return WatchedFolders
@@ -740,6 +820,9 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     private async Task AddMediaInternalAsync(Func<Task<int>> loader, string successMessage)
     {
+        Interlocked.Increment(ref _scanSessionId);
+        Interlocked.Exchange(ref _pendingIncrementalScanRefresh, 0);
+        _lastIncrementalScanRefreshAt = DateTimeOffset.MinValue;
         IsLoading = true;
         await RunOnUiThreadAsync(() =>
         {
@@ -754,6 +837,9 @@ public sealed class LibraryShellViewModel : ObservableObject
         try
         {
             var added = await loader();
+            Interlocked.Increment(ref _scanSessionId);
+            await _scanRefreshLock.WaitAsync();
+            _scanRefreshLock.Release();
             await RefreshMediaAsync(true);
             await RunOnUiThreadAsync(() => StatusMessage = $"{successMessage} 新增或更新 {added} 个媒体。");
         }
@@ -812,6 +898,11 @@ public sealed class LibraryShellViewModel : ObservableObject
                     ? $"正在扫描 {progress.Scanned} 个媒体..."
                     : "准备扫描...";
         });
+
+        if (progress.ShouldRefreshLibrary && !progress.IsComplete)
+        {
+            RequestIncrementalScanRefresh();
+        }
     }
 
     private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source)
@@ -828,6 +919,67 @@ public sealed class LibraryShellViewModel : ObservableObject
     private void QueueRefreshMedia(bool preserveSelection)
     {
         _ = RefreshMediaAsync(preserveSelection);
+    }
+
+    private void RequestIncrementalScanRefresh()
+    {
+        if (!CanIncrementallyRefreshDuringScan())
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _pendingIncrementalScanRefresh, 1);
+        var scanSessionId = Volatile.Read(ref _scanSessionId);
+        _ = FlushIncrementalScanRefreshAsync(scanSessionId);
+    }
+
+    private async Task FlushIncrementalScanRefreshAsync(int scanSessionId)
+    {
+        if (!await _scanRefreshLock.WaitAsync(0))
+        {
+            return;
+        }
+
+        try
+        {
+            while (Interlocked.Exchange(ref _pendingIncrementalScanRefresh, 0) == 1)
+            {
+                if (scanSessionId != Volatile.Read(ref _scanSessionId))
+                {
+                    return;
+                }
+
+                var delay = _lastIncrementalScanRefreshAt + IncrementalScanRefreshInterval - DateTimeOffset.UtcNow;
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay);
+                }
+
+                if (scanSessionId != Volatile.Read(ref _scanSessionId) || !IsScanning)
+                {
+                    return;
+                }
+
+                await RefreshMediaAsync(true, updateLoadingState: false);
+                _lastIncrementalScanRefreshAt = DateTimeOffset.UtcNow;
+            }
+        }
+        finally
+        {
+            _scanRefreshLock.Release();
+        }
+    }
+
+    private bool CanIncrementallyRefreshDuringScan()
+    {
+        if (SelectedMedia == null)
+        {
+            return true;
+        }
+
+        return FilteredMediaItems
+            .Take(FilteredMediaItems.PageSize)
+            .Any(item => string.Equals(item.Id, SelectedMedia.Id, StringComparison.Ordinal));
     }
 
     private IReadOnlyList<string> GetActiveLockedFolderPaths()

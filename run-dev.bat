@@ -2,6 +2,7 @@
 setlocal
 
 set ROOT=%~dp0
+set JVJVMM_STORAGE_ROOT=%ROOT%data
 set CONFIG=Debug
 if not "%~1"=="" set CONFIG=%~1
 

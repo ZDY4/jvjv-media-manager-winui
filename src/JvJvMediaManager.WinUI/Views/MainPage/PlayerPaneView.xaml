@@ -64,6 +64,25 @@
                                FontWeight="SemiBold" />
                 </Border>
 
+                <Border HorizontalAlignment="Left"
+                        VerticalAlignment="Bottom"
+                        Margin="16,16,16,84"
+                        Padding="8,5"
+                        Background="#16000000"
+                        BorderBrush="#24FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="{ThemeResource RadiusMedium}"
+                        Visibility="{Binding ShortcutHintVisibility}"
+                        IsHitTestVisible="False">
+                    <TextBlock Text="{Binding ShortcutHintText}"
+                               Foreground="{ThemeResource TextBrush}"
+                               FontSize="10"
+                               FontWeight="Normal"
+                               Opacity="0.68"
+                               MaxWidth="240"
+                               TextWrapping="Wrap" />
+                </Border>
+
                 <mainPage:TransportControlBarView x:Name="TransportBar"
                                                   x:FieldModifier="public"
                                                   DataContext="{Binding VideoPlayback}" />

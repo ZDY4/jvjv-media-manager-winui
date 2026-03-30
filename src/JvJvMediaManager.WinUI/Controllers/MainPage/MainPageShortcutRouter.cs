@@ -25,4 +25,9 @@ public sealed class MainPageShortcutRouter
     {
         return _controller.HandleDeleteAcceleratorAsync();
     }
+
+    public bool HandleSplitClipAccelerator()
+    {
+        return _controller.HandleSplitClipAccelerator();
+    }
 }

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clip Timeline</title>
+  <link rel="stylesheet" href="./editor.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <button id="playPauseButton" class="tool-button" type="button">播放</button>
+        <button id="splitButton" class="tool-button" type="button">切开</button>
+        <button id="deleteButton" class="tool-button" type="button">删除</button>
+        <button id="exportButton" class="tool-button primary" type="button">导出</button>
+      </div>
+      <div class="toolbar-meta">
+        <span id="modeBadge" class="mode-badge">保留模式</span>
+        <span id="zoomBadge" class="meta-pill">100%</span>
+      </div>
+    </div>
+
+    <div id="emptyState" class="empty-state">
+      <div class="empty-title">正在等待时间线状态</div>
+      <div class="empty-body">WinUI 宿主加载视频后，这里会显示专业剪切时间线。</div>
+    </div>
+
+    <div id="workspace" class="workspace hidden">
+      <div id="timelineScroll" class="timeline-scroll" tabindex="0">
+        <div id="timelineCanvas" class="timeline-canvas">
+          <div id="ruler" class="ruler"></div>
+          <div id="previewLayer" class="preview-layer"></div>
+          <div id="segmentLayer" class="segment-layer"></div>
+          <div id="playhead" class="playhead"></div>
+        </div>
+      </div>
+      <div class="footer">
+        <div id="selectionLabel" class="footer-label">未选中片段</div>
+        <div id="statusLabel" class="footer-status">拖动边界修剪，拖动主体移动，单击只选中。</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./editor.js"></script>
+</body>
+</html>

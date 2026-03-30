@@ -15,7 +15,7 @@ public sealed class MediaLibraryService
     }
 
     private readonly MediaDb _db;
-    private const int BatchSize = 200;
+    private const int BatchSize = 80;
     private static readonly TimeSpan ProgressReportInterval = TimeSpan.FromMilliseconds(120);
     private const int ProgressReportBatchSize = 24;
 
@@ -225,6 +225,7 @@ public sealed class MediaLibraryService
                 {
                     _db.UpsertMediaBatch(batch);
                     persisted += batch.Count;
+                    ReportProgress(progress, processed, file, isComplete: false, isIndeterminate: true, progressStopwatch, ref lastReportedCount, shouldRefreshLibrary: true);
                     batch.Clear();
                 }
             }
@@ -233,7 +234,8 @@ public sealed class MediaLibraryService
             await Task.Yield();
         }
 
-        if (batch.Count > 0)
+        var flushedFinalBatch = batch.Count > 0;
+        if (flushedFinalBatch)
         {
             _db.UpsertMediaBatch(batch);
             persisted += batch.Count;
@@ -245,7 +247,7 @@ public sealed class MediaLibraryService
             return 0;
         }
 
-        progress?.Report(new ScanProgress(processed, processed, string.Empty, true));
+        progress?.Report(new ScanProgress(processed, processed, string.Empty, true, ShouldRefreshLibrary: flushedFinalBatch));
         return persisted;
     }
 
@@ -256,14 +258,15 @@ public sealed class MediaLibraryService
         bool isComplete,
         bool isIndeterminate,
         Stopwatch stopwatch,
-        ref int lastReportedCount)
+        ref int lastReportedCount,
+        bool shouldRefreshLibrary = false)
     {
         if (progress == null)
         {
             return;
         }
 
-        if (!isComplete)
+        if (!isComplete && !shouldRefreshLibrary)
         {
             var countDelta = processed - lastReportedCount;
             if (countDelta < ProgressReportBatchSize && stopwatch.Elapsed < ProgressReportInterval)
@@ -274,7 +277,7 @@ public sealed class MediaLibraryService
 
         lastReportedCount = processed;
         stopwatch.Restart();
-        progress.Report(new ScanProgress(processed, isIndeterminate ? 0 : processed, currentPath, isComplete, isIndeterminate));
+        progress.Report(new ScanProgress(processed, isIndeterminate ? 0 : processed, currentPath, isComplete, isIndeterminate, shouldRefreshLibrary));
     }
 
     private async Task<MediaFile?> ProcessFileAsync(string filePath)
@@ -358,4 +361,10 @@ public sealed class MediaLibraryService
     }
 }
 
-public readonly record struct ScanProgress(int Scanned, int Total, string CurrentPath, bool IsComplete, bool IsIndeterminate = false);
+public readonly record struct ScanProgress(
+    int Scanned,
+    int Total,
+    string CurrentPath,
+    bool IsComplete,
+    bool IsIndeterminate = false,
+    bool ShouldRefreshLibrary = false);

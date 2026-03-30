@@ -1,14 +1,12 @@
 using Microsoft.UI.Xaml;
 using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager;
 
 public partial class App : Application
 {
-    private static readonly string LogDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "JvJvMediaManager",
-        "logs");
+    private static string LogDirectory => AppDataPaths.GetLogsDirectory();
     public static Window? MainWindow { get; private set; }
     public MainPageModuleFactory MainPageModules { get; } = new();
 

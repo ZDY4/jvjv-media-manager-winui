@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
@@ -39,6 +40,11 @@ public sealed class VideoPlaybackController
     private readonly Random _random = new();
     private readonly DispatcherTimer _playbackTimer = new();
     private readonly DispatcherTimer _controlsHideTimer = new();
+    private readonly MenuFlyout _playbackModeFlyout;
+    private readonly RadioMenuFlyoutItem _listLoopModeItem;
+    private readonly RadioMenuFlyoutItem _singleLoopModeItem;
+    private readonly RadioMenuFlyoutItem _shuffleModeItem;
+    private readonly ToggleMenuFlyoutItem _autoAdvanceMenuItem;
 
     private MediaPlayer? _player;
     private bool _isSeeking;
@@ -46,7 +52,15 @@ public sealed class VideoPlaybackController
     private bool _isTransportSuppressed;
     private bool _progressSliderHandlersAttached;
     private double _lastNonZeroVolume = 0.8;
+    private bool _autoAdvanceEnabled = true;
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
+    private TimeSpan _lastPlaybackPosition;
+    private TimeSpan _lastPlaybackDuration;
+    private string? _currentTimeTextOverride;
+    private string? _totalTimeTextOverride;
+    private double? _progressValueOverrideSeconds;
+    private double? _progressMaximumOverrideSeconds;
+    private Func<TimeSpan, TimeSpan>? _displayToPlaybackPositionOverride;
     private const double VolumeWheelStep = 0.05;
 
     public VideoPlaybackController(
@@ -77,8 +91,18 @@ public sealed class VideoPlaybackController
         _refreshNavigationHotspots = refreshNavigationHotspots;
         _handleMediaOpened = handleMediaOpened;
         _notifyPlaybackProgressChanged = notifyPlaybackProgressChanged;
+        _playbackModeFlyout = new MenuFlyout();
+        _listLoopModeItem = CreatePlaybackModeItem("列表循环", PlaybackMode.ListLoop);
+        _singleLoopModeItem = CreatePlaybackModeItem("单曲循环", PlaybackMode.SingleLoop);
+        _shuffleModeItem = CreatePlaybackModeItem("随机播放", PlaybackMode.Shuffle);
+        _autoAdvanceMenuItem = new ToggleMenuFlyoutItem
+        {
+            Text = "是否自动切换下一个媒体",
+            IsChecked = true
+        };
 
         _transportBarView.ProgressSlider.Loaded += ProgressSlider_Loaded;
+        _transportBarView.ProgressSlider.KeyDown += ProgressSlider_KeyDown;
         _transportBarView.ProgressSlider.ValueChanged += ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click += PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click += VolumeButton_Click;
@@ -97,7 +121,13 @@ public sealed class VideoPlaybackController
         _playbackTimer.Tick += PlaybackTimer_Tick;
         _controlsHideTimer.Interval = TimeSpan.FromSeconds(2.5);
         _controlsHideTimer.Tick += ControlsHideTimer_Tick;
+        _autoAdvanceMenuItem.Click += AutoAdvanceMenuItem_Click;
 
+        _playbackModeFlyout.Items.Add(_listLoopModeItem);
+        _playbackModeFlyout.Items.Add(_singleLoopModeItem);
+        _playbackModeFlyout.Items.Add(_shuffleModeItem);
+        _playbackModeFlyout.Items.Add(new MenuFlyoutSeparator());
+        _playbackModeFlyout.Items.Add(_autoAdvanceMenuItem);
         UpdatePlaybackModeUi();
         UpdateFullScreenButtonUi();
         UpdateVolumeButtonUi();
@@ -110,9 +140,12 @@ public sealed class VideoPlaybackController
 
     public bool IsPlaying => _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
 
+    public bool IsShuffleMode => _playbackMode == PlaybackMode.Shuffle;
+
     public void Dispose()
     {
         _transportBarView.ProgressSlider.Loaded -= ProgressSlider_Loaded;
+        _transportBarView.ProgressSlider.KeyDown -= ProgressSlider_KeyDown;
         _transportBarView.ProgressSlider.ValueChanged -= ProgressSlider_ValueChanged;
         _transportBarView.PlayPauseButton.Click -= PlayPauseButton_Click;
         _transportBarView.VolumeButton.Click -= VolumeButton_Click;
@@ -127,6 +160,10 @@ public sealed class VideoPlaybackController
         _transportBarView.ControlBar.PointerMoved -= ControlBar_PointerMoved;
         _transportBarView.ControlBar.PointerPressed -= ControlBar_PointerPressed;
         _transportBarView.ProgressSlider.PointerCaptureLost -= ProgressSlider_PointerCaptureLost;
+        _listLoopModeItem.Click -= PlaybackModeMenuItem_Click;
+        _singleLoopModeItem.Click -= PlaybackModeMenuItem_Click;
+        _shuffleModeItem.Click -= PlaybackModeMenuItem_Click;
+        _autoAdvanceMenuItem.Click -= AutoAdvanceMenuItem_Click;
         _playbackTimer.Stop();
         _controlsHideTimer.Stop();
 
@@ -141,6 +178,7 @@ public sealed class VideoPlaybackController
     public void ShowVideo(MediaItemViewModel media)
     {
         var player = EnsureMediaPlayer();
+        LogPlaybackTrace($"ShowVideo file={media.FileName} path={media.FileSystemPath}");
         ShowVideoLoadingPreview(media);
         player.Source = MediaSource.CreateFromUri(new Uri(media.FileSystemPath));
         _videoPlayer.Visibility = Visibility.Visible;
@@ -166,10 +204,14 @@ public sealed class VideoPlaybackController
         CloseVolumeFlyout();
         _videoPlayer.Visibility = Visibility.Collapsed;
         HideVideoLoadingPreview();
-        _transportBarView.ProgressSlider.Value = 0;
-        _transportBarView.ProgressSlider.Maximum = 1;
-        _viewModel.CurrentTimeText = "0:00";
-        _viewModel.TotalTimeText = "0:00";
+        _lastPlaybackPosition = TimeSpan.Zero;
+        _lastPlaybackDuration = TimeSpan.Zero;
+        _currentTimeTextOverride = null;
+        _totalTimeTextOverride = null;
+        _progressValueOverrideSeconds = null;
+        _progressMaximumOverrideSeconds = null;
+        _displayToPlaybackPositionOverride = null;
+        UpdateTimeDisplay();
         SetPassiveState(showImageNavigation: false);
         _notifyPlaybackProgressChanged();
     }
@@ -310,9 +352,11 @@ public sealed class VideoPlaybackController
         var player = _player;
         if (player == null)
         {
+            LogPlaybackTrace($"SeekTo ignored because player is null requested={position.TotalSeconds:F3}s");
             return;
         }
 
+        var requested = position;
         var duration = player.PlaybackSession.NaturalDuration;
         if (position < TimeSpan.Zero)
         {
@@ -324,13 +368,27 @@ public sealed class VideoPlaybackController
         }
 
         player.PlaybackSession.Position = position;
-        if (!_isSeeking)
-        {
-            _transportBarView.ProgressSlider.Value = position.TotalSeconds;
-        }
-
-        _viewModel.CurrentTimeText = FormatTime(position);
+        LogPlaybackTrace($"SeekTo requested={requested.TotalSeconds:F3}s applied={position.TotalSeconds:F3}s duration={duration.TotalSeconds:F3}s");
+        _lastPlaybackPosition = position;
+        _lastPlaybackDuration = duration;
+        UpdateTimeDisplay();
         _notifyPlaybackProgressChanged();
+    }
+
+    public void SetPlaybackDisplayOverride(
+        string? currentTimeText,
+        string? totalTimeText,
+        double? progressValueSeconds,
+        double? progressMaximumSeconds,
+        Func<TimeSpan, TimeSpan>? displayToPlaybackPosition)
+    {
+        _currentTimeTextOverride = string.IsNullOrWhiteSpace(currentTimeText) ? null : currentTimeText;
+        _totalTimeTextOverride = string.IsNullOrWhiteSpace(totalTimeText) ? null : totalTimeText;
+        _progressValueOverrideSeconds = progressValueSeconds;
+        _progressMaximumOverrideSeconds = progressMaximumSeconds;
+        _displayToPlaybackPositionOverride = displayToPlaybackPosition;
+        LogPlaybackTrace($"SetPlaybackDisplayOverride current={_currentTimeTextOverride ?? "<default>"} total={_totalTimeTextOverride ?? "<default>"} progressValue={_progressValueOverrideSeconds?.ToString("F3") ?? "<default>"} progressMax={_progressMaximumOverrideSeconds?.ToString("F3") ?? "<default>"} mapper={(_displayToPlaybackPositionOverride != null)}");
+        UpdateTimeDisplay();
     }
 
     private void SetVideoState()
@@ -436,6 +494,10 @@ public sealed class VideoPlaybackController
 
         SetButtonGlyph(_transportBarView.PlaybackModeButton, glyph);
         ToolTipService.SetToolTip(_transportBarView.PlaybackModeButton, description);
+        _listLoopModeItem.IsChecked = _playbackMode == PlaybackMode.ListLoop;
+        _singleLoopModeItem.IsChecked = _playbackMode == PlaybackMode.SingleLoop;
+        _shuffleModeItem.IsChecked = _playbackMode == PlaybackMode.Shuffle;
+        _autoAdvanceMenuItem.IsChecked = _autoAdvanceEnabled;
     }
 
     private void UpdateVolumeButtonUi()
@@ -504,12 +566,61 @@ public sealed class VideoPlaybackController
         SeekToSlider();
         _isSeeking = false;
         UpdatePlayPauseState();
+        _focusHost();
+        ShowControls();
+    }
+
+    private async void ProgressSlider_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (_libraryViewModel.SelectedMedia == null)
+        {
+            return;
+        }
+
+        if (e.Key == Windows.System.VirtualKey.Left)
+        {
+            await _navigateRelativeAsync(-1);
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.Right)
+        {
+            await _navigateRelativeAsync(1);
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.Up && _libraryViewModel.SelectedMedia.Type == MediaType.Video)
+        {
+            SeekRelative(-5);
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.Down && _libraryViewModel.SelectedMedia.Type == MediaType.Video)
+        {
+            SeekRelative(5);
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.PageUp)
+        {
+            await _navigateRelativeAsync(-1);
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.PageDown)
+        {
+            await _navigateRelativeAsync(1);
+            e.Handled = true;
+        }
+
+        if (!e.Handled)
+        {
+            return;
+        }
+
+        _focusHost();
         ShowControls();
     }
 
     private void SeekToSlider()
     {
-        var target = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
+        var displayTarget = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
+        var target = _displayToPlaybackPositionOverride?.Invoke(displayTarget) ?? displayTarget;
         SeekTo(target);
     }
 
@@ -520,7 +631,8 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        var target = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
+        var displayTarget = TimeSpan.FromSeconds(_transportBarView.ProgressSlider.Value);
+        var target = _displayToPlaybackPositionOverride?.Invoke(displayTarget) ?? displayTarget;
         SeekTo(target);
     }
 
@@ -561,13 +673,37 @@ public sealed class VideoPlaybackController
     private void PlaybackModeButton_Click(object sender, RoutedEventArgs e)
     {
         CloseVolumeFlyout();
-        _playbackMode = _playbackMode switch
-        {
-            PlaybackMode.ListLoop => PlaybackMode.SingleLoop,
-            PlaybackMode.SingleLoop => PlaybackMode.Shuffle,
-            _ => PlaybackMode.ListLoop
-        };
+        _playbackModeFlyout.ShowAt(_transportBarView.PlaybackModeButton);
+        ShowControls();
+    }
 
+    private RadioMenuFlyoutItem CreatePlaybackModeItem(string text, PlaybackMode mode)
+    {
+        var item = new RadioMenuFlyoutItem
+        {
+            Text = text,
+            GroupName = "PlaybackMode",
+            Tag = mode
+        };
+        item.Click += PlaybackModeMenuItem_Click;
+        return item;
+    }
+
+    private void PlaybackModeMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioMenuFlyoutItem item || item.Tag is not PlaybackMode mode || _playbackMode == mode)
+        {
+            return;
+        }
+
+        _playbackMode = mode;
+        UpdatePlaybackModeUi();
+        ShowControls();
+    }
+
+    private void AutoAdvanceMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        _autoAdvanceEnabled = _autoAdvanceMenuItem.IsChecked;
         UpdatePlaybackModeUi();
         ShowControls();
     }
@@ -651,14 +787,10 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        if (!_isSeeking)
-        {
-            _transportBarView.ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
-            _transportBarView.ProgressSlider.Value = player.PlaybackSession.Position.TotalSeconds;
-        }
+        _lastPlaybackPosition = player.PlaybackSession.Position;
+        _lastPlaybackDuration = duration;
 
-        _viewModel.CurrentTimeText = FormatTime(player.PlaybackSession.Position);
-        _viewModel.TotalTimeText = FormatTime(duration);
+        UpdateTimeDisplay();
         _notifyPlaybackProgressChanged();
     }
 
@@ -668,9 +800,10 @@ public sealed class VideoPlaybackController
         _dispatcherQueue.TryEnqueue(() =>
         {
             HideVideoLoadingPreview();
-            _transportBarView.ProgressSlider.Maximum = Math.Max(1, duration.TotalSeconds);
-            _viewModel.TotalTimeText = FormatTime(duration);
-            _viewModel.CurrentTimeText = "0:00";
+            LogPlaybackTrace($"MediaOpened duration={duration.TotalSeconds:F3}s");
+            _lastPlaybackPosition = TimeSpan.Zero;
+            _lastPlaybackDuration = duration;
+            UpdateTimeDisplay();
             _handleMediaOpened(duration);
             _notifyPlaybackProgressChanged();
         });
@@ -685,7 +818,7 @@ public sealed class VideoPlaybackController
                 return;
             }
 
-            if (_playbackMode == PlaybackMode.SingleLoop)
+            if (!_autoAdvanceEnabled || _playbackMode == PlaybackMode.SingleLoop)
             {
                 sender.PlaybackSession.Position = TimeSpan.Zero;
                 sender.Play();
@@ -694,7 +827,12 @@ public sealed class VideoPlaybackController
 
             if (_playbackMode == PlaybackMode.Shuffle)
             {
-                NavigateRandom();
+                if (!TrySelectRandomMedia())
+                {
+                    sender.PlaybackSession.Position = TimeSpan.Zero;
+                    sender.Play();
+                }
+
                 return;
             }
 
@@ -707,26 +845,25 @@ public sealed class VideoPlaybackController
         _dispatcherQueue.TryEnqueue(UpdatePlayPauseState);
     }
 
-    private void NavigateRandom()
+    public bool TrySelectRandomMedia()
     {
         var list = _libraryViewModel.FilteredMediaItems;
         if (list.Count == 0 || _libraryViewModel.SelectedMedia == null)
         {
-            return;
+            return false;
         }
 
-        var currentIndex = list.IndexOf(_libraryViewModel.SelectedMedia);
-        var nextIndex = currentIndex;
-
-        if (list.Count > 1)
+        var currentMediaId = _libraryViewModel.SelectedMedia.Id;
+        var candidates = list
+            .Where(item => !string.Equals(item.Id, currentMediaId, StringComparison.Ordinal))
+            .ToList();
+        if (candidates.Count == 0)
         {
-            while (nextIndex == currentIndex)
-            {
-                nextIndex = _random.Next(list.Count);
-            }
+            return false;
         }
 
-        _libraryViewModel.SelectedMedia = list[nextIndex];
+        _libraryViewModel.SelectedMedia = candidates[_random.Next(candidates.Count)];
+        return true;
     }
 
     private static string FormatTime(TimeSpan value)
@@ -739,6 +876,25 @@ public sealed class VideoPlaybackController
         return hours > 0
             ? $"{hours}:{minutes:00}:{seconds:00}"
             : $"{minutes}:{seconds:00}";
+    }
+
+    private void UpdateTimeDisplay()
+    {
+        _viewModel.CurrentTimeText = _currentTimeTextOverride ?? FormatTime(_lastPlaybackPosition);
+        _viewModel.TotalTimeText = _totalTimeTextOverride ?? FormatTime(_lastPlaybackDuration);
+
+        var progressMaximum = _progressMaximumOverrideSeconds ?? _lastPlaybackDuration.TotalSeconds;
+        if (progressMaximum <= 0)
+        {
+            progressMaximum = 1;
+        }
+
+        _transportBarView.ProgressSlider.Maximum = progressMaximum;
+        if (!_isSeeking)
+        {
+            var progressValue = _progressValueOverrideSeconds ?? _lastPlaybackPosition.TotalSeconds;
+            _transportBarView.ProgressSlider.Value = Math.Clamp(progressValue, 0, progressMaximum);
+        }
     }
 
     private static void SetButtonGlyph(Button button, string glyph)
@@ -820,6 +976,12 @@ public sealed class VideoPlaybackController
         }
 
         return false;
+    }
+
+    private void LogPlaybackTrace(string message)
+    {
+        var mediaId = _libraryViewModel.SelectedMedia?.Id ?? "<none>";
+        AppTraceLogger.Log("VideoPlayback", $"mediaId={mediaId} {message}");
     }
 
 }

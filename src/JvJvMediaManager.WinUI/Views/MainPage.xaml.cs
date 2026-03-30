@@ -89,4 +89,12 @@ public sealed partial class MainPage : Page
             args.Handled = true;
         }
     }
+
+    private void SplitClipKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_shortcutRouter?.HandleSplitClipAccelerator() == true)
+        {
+            args.Handled = true;
+        }
+    }
 }

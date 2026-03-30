@@ -9,6 +9,8 @@ public sealed class PlayerShellViewModel : ObservableObject
     private Visibility _playerInfoVisibility = Visibility.Collapsed;
     private string _playerFileName = string.Empty;
     private string _playerResolution = string.Empty;
+    private Visibility _shortcutHintVisibility = Visibility.Collapsed;
+    private string _shortcutHintText = string.Empty;
 
     public PlayerShellViewModel(SelectionViewModel selection)
     {
@@ -48,5 +50,17 @@ public sealed class PlayerShellViewModel : ObservableObject
     {
         get => _playerResolution;
         set => SetProperty(ref _playerResolution, value);
+    }
+
+    public Visibility ShortcutHintVisibility
+    {
+        get => _shortcutHintVisibility;
+        set => SetProperty(ref _shortcutHintVisibility, value);
+    }
+
+    public string ShortcutHintText
+    {
+        get => _shortcutHintText;
+        set => SetProperty(ref _shortcutHintText, value);
     }
 }

@@ -1,18 +1,18 @@
 using System.Text.Json;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services;
 
 public sealed class SettingsService
 {
+    private const int NumpadShortcutCount = 9;
     private readonly string _settingsPath;
     private SettingsModel _settings;
 
     public SettingsService()
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JvJvMediaManager");
-        Directory.CreateDirectory(root);
-        _settingsPath = Path.Combine(root, "settings.json");
+        _settingsPath = AppDataPaths.GetSettingsPath();
         _settings = LoadInternal();
     }
 
@@ -35,6 +35,8 @@ public sealed class SettingsService
     public IReadOnlyList<WatchedFolder> WatchedFolders => _settings.WatchedFolders;
 
     public string LockPassword => _settings.LockPassword ?? string.Empty;
+
+    public IReadOnlyList<string> NumpadTagShortcuts => NormalizeNumpadTagShortcuts(_settings.NumpadTagShortcuts);
 
     public void SetDataDir(string path)
     {
@@ -64,15 +66,20 @@ public sealed class SettingsService
         Save();
     }
 
+    public void SetNumpadTagShortcuts(IReadOnlyList<string> shortcuts)
+    {
+        _settings.NumpadTagShortcuts = NormalizeNumpadTagShortcuts(shortcuts);
+        Save();
+    }
+
     public string GetDefaultDataDir()
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JvJvMediaManager");
-        return Path.Combine(root, "data");
+        return AppDataPaths.GetStorageRoot();
     }
 
     public string GetPortableDataDir()
     {
-        return Path.Combine(AppContext.BaseDirectory, "data");
+        return AppDataPaths.GetStorageRoot();
     }
 
     public string GetThumbnailCacheDir()
@@ -113,11 +120,26 @@ public sealed class SettingsService
         File.WriteAllText(_settingsPath, json);
     }
 
+    private static List<string> NormalizeNumpadTagShortcuts(IReadOnlyList<string>? shortcuts)
+    {
+        var normalized = new List<string>(NumpadShortcutCount);
+        for (var i = 0; i < NumpadShortcutCount; i++)
+        {
+            var value = shortcuts != null && i < shortcuts.Count
+                ? shortcuts[i]?.Trim()
+                : string.Empty;
+            normalized.Add(string.IsNullOrWhiteSpace(value) ? string.Empty : value);
+        }
+
+        return normalized;
+    }
+
     private sealed class SettingsModel
     {
         public string? DataDir { get; set; }
         public bool PortableMode { get; set; }
         public List<WatchedFolder> WatchedFolders { get; set; } = new();
         public string? LockPassword { get; set; }
+        public List<string> NumpadTagShortcuts { get; set; } = new();
     }
 }

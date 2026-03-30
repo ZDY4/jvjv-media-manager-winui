@@ -101,35 +101,17 @@ public sealed class MainPageModuleFactory
             notifyPlaybackProgressChanged);
     }
 
-    public ClipEditorController CreateClipEditorController(
-        LibraryShellViewModel library,
+    public IClipTimelineEditor CreateClipEditorController(
+        IClipEditorHost host,
         ClipEditorViewModel viewModel,
         Microsoft.UI.Xaml.Controls.Button clipModeToggleButton,
-        ClipEditorBarView clipBarView,
-        DialogWorkflowCoordinator dialogCoordinator,
-        Func<TimeSpan> getCurrentPlaybackPosition,
-        Func<TimeSpan> getCurrentVideoDuration,
-        Action<TimeSpan> seekPlaybackPosition,
-        Action togglePlayPause,
-        Func<bool> isPlaybackPlaying,
-        Action<bool> setTransportSuppressed,
-        Action<IEnumerable<string>> updateWatchedFolders,
-        Action showControls)
+        ClipEditorBarView clipBarView)
     {
         return new ClipEditorController(
-            library,
+            host,
             viewModel,
             clipModeToggleButton,
-            clipBarView,
-            dialogCoordinator,
-            getCurrentPlaybackPosition,
-            getCurrentVideoDuration,
-            seekPlaybackPosition,
-            togglePlayPause,
-            isPlaybackPlaying,
-            setTransportSuppressed,
-            updateWatchedFolders,
-            showControls);
+            clipBarView);
     }
 
     public ImagePreviewController CreateImagePreviewController(
