@@ -2,7 +2,23 @@
     x:Class="JvJvMediaManager.Views.MainPageParts.PlayerPaneView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:mainPage="using:JvJvMediaManager.Views.MainPageParts">
+    xmlns:mainPage="using:JvJvMediaManager.Views.MainPageParts"
+    xmlns:viewModels="using:JvJvMediaManager.ViewModels.MainPage">
+
+    <UserControl.Resources>
+        <Style x:Key="ShortcutHintButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="4,2" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="FontWeight" Value="Normal" />
+        </Style>
+    </UserControl.Resources>
 
     <Border x:Name="PlayerShell"
             Margin="0"
@@ -64,7 +80,9 @@
                                FontWeight="SemiBold" />
                 </Border>
 
-                <Border HorizontalAlignment="Left"
+                <Border x:Name="ShortcutHintContainer"
+                        x:FieldModifier="public"
+                        HorizontalAlignment="Left"
                         VerticalAlignment="Bottom"
                         Margin="16,16,16,84"
                         Padding="8,5"
@@ -72,15 +90,39 @@
                         BorderBrush="#24FFFFFF"
                         BorderThickness="1"
                         CornerRadius="{ThemeResource RadiusMedium}"
-                        Visibility="{Binding ShortcutHintVisibility}"
-                        IsHitTestVisible="False">
-                    <TextBlock Text="{Binding ShortcutHintText}"
-                               Foreground="{ThemeResource TextBrush}"
-                               FontSize="10"
-                               FontWeight="Normal"
-                               Opacity="0.68"
-                               MaxWidth="240"
-                               TextWrapping="Wrap" />
+                        Visibility="{Binding ShortcutHintVisibility}">
+                    <StackPanel MaxWidth="240"
+                                Spacing="2">
+                        <TextBlock Text="{Binding ShortcutHintEmptyStateText}"
+                                   Visibility="{Binding ShortcutHintEmptyStateVisibility}"
+                                   Foreground="{ThemeResource TextBrush}"
+                                   FontSize="10"
+                                   FontWeight="Normal"
+                                   Opacity="0.68"
+                                   TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{Binding ShortcutHintItems}"
+                                      Visibility="{Binding ShortcutHintItemsVisibility}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Spacing="2" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="viewModels:NumpadTagShortcutHintItem">
+                                    <Button Click="ShortcutHintButton_Click"
+                                            Style="{StaticResource ShortcutHintButtonStyle}"
+                                            Tag="{Binding Digit}">
+                                        <TextBlock Text="{Binding DisplayText}"
+                                                   Foreground="{ThemeResource TextBrush}"
+                                                   FontSize="10"
+                                                   FontWeight="Normal"
+                                                   Opacity="0.78"
+                                                   TextWrapping="Wrap" />
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </Border>
 
                 <mainPage:TransportControlBarView x:Name="TransportBar"

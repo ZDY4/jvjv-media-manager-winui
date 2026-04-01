@@ -116,7 +116,8 @@
 
                     <ToggleSwitch x:Name="PortableToggle"
                                   x:FieldModifier="public"
-                                  Header="便携模式（数据保存在程序目录 data）" />
+                                  Header="便携模式（默认开启）"
+                                  ToolTipService.ToolTip="开启后，数据库、配置和缓存会固定保存在程序目录下的 data 文件夹里，适合跟随整个软件文件夹一起移动。关闭后，应用才会使用下方的数据目录设置。切换后建议重启应用。" />
 
                     <StackPanel Spacing="8">
                         <TextBlock Text="数据目录"
@@ -211,7 +212,7 @@
                                FontSize="16"
                                FontWeight="SemiBold" />
 
-                    <TextBlock Text="设置后，可在媒体库中按小键盘 1-9，为当前选中的媒体追加对应标签。留空表示不启用该数字。"
+                    <TextBlock Text="设置后，可在播放器中按小键盘 1-9，或点击左下角提示，为当前播放/预览的媒体追加对应标签。留空表示不启用该数字。"
                                Foreground="{ThemeResource MutedTextBrush}"
                                TextWrapping="Wrap" />
 

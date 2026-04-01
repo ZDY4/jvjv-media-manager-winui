@@ -20,7 +20,7 @@ public sealed class DialogWorkflowCoordinator
         _playlistCoordinator = new PlaylistDialogCoordinator(dialogService);
     }
 
-    public Task<SettingsDialogResult?> ShowSettingsDialogAsync()
+    public Task ShowSettingsDialogAsync()
     {
         return _settingsCoordinator.ShowAsync();
     }

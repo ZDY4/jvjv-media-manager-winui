@@ -30,7 +30,7 @@ public sealed class SettingsService
 
     public string? ConfiguredDataDir => _settings.DataDir;
 
-    public bool PortableMode => _settings.PortableMode;
+    public bool PortableMode => _settings.PortableMode ?? true;
 
     public IReadOnlyList<WatchedFolder> WatchedFolders => _settings.WatchedFolders;
 
@@ -40,11 +40,9 @@ public sealed class SettingsService
 
     public void SetDataDir(string path)
     {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-        _settings.DataDir = path;
+        _settings.DataDir = string.IsNullOrWhiteSpace(path)
+            ? null
+            : path.Trim();
         Save();
     }
 
@@ -137,7 +135,7 @@ public sealed class SettingsService
     private sealed class SettingsModel
     {
         public string? DataDir { get; set; }
-        public bool PortableMode { get; set; }
+        public bool? PortableMode { get; set; } = true;
         public List<WatchedFolder> WatchedFolders { get; set; } = new();
         public string? LockPassword { get; set; }
         public List<string> NumpadTagShortcuts { get; set; } = new();

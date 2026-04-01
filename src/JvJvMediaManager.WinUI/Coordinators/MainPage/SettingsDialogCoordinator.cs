@@ -17,9 +17,14 @@ public sealed class SettingsDialogCoordinator
         _dialogService = dialogService;
     }
 
-    public async Task<SettingsDialogResult?> ShowAsync()
+    public async Task ShowAsync()
     {
         var panel = new SettingsPanel(_viewModel);
+        panel.PortableModeCommitted += (_, _) => _viewModel.SetPortableMode(panel.PortableModeEnabled);
+        panel.DataDirectoryCommitted += (_, _) => _viewModel.SetDataDir(panel.DataDirectory);
+        panel.GlobalPasswordCommitted += (_, _) => PersistGlobalPassword(panel);
+        panel.NumpadTagShortcutsCommitted += (_, _) => _viewModel.SetNumpadTagShortcuts(panel.GetNumpadTagShortcuts());
+        panel.WatchedFoldersChanged += (_, _) => PersistWatchedFolders(panel);
 
         panel.ChooseDataDirButton.Click += async (_, _) =>
         {
@@ -33,6 +38,7 @@ public sealed class SettingsDialogCoordinator
             if (!string.IsNullOrWhiteSpace(folder))
             {
                 panel.SetDataDirectory(folder);
+                panel.CommitDataDirectory();
             }
         };
 
@@ -69,29 +75,34 @@ public sealed class SettingsDialogCoordinator
         {
             Title = "设置",
             Content = panel,
-            PrimaryButtonText = "保存",
             CloseButtonText = "关闭",
-            DefaultButton = ContentDialogButton.Primary
         };
 
-        if (await _dialogService.ShowAsync(dialog) != ContentDialogResult.Primary)
-        {
-            return null;
-        }
+        await _dialogService.ShowAsync(dialog);
+    }
 
+    private void PersistGlobalPassword(SettingsPanel panel)
+    {
         if (panel.HasProtectedFoldersWithoutPassword())
         {
-            await _dialogService.ShowInfoAsync("设置未保存", "存在受保护文件夹时必须设置全局密码。");
-            return null;
+            panel.SetValidationMessage("存在受保护文件夹时必须设置全局密码。");
+            return;
         }
 
-        return new SettingsDialogResult
+        panel.ClearValidationMessage();
+        _viewModel.SetLockPassword(panel.GlobalPassword);
+    }
+
+    private void PersistWatchedFolders(SettingsPanel panel)
+    {
+        if (panel.HasProtectedFoldersWithoutPassword())
         {
-            PortableModeEnabled = panel.PortableModeEnabled,
-            DataDirectory = panel.DataDirectory,
-            GlobalPassword = panel.GlobalPassword,
-            WatchedFolders = panel.GetWatchedFolders(),
-            NumpadTagShortcuts = panel.GetNumpadTagShortcuts()
-        };
+            panel.SetValidationMessage("存在受保护文件夹时必须设置全局密码。");
+            return;
+        }
+
+        panel.ClearValidationMessage();
+        _viewModel.SetLockPassword(panel.GlobalPassword);
+        _viewModel.UpdateWatchedFolders(panel.GetWatchedFolders());
     }
 }

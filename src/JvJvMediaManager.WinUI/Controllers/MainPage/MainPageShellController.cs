@@ -155,6 +155,7 @@ public sealed class MainPageShellController
             RefreshPlayerNavigationHotspots);
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         ViewModel.SetDispatcher(_page.DispatcherQueue);
+        _playerPane.ShortcutHintInvoked += PlayerPane_ShortcutHintInvoked;
         PlayerRoot.PointerMoved += PlayerRoot_PointerMoved;
         PlayerRoot.PointerPressed += PlayerRoot_PointerPressed;
         PlayerRoot.PointerExited += PlayerRoot_PointerExited;
@@ -194,6 +195,7 @@ public sealed class MainPageShellController
     public void Dispose()
     {
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        _playerPane.ShortcutHintInvoked -= PlayerPane_ShortcutHintInvoked;
         _mediaBrowserController.Dispose();
         _playlistRailCoordinator.Dispose();
         _libraryPaneController.Dispose();
@@ -463,6 +465,13 @@ public sealed class MainPageShellController
         }
     }
 
+    private async void PlayerPane_ShortcutHintInvoked(object? sender, int digit)
+    {
+        await ExecuteUiActionAsync(
+            () => TryApplyNumpadTagShortcutAsync(digit),
+            "快捷标签添加失败");
+    }
+
     public bool HandlePlayPauseAccelerator()
     {
         if (!TryTogglePlaybackFromShortcut())
@@ -600,23 +609,28 @@ public sealed class MainPageShellController
 
     private void ToggleNumpadShortcutHint()
     {
-        RefreshNumpadShortcutHintText();
+        RefreshNumpadShortcutHint();
         _shell.Player.ShortcutHintVisibility = _shell.Player.ShortcutHintVisibility == Visibility.Visible
             ? Visibility.Collapsed
             : Visibility.Visible;
     }
 
-    private void RefreshNumpadShortcutHintText()
+    private void RefreshNumpadShortcutHint()
     {
-        var lines = ViewModel.NumpadTagShortcuts
+        var items = ViewModel.NumpadTagShortcuts
             .Select((tag, index) => new { Tag = tag, Digit = index + 1 })
             .Where(item => !string.IsNullOrWhiteSpace(item.Tag))
-            .Select(item => $"{item.Digit}  {item.Tag}")
             .ToList();
 
-        _shell.Player.ShortcutHintText = lines.Count == 0
-            ? "未设置数字快捷标签"
-            : string.Join(Environment.NewLine, lines);
+        _shell.Player.ShortcutHintItems.Clear();
+        foreach (var item in items)
+        {
+            _shell.Player.ShortcutHintItems.Add(new NumpadTagShortcutHintItem
+            {
+                Digit = item.Digit,
+                Tag = item.Tag
+            });
+        }
     }
 
     private async Task<bool> TryApplyNumpadTagShortcutAsync(Windows.System.VirtualKey key)
@@ -639,8 +653,18 @@ public sealed class MainPageShellController
             return false;
         }
 
-        var selected = GetCommandSelection();
-        return await ViewModel.TryApplyNumpadTagShortcutAsync(digit, selected);
+        return await TryApplyNumpadTagShortcutAsync(digit);
+    }
+
+    private async Task<bool> TryApplyNumpadTagShortcutAsync(int digit)
+    {
+        var currentMedia = GetCurrentPlayerMedia();
+        if (currentMedia == null)
+        {
+            return false;
+        }
+
+        return await ViewModel.TryApplyNumpadTagShortcutAsync(digit, new[] { currentMedia });
     }
 
     private void TogglePlayPause()
@@ -982,6 +1006,11 @@ public sealed class MainPageShellController
         return GetSelectedItems().FirstOrDefault() ?? ViewModel.SelectedMedia;
     }
 
+    private MediaItemViewModel? GetCurrentPlayerMedia()
+    {
+        return ViewModel.SelectedMedia;
+    }
+
     private IReadOnlyList<MediaItemViewModel> GetCommandSelection()
     {
         var selected = GetSelectedItems().ToList();
@@ -1115,6 +1144,7 @@ public sealed class MainPageShellController
                 || ReferenceEquals(source, NextMediaHotspot)
                 || ReferenceEquals(source, PreviousMediaCue)
                 || ReferenceEquals(source, NextMediaCue)
+                || ReferenceEquals(source, _playerPane.ShortcutHintContainer)
                 || ReferenceEquals(source, _playerPane.ClipBarView.ClipBar))
             {
                 return true;
@@ -1261,23 +1291,8 @@ public sealed class MainPageShellController
 
     private async Task ApplySettingsAsync()
     {
-        var result = await _dialogCoordinator.ShowSettingsDialogAsync();
-        if (result == null)
-        {
-            return;
-        }
-
-        ViewModel.SetPortableMode(result.PortableModeEnabled);
-        if (!string.IsNullOrWhiteSpace(result.DataDirectory))
-        {
-            ViewModel.SetDataDir(result.DataDirectory);
-        }
-
-        ViewModel.SetLockPassword(result.GlobalPassword);
-        ViewModel.UpdateWatchedFolders(result.WatchedFolders);
-        ViewModel.SetNumpadTagShortcuts(result.NumpadTagShortcuts);
-        RefreshNumpadShortcutHintText();
-        await ShowInfoDialogAsync("设置已保存", "设置已写入。若切换了数据目录或便携模式，重启后会使用新的数据位置。");
+        await _dialogCoordinator.ShowSettingsDialogAsync();
+        RefreshNumpadShortcutHint();
     }
 
     private async Task<bool> ConfirmAsync(string title, string message, string primaryButtonText)

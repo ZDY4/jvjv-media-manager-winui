@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.ViewModels.MainPage;
@@ -8,6 +9,16 @@ namespace JvJvMediaManager.Views.Controls;
 public sealed partial class SettingsPanel : UserControl
 {
     private readonly TextBox[] _numpadTagTextBoxes;
+
+    public event EventHandler? PortableModeCommitted;
+
+    public event EventHandler? DataDirectoryCommitted;
+
+    public event EventHandler? GlobalPasswordCommitted;
+
+    public event EventHandler? NumpadTagShortcutsCommitted;
+
+    public event EventHandler? WatchedFoldersChanged;
 
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
 
@@ -29,7 +40,7 @@ public sealed partial class SettingsPanel : UserControl
         ];
 
         PortableToggle.IsOn = viewModel.PortableMode;
-        DataDirTextBox.Text = viewModel.ConfiguredDataDir ?? viewModel.DataDir;
+        DataDirTextBox.Text = viewModel.ConfiguredDataDir ?? string.Empty;
         GlobalPasswordBox.Password = viewModel.LockPassword;
         for (var i = 0; i < _numpadTagTextBoxes.Length; i++)
         {
@@ -47,6 +58,13 @@ public sealed partial class SettingsPanel : UserControl
 
         WatchedFoldersList.ItemsSource = WatchedFolders;
         WatchedFoldersList.SelectionChanged += WatchedFoldersList_SelectionChanged;
+        PortableToggle.Toggled += PortableToggle_Toggled;
+        DataDirTextBox.LostFocus += DataDirTextBox_LostFocus;
+        GlobalPasswordBox.LostFocus += GlobalPasswordBox_LostFocus;
+        foreach (var textBox in _numpadTagTextBoxes)
+        {
+            textBox.LostFocus += NumpadTagTextBox_LostFocus;
+        }
 
         if (WatchedFolders.Count > 0)
         {
@@ -81,6 +99,16 @@ public sealed partial class SettingsPanel : UserControl
         DataDirTextBox.Text = path;
     }
 
+    public void CommitDataDirectory()
+    {
+        DataDirectoryCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void CommitGlobalPassword()
+    {
+        GlobalPasswordCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
     public bool TryAddWatchedFolder(string folder)
     {
         if (string.IsNullOrWhiteSpace(folder)
@@ -94,6 +122,7 @@ public sealed partial class SettingsPanel : UserControl
         WatchedFoldersList.SelectedItem = watchedFolder;
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -112,6 +141,7 @@ public sealed partial class SettingsPanel : UserControl
         WatchedFolders.Clear();
         WatchedFoldersList.SelectedIndex = -1;
         RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public bool ProtectSelectedFolder()
@@ -132,6 +162,7 @@ public sealed partial class SettingsPanel : UserControl
         RefreshWatchedFolderCollection(folder);
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -147,6 +178,7 @@ public sealed partial class SettingsPanel : UserControl
         RefreshWatchedFolderCollection(folder);
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -170,6 +202,26 @@ public sealed partial class SettingsPanel : UserControl
     private void WatchedFoldersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         RefreshWatchedFolderStatus();
+    }
+
+    private void PortableToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        PortableModeCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void DataDirTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        DataDirectoryCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void GlobalPasswordBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        GlobalPasswordCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void NumpadTagTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        NumpadTagShortcutsCommitted?.Invoke(this, EventArgs.Empty);
     }
 
     private void RemoveWatchedFolderItemButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -223,5 +275,6 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
 }
