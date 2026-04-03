@@ -590,9 +590,17 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
         tx.Commit();
     }
 
-    public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaIds)
+public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaIds)
     {
-        var mediaIdList = mediaIds.ToList();
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        var mediaIdList = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList();
+
         if (mediaIdList.Count == 0)
         {
             return false;
