@@ -272,13 +272,33 @@ public sealed partial class SettingsPanel : UserControl
     {
         if (SelectedWatchedFolder is not WatchedFolder folder)
         {
-            WatchedFolderStatusText.Text = "选中文件夹后，可设置是否受密码保护。";
+            WatchedFolderStatusText.Text = "选中文件夹后，可设置是否受密码保护或是否在媒体库中显示。";
             return;
         }
 
-        WatchedFolderStatusText.Text = folder.Locked
-            ? $"当前状态：受保护。运行时可在“锁定管理”里输入密码解锁 {Path.GetFileName(folder.Path)}。"
-            : "当前状态：未受保护。该文件夹中的媒体始终可见。";
+        var statusParts = new List<string>();
+
+        if (!folder.Visible)
+        {
+            statusParts.Add("已隐藏");
+        }
+
+        if (folder.Locked)
+        {
+            statusParts.Add("受保护");
+        }
+
+        var statusText = statusParts.Count == 0
+            ? "未受保护"
+            : string.Join("、", statusParts);
+
+        var instructionText = folder.Locked
+            ? $"运行时可在\u201C锁定管理\u201D里输入密码解锁 {Path.GetFileName(folder.Path)}。"
+            : folder.Visible
+                ? "该文件夹中的媒体在媒体库中可见。"
+                : "该文件夹中的媒体已从媒体库隐藏，不会在扫描时处理。";
+
+        WatchedFolderStatusText.Text = $"当前状态：{statusText}。{instructionText}";
     }
 
     private void RefreshWatchedFolderCollection(WatchedFolder selectedFolder)
