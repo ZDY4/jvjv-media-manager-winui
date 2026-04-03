@@ -24,6 +24,7 @@ public sealed class WatchedFolder
 {
     public string Path { get; set; } = string.Empty;
     public bool Locked { get; set; }
+    public bool Visible { get; set; } = true;
 }
 
 public sealed class MediaFile
