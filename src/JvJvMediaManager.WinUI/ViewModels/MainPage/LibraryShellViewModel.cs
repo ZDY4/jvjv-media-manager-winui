@@ -708,12 +708,30 @@ public sealed class LibraryShellViewModel : ObservableObject
     public async Task AddMediaToPlaylistAsync(string playlistId, IEnumerable<MediaItemViewModel> items)
     {
         _db.AddMediaToPlaylist(playlistId, items.Select(item => item.Id));
-        ReloadPlaylists(SelectedPlaylist?.Id);
-
+        
+        // Only reload if currently viewing this playlist
         if (string.Equals(SelectedPlaylist?.Id, playlistId, StringComparison.Ordinal))
         {
             await RefreshMediaAsync(true);
         }
+        else
+        {
+            UpdatePlaylistMetadata(playlistId);
+        }
+    }
+
+    private void UpdatePlaylistMetadata(string playlistId)
+    {
+        var playlist = Playlists.FirstOrDefault(p => string.Equals(p.Id, playlistId, StringComparison.Ordinal));
+        if (playlist != null)
+        {
+            OnPropertyChanged(nameof(Playlists));
+        }
+    }
+
+    public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaIds)
+    {
+        return _db.AreAllMediaInPlaylist(playlistId, mediaIds);
     }
 
     public async Task RemoveMediaFromSelectedPlaylistAsync(IEnumerable<MediaItemViewModel> items)

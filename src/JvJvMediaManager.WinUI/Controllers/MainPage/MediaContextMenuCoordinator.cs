@@ -126,10 +126,31 @@ public sealed class MediaContextMenuCoordinator
         if (_viewModel.Playlists.Count > 0)
         {
             _addToPlaylistItem.Items.Add(new MenuFlyoutSeparator());
+            
+            var selectedMediaIds = _currentSelection.Select(m => m.Id).ToList();
+            
             foreach (var playlist in _viewModel.Playlists)
             {
-                var item = new MenuFlyoutItem { Text = playlist.Name, Tag = playlist.Id };
-                item.Click += QuickPlaylistItem_Click;
+                var item = new MenuFlyoutItem 
+                { 
+                    Text = playlist.Name, 
+                    Tag = playlist.Id 
+                };
+                
+                var allInPlaylist = selectedMediaIds.Count > 0 && 
+                    _viewModel.AreAllMediaInPlaylist(playlist.Id, selectedMediaIds);
+                
+                if (allInPlaylist)
+                {
+                    item.IsEnabled = false;
+                    item.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(
+                        Microsoft.UI.Colors.Gray);
+                }
+                else
+                {
+                    item.Click += QuickPlaylistItem_Click;
+                }
+                
                 _addToPlaylistItem.Items.Add(item);
             }
         }
