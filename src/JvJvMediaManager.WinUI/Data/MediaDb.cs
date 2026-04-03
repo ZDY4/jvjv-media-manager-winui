@@ -585,9 +585,40 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
             playlistParam.Value = playlistId;
             mediaParam.Value = mediaId;
             cmd.ExecuteNonQuery();
-        }
+}
 
         tx.Commit();
+    }
+
+    public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaIds)
+    {
+        var mediaIdList = mediaIds.ToList();
+        if (mediaIdList.Count == 0)
+        {
+            return false;
+        }
+
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        var placeholders = string.Join(",", mediaIdList.Select((_, i) => $"@id{i}"));
+        var sql = $@"
+            SELECT COUNT(DISTINCT mediaId)
+            FROM playlist_media
+            WHERE playlistId = @playlistId
+            AND mediaId IN ({placeholders})";
+
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@playlistId", playlistId);
+
+        for (int i = 0; i < mediaIdList.Count; i++)
+        {
+            command.Parameters.AddWithValue($"@id{i}", mediaIdList[i]);
+        }
+
+        var count = (long)command.ExecuteScalar();
+        return count == mediaIdList.Count;
     }
 
     private static MediaFile ReadMedia(SqliteDataReader reader)
