@@ -174,6 +174,7 @@ public sealed class LibraryShellViewModel : ObservableObject
                 OnPropertyChanged(nameof(CurrentScopeTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitleVisibility));
+                OnPropertyChanged(nameof(RefreshButtonVisibility));
                 QueueRefreshMedia(false);
             }
         }
@@ -289,6 +290,8 @@ public sealed class LibraryShellViewModel : ObservableObject
         : Visibility.Collapsed;
 
     public Visibility SelectedPlaylistTitleVisibility => SelectedPlaylist == null ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility RefreshButtonVisibility => SelectedPlaylist == null ? Visibility.Visible : Visibility.Collapsed;
 
     public string SelectedPlaylistTitle => SelectedPlaylist?.Name ?? string.Empty;
 

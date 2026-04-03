@@ -33,6 +33,7 @@
                 <Button x:Name="RefreshButton"
                         x:FieldModifier="public"
                         Style="{StaticResource PanelIconButtonStyle}"
+                        Visibility="{Binding RefreshButtonVisibility}"
                         ToolTipService.ToolTip="刷新">
                     <FontIcon Glyph="&#xE72C;" />
                 </Button>
