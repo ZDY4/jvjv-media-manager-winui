@@ -9,3 +9,9 @@ artifacts/
 *.rsuser
 *.suo
 *.lnk
+
+# App data and runtime files
+data/
+
+# Planning docs (not source code)
+docs/plans/
