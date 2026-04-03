@@ -236,30 +236,29 @@ public sealed partial class SettingsPanel : UserControl
         RemoveWatchedFolder(folder);
     }
 
-    private void ToggleWatchedFolderVisibilityButton_Click(object sender, RoutedEventArgs e)
+    private void ToggleWatchedFolderVisibilityButton_Loaded(object sender, RoutedEventArgs e)
     {
-        if (sender is not ToggleButton { Tag: WatchedFolder folder })
+        if (sender is not ToggleButton { Tag: WatchedFolder folder } button)
         {
             return;
         }
 
-        folder.Visible = !folder.Visible;
+        UpdateToggleButtonVisualState(button, folder.Visible);
+    }
 
-        var index = WatchedFolders.IndexOf(folder);
-        if (index >= 0)
+    private void ToggleWatchedFolderVisibilityButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: WatchedFolder folder } button)
         {
-            WatchedFolders[index] = folder;
+            return;
         }
 
-        UpdateToggleButtonText(sender as ToggleButton, folder.Visible);
-        RefreshWatchedFolderStatus();
+        UpdateToggleButtonVisualState(button, folder.Visible);
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void UpdateToggleButtonText(ToggleButton? button, bool visible)
+    private void UpdateToggleButtonVisualState(ToggleButton button, bool visible)
     {
-        if (button == null) return;
-
         if (button.Content is FontIcon icon)
         {
             icon.Glyph = visible ? "\uE7BD" : "\uE7BA";

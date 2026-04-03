@@ -96,10 +96,9 @@
                                   VerticalAlignment="Center"
                                   IsChecked="{Binding Visible, Mode=TwoWay}"
                                   Click="ToggleWatchedFolderVisibilityButton_Click"
-                                  Tag="{Binding}"
-                                  ToolTipService.ToolTip="切换可见性">
-                        <FontIcon Glyph="&#xE7BD;"
-                                  FontSize="12" />
+                                  Loaded="ToggleWatchedFolderVisibilityButton_Loaded"
+                                  Tag="{Binding}">
+                        <FontIcon FontSize="12" />
                     </ToggleButton>
 
                     <Button Grid.Column="2"
