@@ -81,6 +81,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0"
@@ -101,7 +102,19 @@
                         <FontIcon FontSize="12" />
                     </ToggleButton>
 
-                    <Button Grid.Column="2"
+                    <ToggleButton Grid.Column="2"
+                                  Padding="6"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding Locked, Mode=TwoWay}"
+                                  Click="ToggleWatchedFolderLockedButton_Click"
+                                  Loaded="ToggleWatchedFolderLockedButton_Loaded"
+                                  Tag="{Binding}">
+                        <FontIcon FontSize="12" />
+                    </ToggleButton>
+
+                    <Button Grid.Column="3"
                             Padding="6"
                             Background="Transparent"
                             BorderThickness="0"
@@ -205,14 +218,6 @@
                         <Button x:Name="ClearWatchedFoldersButton"
                                 x:FieldModifier="public"
                                 Content="清空监控列表"
-                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
-                        <Button x:Name="ProtectFolderButton"
-                                x:FieldModifier="public"
-                                Content="设为受保护"
-                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
-                        <Button x:Name="UnprotectFolderButton"
-                                x:FieldModifier="public"
-                                Content="取消保护"
                                 Style="{StaticResource SecondaryToolbarButtonStyle}" />
                     </StackPanel>
                 </StackPanel>

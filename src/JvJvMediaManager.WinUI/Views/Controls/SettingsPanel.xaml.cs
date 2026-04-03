@@ -243,7 +243,7 @@ public sealed partial class SettingsPanel : UserControl
             return;
         }
 
-        UpdateToggleButtonVisualState(button, folder.Visible);
+        UpdateToggleVisibilityButtonState(button, folder.Visible);
     }
 
     private void ToggleWatchedFolderVisibilityButton_Click(object sender, RoutedEventArgs e)
@@ -253,11 +253,11 @@ public sealed partial class SettingsPanel : UserControl
             return;
         }
 
-        UpdateToggleButtonVisualState(button, folder.Visible);
+        UpdateToggleVisibilityButtonState(button, folder.Visible);
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void UpdateToggleButtonVisualState(ToggleButton button, bool visible)
+    private void UpdateToggleVisibilityButtonState(ToggleButton button, bool visible)
     {
         if (button.Content is FontIcon icon)
         {
@@ -266,6 +266,39 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         ToolTipService.SetToolTip(button, visible ? "点击隐藏此文件夹" : "点击显示此文件夹");
+    }
+
+    private void ToggleWatchedFolderLockedButton_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: WatchedFolder folder } button)
+        {
+            return;
+        }
+
+        UpdateToggleLockedButtonState(button, folder.Locked);
+    }
+
+    private void ToggleWatchedFolderLockedButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: WatchedFolder folder } button)
+        {
+            return;
+        }
+
+        UpdateToggleLockedButtonState(button, folder.Locked);
+        RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void UpdateToggleLockedButtonState(ToggleButton button, bool locked)
+    {
+        if (button.Content is FontIcon icon)
+        {
+            icon.Glyph = locked ? "\uE72E" : "\uE785";
+            icon.Opacity = locked ? 1.0 : 0.5;
+        }
+
+        ToolTipService.SetToolTip(button, locked ? "点击取消保护" : "点击设为受保护");
     }
 
     private void RefreshWatchedFolderStatus()

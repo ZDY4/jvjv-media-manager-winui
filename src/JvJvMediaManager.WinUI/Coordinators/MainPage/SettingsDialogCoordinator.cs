@@ -58,8 +58,6 @@ public sealed class SettingsDialogCoordinator
         };
 
         panel.ClearWatchedFoldersButton.Click += (_, _) => panel.ClearWatchedFolders();
-        panel.ProtectFolderButton.Click += (_, _) => panel.ProtectSelectedFolder();
-        panel.UnprotectFolderButton.Click += (_, _) => panel.UnprotectSelectedFolder();
         panel.ClearCacheButton.Click += (_, _) => _viewModel.ClearThumbnailCache();
         panel.ResetLibraryButton.Click += async (_, _) =>
         {
