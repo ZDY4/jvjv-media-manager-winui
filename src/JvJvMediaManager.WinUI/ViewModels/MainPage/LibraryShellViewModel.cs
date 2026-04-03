@@ -66,6 +66,14 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public ObservableCollection<Playlist> Playlists { get; }
 
+    private List<string> GetVisibleWatchedFolderPaths()
+    {
+        return WatchedFolders
+            .Where(f => f.Visible)
+            .Select(f => f.Path)
+            .ToList();
+    }
+
     public MediaItemViewModel? SelectedMedia
     {
         get => _selection.SelectedMedia;
@@ -338,8 +346,13 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public async Task RescanFoldersAsync()
     {
-        var folders = WatchedFolders.Select(f => f.Path).ToList();
-        await AddMediaInternalAsync(() => _library.RescanFoldersAsync(folders, new Progress<ScanProgress>(OnScanProgress)), "媒体库刷新完成。");
+        var visibleFolders = GetVisibleWatchedFolderPaths();
+        if (visibleFolders.Count == 0)
+        {
+            return;
+        }
+        
+        await AddMediaInternalAsync(() => _library.RescanFoldersAsync(visibleFolders, new Progress<ScanProgress>(OnScanProgress)), "媒体库刷新完成。");
     }
 
     public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders, bool refreshMedia = true)
@@ -984,10 +997,18 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     private IReadOnlyList<string> GetActiveLockedFolderPaths()
     {
-        return WatchedFolders
+        var invisibleFolderPaths = WatchedFolders
+            .Where(folder => !folder.Visible)
+            .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path));
+        
+        var lockedFolderPaths = WatchedFolders
             .Where(folder => folder.Locked)
             .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
-            .Where(path => !_sessionUnlockedFolders.Contains(path))
+            .Where(path => !_sessionUnlockedFolders.Contains(path));
+        
+        return invisibleFolderPaths
+            .Concat(lockedFolderPaths)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
