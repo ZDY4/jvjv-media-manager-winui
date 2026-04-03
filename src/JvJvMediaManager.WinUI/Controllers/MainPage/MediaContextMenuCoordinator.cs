@@ -10,7 +10,6 @@ public sealed class MediaContextMenuCoordinator
 {
     public const string OpenFolderShortcutText = "Ctrl+Shift+O";
     public const string EditTagsShortcutText = "Ctrl+T";
-    public const string AddToPlaylistShortcutText = "Ctrl+Shift+A";
     public const string RemoveFromPlaylistShortcutText = "Ctrl+Shift+R";
     public const string DeleteShortcutText = "Delete";
 
@@ -21,8 +20,7 @@ public sealed class MediaContextMenuCoordinator
     private readonly MenuFlyout _flyout;
     private readonly MenuFlyoutItem _openFolderItem;
     private readonly MenuFlyoutItem _editTagsItem;
-    private readonly MenuFlyoutItem _addToPlaylistItem;
-    private readonly MenuFlyoutSubItem _quickAddToPlaylistItem;
+    private readonly MenuFlyoutSubItem _addToPlaylistItem;
     private readonly MenuFlyoutItem _removeFromPlaylistItem;
     private readonly MenuFlyoutSeparator _deleteSeparator;
     private readonly MenuFlyoutItem _deleteItem;
@@ -43,8 +41,7 @@ public sealed class MediaContextMenuCoordinator
         _flyout = new MenuFlyout();
         _openFolderItem = CreateMenuItem("打开所在目录", OpenFolderShortcutText, OpenFolderItem_Click);
         _editTagsItem = CreateMenuItem("编辑标签", EditTagsShortcutText, EditTagsItem_Click);
-        _addToPlaylistItem = CreateMenuItem("加入播放列表...", AddToPlaylistShortcutText, AddToPlaylistItem_Click);
-        _quickAddToPlaylistItem = new MenuFlyoutSubItem { Text = "快速加入到播放列表" };
+        _addToPlaylistItem = new MenuFlyoutSubItem { Text = "加入播放列表" };
         _removeFromPlaylistItem = CreateMenuItem(string.Empty, RemoveFromPlaylistShortcutText, RemoveFromPlaylistItem_Click);
         _deleteSeparator = new MenuFlyoutSeparator();
         _deleteItem = CreateMenuItem("删除文件", DeleteShortcutText, DeleteItem_Click);
@@ -52,7 +49,6 @@ public sealed class MediaContextMenuCoordinator
         _flyout.Items.Add(_openFolderItem);
         _flyout.Items.Add(_editTagsItem);
         _flyout.Items.Add(_addToPlaylistItem);
-        _flyout.Items.Add(_quickAddToPlaylistItem);
         _flyout.Items.Add(_deleteSeparator);
         _flyout.Items.Add(_deleteItem);
     }
@@ -99,12 +95,11 @@ public sealed class MediaContextMenuCoordinator
     private void RefreshMenuState()
     {
         _editTagsItem.Text = _currentSelection.Count == 1 ? "编辑标签" : $"批量编辑标签 ({_currentSelection.Count})";
-        _addToPlaylistItem.IsEnabled = _viewModel.Playlists.Count > 0;
-        RefreshQuickPlaylistItems();
+        RefreshPlaylistItems();
 
         if (_viewModel.SelectedPlaylist != null)
         {
-            _removeFromPlaylistItem.Text = $"从“{_viewModel.SelectedPlaylist.Name}”移除";
+            _removeFromPlaylistItem.Text = $"从"{_viewModel.SelectedPlaylist.Name}"移除";
             if (!_flyout.Items.Contains(_removeFromPlaylistItem))
             {
                 _flyout.Items.Insert(_flyout.Items.IndexOf(_deleteSeparator), _removeFromPlaylistItem);
@@ -116,22 +111,23 @@ public sealed class MediaContextMenuCoordinator
         }
     }
 
-    private void RefreshQuickPlaylistItems()
+    private void RefreshPlaylistItems()
     {
-        _quickAddToPlaylistItem.Items.Clear();
-        if (_viewModel.Playlists.Count == 0)
-        {
-            _quickAddToPlaylistItem.Items.Add(new MenuFlyoutItem { Text = "暂无播放列表", IsEnabled = false });
-            _quickAddToPlaylistItem.IsEnabled = false;
-            return;
-        }
+        _addToPlaylistItem.Items.Clear();
 
-        _quickAddToPlaylistItem.IsEnabled = true;
-        foreach (var playlist in _viewModel.Playlists)
+        var createNewItem = new MenuFlyoutItem { Text = "创建新的播放列表" };
+        createNewItem.Click += CreateNewPlaylistItem_Click;
+        _addToPlaylistItem.Items.Add(createNewItem);
+
+        if (_viewModel.Playlists.Count > 0)
         {
-            var item = new MenuFlyoutItem { Text = playlist.Name, Tag = playlist.Id };
-            item.Click += QuickPlaylistItem_Click;
-            _quickAddToPlaylistItem.Items.Add(item);
+            _addToPlaylistItem.Items.Add(new MenuFlyoutSeparator());
+            foreach (var playlist in _viewModel.Playlists)
+            {
+                var item = new MenuFlyoutItem { Text = playlist.Name, Tag = playlist.Id };
+                item.Click += QuickPlaylistItem_Click;
+                _addToPlaylistItem.Items.Add(item);
+            }
         }
     }
 
@@ -155,7 +151,7 @@ public sealed class MediaContextMenuCoordinator
         await _applyTagEditorAsync(_currentSelection);
     }
 
-    private async void AddToPlaylistItem_Click(object sender, RoutedEventArgs e)
+    private async void CreateNewPlaylistItem_Click(object sender, RoutedEventArgs e)
     {
         if (_currentSelection.Count == 0)
         {
