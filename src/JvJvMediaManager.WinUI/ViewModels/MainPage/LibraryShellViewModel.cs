@@ -660,7 +660,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     public Playlist CreatePlaylist(string name)
     {
         var playlist = _db.CreatePlaylist(name);
-        ReloadPlaylists(playlist.Id);
+        ReloadPlaylists(SelectedPlaylist?.Id);
         return playlist;
     }
 
