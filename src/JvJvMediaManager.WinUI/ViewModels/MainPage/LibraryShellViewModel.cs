@@ -366,7 +366,8 @@ public sealed class LibraryShellViewModel : ObservableObject
             .Select(group => new WatchedFolder
             {
                 Path = group.First().Path,
-                Locked = group.First().Locked
+                Locked = group.First().Locked,
+                Visible = group.First().Visible
             })
             .OrderBy(folder => folder.Path, StringComparer.OrdinalIgnoreCase)
             .ToList();

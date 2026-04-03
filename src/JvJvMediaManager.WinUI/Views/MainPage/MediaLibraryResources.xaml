@@ -18,6 +18,15 @@
     <utilities:MediaTabForegroundBrushConverter x:Key="MediaTabForegroundBrushConverter" />
     <utilities:BooleanVisibilityConverter x:Key="BooleanVisibilityConverter" />
 
+    <Style x:Key="MediaTooltipStyle" TargetType="ToolTip">
+        <Setter Property="Background" Value="{ThemeResource MediaCardBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeStrongBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,6" />
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
     <Style x:Key="MediaListItemContainerStyle" TargetType="ListViewItem">
         <Setter Property="Padding" Value="0" />
         <Setter Property="Margin" Value="0,0,0,6" />
@@ -67,6 +76,9 @@
                 Background="{ThemeResource MediaCardBrush}"
                 BorderThickness="0"
                 CornerRadius="{ThemeResource RadiusMedium}">
+            <ToolTipService.ToolTip>
+                <ToolTip Content="{Binding FileSystemPath}" Style="{StaticResource MediaTooltipStyle}" />
+            </ToolTipService.ToolTip>
             <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -127,6 +139,9 @@
     <DataTemplate x:Key="GridItemTemplate" x:DataType="viewModels:MediaItemViewModel">
         <Grid HorizontalAlignment="Stretch"
               VerticalAlignment="Stretch">
+            <ToolTipService.ToolTip>
+                <ToolTip Content="{Binding FileSystemPath}" Style="{StaticResource MediaTooltipStyle}" />
+            </ToolTipService.ToolTip>
             <Border Width="{Binding ElementName=GridView, Path=Tag}"
                     Height="{Binding ElementName=GridView, Path=Tag}"
                     HorizontalAlignment="Center"
