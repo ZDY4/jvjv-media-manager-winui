@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.ViewModels.MainPage;
 
@@ -53,7 +54,8 @@ public sealed partial class SettingsPanel : UserControl
             viewModel.WatchedFolders.Select(item => new WatchedFolder
             {
                 Path = item.Path,
-                Locked = item.Locked
+                Locked = item.Locked,
+                Visible = item.Visible
             }));
 
         WatchedFoldersList.ItemsSource = WatchedFolders;
@@ -232,6 +234,39 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         RemoveWatchedFolder(folder);
+    }
+
+    private void ToggleWatchedFolderVisibilityButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: WatchedFolder folder })
+        {
+            return;
+        }
+
+        folder.Visible = !folder.Visible;
+
+        var index = WatchedFolders.IndexOf(folder);
+        if (index >= 0)
+        {
+            WatchedFolders[index] = folder;
+        }
+
+        UpdateToggleButtonText(sender as ToggleButton, folder.Visible);
+        RefreshWatchedFolderStatus();
+        WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void UpdateToggleButtonText(ToggleButton? button, bool visible)
+    {
+        if (button == null) return;
+
+        if (button.Content is FontIcon icon)
+        {
+            icon.Glyph = visible ? "\uE7BD" : "\uE7BA";
+            icon.Opacity = visible ? 1.0 : 0.5;
+        }
+
+        ToolTipService.SetToolTip(button, visible ? "点击隐藏此文件夹" : "点击显示此文件夹");
     }
 
     private void RefreshWatchedFolderStatus()
