@@ -80,6 +80,7 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0"
@@ -88,7 +89,20 @@
                                VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" />
 
-                    <Button Grid.Column="1"
+                    <ToggleButton Grid.Column="1"
+                                  Padding="6"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding Visible, Mode=TwoWay}"
+                                  Click="ToggleWatchedFolderVisibilityButton_Click"
+                                  Tag="{Binding}"
+                                  ToolTipService.ToolTip="切换可见性">
+                        <FontIcon Glyph="&#xE7BD;"
+                                  FontSize="12" />
+                    </ToggleButton>
+
+                    <Button Grid.Column="2"
                             Padding="6"
                             Background="Transparent"
                             BorderThickness="0"
