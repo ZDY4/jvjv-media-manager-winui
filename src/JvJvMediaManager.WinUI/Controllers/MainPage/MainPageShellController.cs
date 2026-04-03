@@ -105,6 +105,7 @@ public sealed class MainPageShellController
         _libraryPaneController = _modules.CreateLibraryPaneController(page, shell.Library, libraryPane);
         _mediaContextMenuCoordinator = _modules.CreateMediaContextMenuCoordinator(
             shell.Library,
+            _dialogService,
             ApplyTagEditorAsync,
             AddSelectionToPlaylistAsync,
             DeleteSelectionAsync);

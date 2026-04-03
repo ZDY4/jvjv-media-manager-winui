@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
+using JvJvMediaManager.Services.MainPage;
 
 namespace JvJvMediaManager.Controllers.MainPage;
 
@@ -14,6 +15,7 @@ public sealed class MediaContextMenuCoordinator
     public const string DeleteShortcutText = "Delete";
 
     private readonly LibraryShellViewModel _viewModel;
+    private readonly IContentDialogService _dialogService;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _applyTagEditorAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _addToPlaylistAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _deleteSelectionAsync;
@@ -29,11 +31,13 @@ public sealed class MediaContextMenuCoordinator
 
     public MediaContextMenuCoordinator(
         LibraryShellViewModel viewModel,
+        IContentDialogService dialogService,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
     {
         _viewModel = viewModel;
+        _dialogService = dialogService;
         _applyTagEditorAsync = applyTagEditorAsync;
         _addToPlaylistAsync = addToPlaylistAsync;
         _deleteSelectionAsync = deleteSelectionAsync;
@@ -99,7 +103,7 @@ public sealed class MediaContextMenuCoordinator
 
         if (_viewModel.SelectedPlaylist != null)
         {
-            _removeFromPlaylistItem.Text = $"从"{_viewModel.SelectedPlaylist.Name}"移除";
+            _removeFromPlaylistItem.Text = $"从\"{_viewModel.SelectedPlaylist.Name}\"移除";
             if (!_flyout.Items.Contains(_removeFromPlaylistItem))
             {
                 _flyout.Items.Insert(_flyout.Items.IndexOf(_deleteSeparator), _removeFromPlaylistItem);
@@ -158,7 +162,21 @@ public sealed class MediaContextMenuCoordinator
             return;
         }
 
-        await _addToPlaylistAsync(_currentSelection);
+        var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建并添加");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        try
+        {
+            var playlist = _viewModel.CreatePlaylist(name);
+            await _viewModel.AddMediaToPlaylistAsync(playlist.Id, _currentSelection);
+        }
+        catch (Exception ex)
+        {
+            await _dialogService.ShowInfoAsync("创建失败", ex.Message);
+        }
     }
 
     private async void QuickPlaylistItem_Click(object sender, RoutedEventArgs e)

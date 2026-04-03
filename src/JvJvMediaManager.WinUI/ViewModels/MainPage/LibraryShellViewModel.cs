@@ -708,7 +708,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     public async Task AddMediaToPlaylistAsync(string playlistId, IEnumerable<MediaItemViewModel> items)
     {
         _db.AddMediaToPlaylist(playlistId, items.Select(item => item.Id));
-        ReloadPlaylists(SelectedPlaylist?.Id ?? playlistId);
+        ReloadPlaylists(SelectedPlaylist?.Id);
 
         if (string.Equals(SelectedPlaylist?.Id, playlistId, StringComparison.Ordinal))
         {
