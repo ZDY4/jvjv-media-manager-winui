@@ -57,7 +57,22 @@ public sealed class SettingsDialogCoordinator
             }
         };
 
-        panel.ClearWatchedFoldersButton.Click += (_, _) => panel.ClearWatchedFolders();
+        panel.ClearWatchedFoldersButton.Click += async (_, _) =>
+        {
+            var confirmDialog = new ContentDialog
+            {
+                Title = "确认",
+                Content = "确定要清空监控文件夹列表吗？",
+                PrimaryButtonText = "确定",
+                CloseButtonText = "取消"
+            };
+
+            var result = await _dialogService.ShowAsync(confirmDialog);
+            if (result == ContentDialogResult.Primary)
+            {
+                panel.ClearWatchedFolders();
+            }
+        };
         panel.ClearCacheButton.Click += (_, _) => _viewModel.ClearThumbnailCache();
         panel.ResetLibraryButton.Click += async (_, _) =>
         {

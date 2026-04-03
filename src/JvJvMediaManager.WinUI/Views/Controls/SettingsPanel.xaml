@@ -190,6 +190,7 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
                         <TextBlock Text="监控文件夹"
@@ -201,7 +202,13 @@
                         <Button x:Name="AddWatchedFolderButton"
                                 x:FieldModifier="public"
                                 Grid.Column="1"
-                                Content="添加监控文件夹"
+                                Content="添加"
+                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
+
+                        <Button x:Name="ClearWatchedFoldersButton"
+                                x:FieldModifier="public"
+                                Grid.Column="2"
+                                Content="清空"
                                 Style="{StaticResource SecondaryToolbarButtonStyle}" />
                     </Grid>
 
@@ -213,13 +220,6 @@
                               SelectionMode="Single"
                               ItemContainerStyle="{StaticResource WatchedFolderListItemContainerStyle}"
                               ItemTemplate="{StaticResource WatchedFolderTemplate}" />
-
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button x:Name="ClearWatchedFoldersButton"
-                                x:FieldModifier="public"
-                                Content="清空监控列表"
-                                Style="{StaticResource SecondaryToolbarButtonStyle}" />
-                    </StackPanel>
                 </StackPanel>
             </Border>
 
