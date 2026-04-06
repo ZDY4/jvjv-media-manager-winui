@@ -21,16 +21,11 @@
                   ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
                   ItemTemplate="{StaticResource ListItemTemplate}"
                   IncrementalLoadingTrigger="Edge"
-                  IncrementalLoadingThreshold="2"
+                  IncrementalLoadingThreshold="1"
                   DataFetchSize="1"
                   SelectionMode="Extended"
+                  CanDragItems="True"
                   IsItemClickEnabled="False">
-            <ListView.ItemContainerTransitions>
-                <TransitionCollection>
-                    <AddDeleteThemeTransition />
-                    <RepositionThemeTransition />
-                </TransitionCollection>
-            </ListView.ItemContainerTransitions>
         </ListView>
 
         <GridView x:Name="GridView"
@@ -42,9 +37,10 @@
                   ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
                   ItemTemplate="{StaticResource GridItemTemplate}"
                   IncrementalLoadingTrigger="Edge"
-                  IncrementalLoadingThreshold="2"
+                  IncrementalLoadingThreshold="1"
                   DataFetchSize="1"
                   SelectionMode="Extended"
+                  CanDragItems="True"
                   IsItemClickEnabled="False">
             <GridView.ItemsPanel>
                 <ItemsPanelTemplate>

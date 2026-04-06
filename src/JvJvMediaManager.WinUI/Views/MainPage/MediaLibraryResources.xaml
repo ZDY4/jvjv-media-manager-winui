@@ -55,6 +55,12 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ListViewItem">
                     <Grid Background="Transparent">
+                        <Border x:Name="PlaylistHighlightBackground"
+                                Margin="1"
+                                Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                CornerRadius="{ThemeResource RadiusMedium}"
+                                Opacity="0"
+                                IsHitTestVisible="False" />
                         <Border x:Name="PlaylistSelectionBackground"
                                 Background="{ThemeResource LibrarySelectionStrongBrush}"
                                 CornerRadius="{ThemeResource RadiusMedium}"
@@ -65,6 +71,16 @@
                                           Margin="2"
                                           Content="{TemplateBinding Content}"
                                           ContentTemplate="{TemplateBinding ContentTemplate}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="HighlightStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="Highlight">
+                                    <VisualState.Setters>
+                                        <Setter Target="PlaylistHighlightBackground.Opacity" Value="0.9" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>
@@ -194,7 +210,8 @@
     </DataTemplate>
 
     <DataTemplate x:Key="PlaylistRailTemplate" x:DataType="models:Playlist">
-        <Border Width="34"
+        <Border x:Name="ItemBorder"
+                Width="34"
                 Height="34"
                 Background="{Binding ColorHex, Converter={StaticResource PlaylistBackgroundBrushConverter}}"
                 CornerRadius="{ThemeResource RadiusSmall}"

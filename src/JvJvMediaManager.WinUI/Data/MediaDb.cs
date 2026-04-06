@@ -157,17 +157,31 @@ INSERT OR REPLACE INTO media (
             .Where(tag => !string.IsNullOrWhiteSpace(tag))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var includedFolders = query.IncludedFolderPaths?
+            .Select(path => path.Trim())
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var excludedFolders = query.ExcludedFolderPaths
             .Select(path => path.Trim())
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        if (includedFolders is { Count: 0 })
+        {
+            return new MediaPageResult
+            {
+                Items = Array.Empty<MediaFile>(),
+                HasMore = false
+            };
+        }
+
         var limit = query.Limit <= 0 ? 200 : query.Limit;
         var fetchLimit = limit == int.MaxValue ? limit : limit + 1;
 
         using var cmd = connection.CreateCommand();
-        BuildQueryCommand(cmd, normalizedQuery, normalizedTags, excludedFolders, query.PlaylistId, query.SortField, query.SortOrder, query.Offset, fetchLimit);
+        BuildQueryCommand(cmd, normalizedQuery, normalizedTags, includedFolders, excludedFolders, query.PlaylistId, query.SortField, query.SortOrder, query.Offset, fetchLimit);
 
         using var reader = cmd.ExecuteReader();
         var items = new List<MediaFile>();
@@ -681,6 +695,7 @@ public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaId
         SqliteCommand cmd,
         string searchText,
         IReadOnlyList<string> selectedTags,
+        IReadOnlyList<string>? includedFolders,
         IReadOnlyList<string> excludedFolders,
         string? playlistId,
         MediaSortField sortField,
@@ -704,6 +719,24 @@ INNER JOIN playlist_media pm
         }
 
         sql.Append("WHERE 1 = 1\n");
+
+        if (includedFolders is { Count: > 0 })
+        {
+            sql.Append("  AND (\n");
+            for (var i = 0; i < includedFolders.Count; i++)
+            {
+                var parameterName = $"$includedFolder{i}";
+                if (i > 0)
+                {
+                    sql.Append("   OR\n");
+                }
+
+                sql.Append($"    m.path LIKE {parameterName} COLLATE NOCASE\n");
+                cmd.Parameters.AddWithValue(parameterName, $"{includedFolders[i].TrimEnd('/')}/%");
+            }
+
+            sql.Append("  )\n");
+        }
 
         if (!string.IsNullOrWhiteSpace(searchText))
         {
@@ -744,9 +777,20 @@ INNER JOIN playlist_media pm
             cmd.Parameters.AddWithValue(parameterName, $"{excludedFolders[i].TrimEnd('/')}/%");
         }
 
+        var orderDirection = sortOrder == MediaSortOrder.Asc ? "ASC" : "DESC";
         sql.Append("ORDER BY ");
-        sql.Append(sortField == MediaSortField.FileName ? "m.filename COLLATE NOCASE" : "m.modifiedAt");
-        sql.Append(sortOrder == MediaSortOrder.Asc ? " ASC" : " DESC");
+        sql.Append(sortField switch
+        {
+            MediaSortField.FileName => $"m.filename COLLATE NOCASE {orderDirection}",
+            MediaSortField.ModifiedAt => $"m.modifiedAt {orderDirection}",
+            MediaSortField.Size => $"COALESCE(m.size, 0) {orderDirection}",
+            MediaSortField.Duration => $"COALESCE(m.duration, 0) {orderDirection}",
+            MediaSortField.Resolution =>
+                $"(COALESCE(m.width, 0) * COALESCE(m.height, 0)) {orderDirection}, " +
+                $"COALESCE(m.width, 0) {orderDirection}, " +
+                $"COALESCE(m.height, 0) {orderDirection}",
+            _ => $"m.modifiedAt {orderDirection}"
+        });
         sql.Append(", m.id ASC ");
         sql.Append("LIMIT $limit OFFSET $offset;");
 

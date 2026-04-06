@@ -86,6 +86,7 @@ public sealed class MediaBrowserController : IDisposable
 
         ListView.ContainerContentChanging += Media_ContainerContentChanging;
         ListView.SelectionChanged += Media_SelectionChanged;
+        ListView.DragItemsStarting += MediaView_DragItemsStarting;
         ListView.RightTapped += MediaView_RightTapped;
         ListView.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
         ListView.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed), true);
@@ -96,6 +97,7 @@ public sealed class MediaBrowserController : IDisposable
 
         GridView.ContainerContentChanging += Media_ContainerContentChanging;
         GridView.SelectionChanged += Media_SelectionChanged;
+        GridView.DragItemsStarting += MediaView_DragItemsStarting;
         GridView.RightTapped += MediaView_RightTapped;
         GridView.Loaded += GridView_Loaded;
         GridView.SizeChanged += GridView_SizeChanged;
@@ -123,6 +125,7 @@ public sealed class MediaBrowserController : IDisposable
 
         ListView.ContainerContentChanging -= Media_ContainerContentChanging;
         ListView.SelectionChanged -= Media_SelectionChanged;
+        ListView.DragItemsStarting -= MediaView_DragItemsStarting;
         ListView.RightTapped -= MediaView_RightTapped;
         ListView.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
         ListView.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(MediaView_PointerPressed));
@@ -133,6 +136,7 @@ public sealed class MediaBrowserController : IDisposable
 
         GridView.ContainerContentChanging -= Media_ContainerContentChanging;
         GridView.SelectionChanged -= Media_SelectionChanged;
+        GridView.DragItemsStarting -= MediaView_DragItemsStarting;
         GridView.RightTapped -= MediaView_RightTapped;
         GridView.Loaded -= GridView_Loaded;
         GridView.SizeChanged -= GridView_SizeChanged;
@@ -156,7 +160,6 @@ public sealed class MediaBrowserController : IDisposable
     {
         await _viewModel.InitializeAsync();
         RebuildLoadedMediaIndex();
-        QueueThumbnailLoads(_viewModel.FilteredMediaItems);
         UpdateMediaItemSize();
         ConfigureListViewScrolling();
         ConfigureGridViewScrolling();
@@ -214,6 +217,22 @@ public sealed class MediaBrowserController : IDisposable
 
     public void SyncSelectionFromViewModel(MediaItemViewModel? selectedMedia)
     {
+        var currentSelection = ResolveLoadedSelection(selectedMedia);
+        if (selectedMedia != null && currentSelection == null)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selection-map-miss",
+                $"SyncSelectionFromViewModel could not map selected media '{selectedMedia.Id}' to a loaded instance. LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+        }
+
+        if (IsSelectionAlreadyApplied(selectedMedia, currentSelection))
+        {
+            return;
+        }
+
+        var previousSelectedIds = _selectedItemIds.ToHashSet(StringComparer.Ordinal);
         _isSyncingSelection = true;
         try
         {
@@ -226,9 +245,9 @@ public sealed class MediaBrowserController : IDisposable
                 _selectedItemIds = new HashSet<string>(new[] { selectedMedia.Id }, StringComparer.Ordinal);
             }
 
-            ApplySelectionToView(ListView, selectedMedia);
-            ApplySelectionToView(GridView, selectedMedia);
-            UpdateSelectedStateFlags();
+            ApplySelectionToView(ListView, currentSelection);
+            ApplySelectionToView(GridView, currentSelection);
+            UpdateSelectedStateFlags(previousSelectedIds);
         }
         finally
         {
@@ -368,13 +387,14 @@ public sealed class MediaBrowserController : IDisposable
             .Select(item => item.Id)
             .ToHashSet(StringComparer.Ordinal);
         var selectedMedia = ResolvePrimarySelection(listViewBase, e, selectedIds);
+        var previousSelectedIds = _selectedItemIds.ToHashSet(StringComparer.Ordinal);
 
         _selectedItemIds = selectedIds;
         _isSyncingSelection = true;
         try
         {
             ApplySelectionToView(ReferenceEquals(listViewBase, ListView) ? GridView : ListView, selectedMedia);
-            UpdateSelectedStateFlags();
+            UpdateSelectedStateFlags(previousSelectedIds);
         }
         finally
         {
@@ -498,6 +518,36 @@ public sealed class MediaBrowserController : IDisposable
         _ = _viewModel.EnsureThumbnailAsync(media);
     }
 
+    private void MediaView_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
+    {
+        var draggedItems = e.Items
+            .OfType<MediaItemViewModel>()
+            .Select(item => item.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (draggedItems.Count == 0)
+        {
+            draggedItems = GetSelectedItems()
+                .Select(item => item.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+
+        if (draggedItems.Count == 0)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        e.Data.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
+        e.Data.Properties.Add(InternalDragData.MediaDragMarkerProperty, true);
+        e.Data.Properties.Add(InternalDragData.MediaIdsProperty, draggedItems);
+        if (_viewModel.SelectedPlaylist != null)
+        {
+            e.Data.Properties.Add(InternalDragData.SourcePlaylistIdProperty, _viewModel.SelectedPlaylist.Id);
+        }
+    }
+
     private void FilteredMediaItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (_isDragSelectionPending || _isDragSelecting)
@@ -505,10 +555,20 @@ public sealed class MediaBrowserController : IDisposable
             EndDragSelection();
         }
 
+        if (e.Action == NotifyCollectionChangedAction.Reset
+            || (e.NewItems?.Count ?? 0) > 1
+            || (e.OldItems?.Count ?? 0) > 1)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "filtered-items-changed",
+                $"FilteredMediaItems changed. Action={e.Action}, NewCount={e.NewItems?.Count ?? 0}, OldCount={e.OldItems?.Count ?? 0}, TotalLoaded={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(1));
+        }
+
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             RebuildLoadedMediaIndex();
-            _page.DispatcherQueue.TryEnqueue(() => SyncSelectionFromViewModel(_viewModel.SelectedMedia));
         }
 
         if (e.OldItems != null)
@@ -531,12 +591,6 @@ public sealed class MediaBrowserController : IDisposable
             item.IsSelected = _selectedItemIds.Contains(item.Id);
         }
 
-        QueueThumbnailLoads(newItems);
-
-        if (_selectedItemIds.Count > 0 && newItems.Any(item => _selectedItemIds.Contains(item.Id)))
-        {
-            _page.DispatcherQueue.TryEnqueue(() => SyncSelectionFromViewModel(_viewModel.SelectedMedia));
-        }
     }
 
     private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -585,6 +639,22 @@ public sealed class MediaBrowserController : IDisposable
 
     private void LibraryPanel_DragOver(object sender, DragEventArgs e)
     {
+        if (TryResolveInternalDragMediaIds(e.DataView, out _))
+        {
+            if (_viewModel.SelectedPlaylist != null && IsDragFromCurrentPlaylist(e.DataView))
+            {
+                e.AcceptedOperation = DataPackageOperation.Move;
+                e.DragUIOverride.Caption = $"从“{_viewModel.SelectedPlaylist.Name}”移除";
+            }
+            else
+            {
+                e.AcceptedOperation = DataPackageOperation.None;
+            }
+
+            e.Handled = true;
+            return;
+        }
+
         if (e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
@@ -600,6 +670,26 @@ public sealed class MediaBrowserController : IDisposable
 
     private async void LibraryPanel_Drop(object sender, DragEventArgs e)
     {
+        if (TryResolveInternalDragMediaIds(e.DataView, out var mediaIds))
+        {
+            if (_viewModel.SelectedPlaylist == null || !IsDragFromCurrentPlaylist(e.DataView))
+            {
+                return;
+            }
+
+            var items = _viewModel.FilteredMediaItems
+                .Where(item => mediaIds.Contains(item.Id))
+                .ToList();
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            await _viewModel.RemoveMediaFromSelectedPlaylistAsync(items);
+            e.Handled = true;
+            return;
+        }
+
         if (!e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             return;
@@ -820,6 +910,14 @@ public sealed class MediaBrowserController : IDisposable
             return false;
         }
 
+        // Let the native ListView/GridView item interaction handle single-click selection
+        // and drag initiation for actual media items. Custom rectangle selection only needs
+        // to start from blank space.
+        if (TryGetMediaFromElement(origin, out _))
+        {
+            return false;
+        }
+
         return true;
     }
 
@@ -860,6 +958,7 @@ public sealed class MediaBrowserController : IDisposable
     private void RestoreSelectionSnapshot(IReadOnlySet<string> selectedIds, string? primaryId)
     {
         var selectedMedia = ResolvePrimarySelection(primaryId, selectedIds);
+        var previousSelectedIds = _selectedItemIds.ToHashSet(StringComparer.Ordinal);
 
         _isSyncingSelection = true;
         try
@@ -867,7 +966,7 @@ public sealed class MediaBrowserController : IDisposable
             _selectedItemIds = selectedIds.ToHashSet(StringComparer.Ordinal);
             ApplySelectionToView(ListView, selectedMedia);
             ApplySelectionToView(GridView, selectedMedia);
-            UpdateSelectedStateFlags();
+            UpdateSelectedStateFlags(previousSelectedIds);
         }
         finally
         {
@@ -1054,6 +1153,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        var previousSelectedIds = _selectedItemIds.ToHashSet(StringComparer.Ordinal);
         _selectedItemIds = nextSelectedIds;
         var selectedMedia = ResolvePrimarySelection(primaryId, nextSelectedIds);
 
@@ -1062,7 +1162,7 @@ public sealed class MediaBrowserController : IDisposable
         {
             ApplySelectionToView(ListView, selectedMedia);
             ApplySelectionToView(GridView, selectedMedia);
-            UpdateSelectedStateFlags();
+            UpdateSelectedStateFlags(previousSelectedIds);
         }
         finally
         {
@@ -1095,6 +1195,44 @@ public sealed class MediaBrowserController : IDisposable
             .Select(id => _loadedMediaById.TryGetValue(id, out var item) ? item : null)
             .OfType<MediaItemViewModel>()
             .FirstOrDefault();
+    }
+
+    private MediaItemViewModel? ResolveLoadedSelection(MediaItemViewModel? selectedMedia)
+    {
+        if (selectedMedia == null)
+        {
+            return null;
+        }
+
+        return _loadedMediaById.TryGetValue(selectedMedia.Id, out var loaded)
+            ? loaded
+            : null;
+    }
+
+    private bool IsSelectionAlreadyApplied(MediaItemViewModel? selectedMedia, MediaItemViewModel? currentSelection)
+    {
+        if (selectedMedia == null)
+        {
+            return _selectedItemIds.Count == 0
+                && ListView.SelectedItems.Count == 0
+                && GridView.SelectedItems.Count == 0;
+        }
+
+        if (_selectedItemIds.Count != 1 || !_selectedItemIds.Contains(selectedMedia.Id))
+        {
+            return false;
+        }
+
+        if (ListView.SelectedItems.Count > 1 || GridView.SelectedItems.Count > 1)
+        {
+            return false;
+        }
+
+        var currentSelectionId = currentSelection?.Id;
+        var listSelectionId = (ListView.SelectedItem as MediaItemViewModel)?.Id;
+        var gridSelectionId = (GridView.SelectedItem as MediaItemViewModel)?.Id;
+        return string.Equals(listSelectionId, currentSelectionId, StringComparison.Ordinal)
+            && string.Equals(gridSelectionId, currentSelectionId, StringComparison.Ordinal);
     }
 
     private void ShowSelectionRectangle(Rect rect)
@@ -1181,6 +1319,13 @@ public sealed class MediaBrowserController : IDisposable
 
     private void ApplySelectionToView(ListViewBase listViewBase, MediaItemViewModel? selectedMedia)
     {
+        if (_selectedItemIds.Count <= 1)
+        {
+            listViewBase.SelectedItems.Clear();
+            listViewBase.SelectedItem = selectedMedia;
+            return;
+        }
+
         listViewBase.SelectedItems.Clear();
         foreach (var item in listViewBase.Items.OfType<MediaItemViewModel>())
         {
@@ -1188,11 +1333,6 @@ public sealed class MediaBrowserController : IDisposable
             {
                 listViewBase.SelectedItems.Add(item);
             }
-        }
-
-        if (_selectedItemIds.Count <= 1)
-        {
-            listViewBase.SelectedItem = selectedMedia;
         }
     }
 
@@ -1224,11 +1364,16 @@ public sealed class MediaBrowserController : IDisposable
         return listViewBase.SelectedItems.OfType<MediaItemViewModel>().LastOrDefault();
     }
 
-    private void UpdateSelectedStateFlags()
+    private void UpdateSelectedStateFlags(IReadOnlySet<string> previousSelectedIds)
     {
-        foreach (var removedId in _loadedMediaById.Keys.Except(_selectedItemIds).ToList())
+        foreach (var removedId in previousSelectedIds)
         {
-            if (_loadedMediaById.TryGetValue(removedId, out var removedItem))
+            if (_selectedItemIds.Contains(removedId))
+            {
+                continue;
+            }
+
+            if (_loadedMediaById.TryGetValue(removedId, out var removedItem) && removedItem.IsSelected)
             {
                 removedItem.IsSelected = false;
             }
@@ -1236,7 +1381,12 @@ public sealed class MediaBrowserController : IDisposable
 
         foreach (var addedId in _selectedItemIds)
         {
-            if (_loadedMediaById.TryGetValue(addedId, out var addedItem))
+            if (previousSelectedIds.Contains(addedId))
+            {
+                continue;
+            }
+
+            if (_loadedMediaById.TryGetValue(addedId, out var addedItem) && !addedItem.IsSelected)
             {
                 addedItem.IsSelected = true;
             }
@@ -1265,14 +1415,6 @@ public sealed class MediaBrowserController : IDisposable
         }
     }
 
-    private void QueueThumbnailLoads(IEnumerable<MediaItemViewModel> items)
-    {
-        foreach (var item in items)
-        {
-            _ = _viewModel.EnsureThumbnailAsync(item);
-        }
-    }
-
     private void SynchronizeSelectionToActiveView()
     {
         SyncSelectionFromViewModel(_viewModel.SelectedMedia);
@@ -1290,6 +1432,15 @@ public sealed class MediaBrowserController : IDisposable
         flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(CreateSortMenuItem("按名称排序（A-Z）", MediaSortField.FileName, MediaSortOrder.Asc));
         flyout.Items.Add(CreateSortMenuItem("按名称排序（Z-A）", MediaSortField.FileName, MediaSortOrder.Desc));
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateSortMenuItem("按大小排序（小到大）", MediaSortField.Size, MediaSortOrder.Asc));
+        flyout.Items.Add(CreateSortMenuItem("按大小排序（大到小）", MediaSortField.Size, MediaSortOrder.Desc));
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateSortMenuItem("按时长排序（短到长）", MediaSortField.Duration, MediaSortOrder.Asc));
+        flyout.Items.Add(CreateSortMenuItem("按时长排序（长到短）", MediaSortField.Duration, MediaSortOrder.Desc));
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateSortMenuItem("按分辨率排序（低到高）", MediaSortField.Resolution, MediaSortOrder.Asc));
+        flyout.Items.Add(CreateSortMenuItem("按分辨率排序（高到低）", MediaSortField.Resolution, MediaSortOrder.Desc));
         return flyout;
     }
 
@@ -1302,5 +1453,30 @@ public sealed class MediaBrowserController : IDisposable
         };
         item.Click += (_, _) => _viewModel.SetSort(field, order);
         return item;
+    }
+
+    private static bool TryResolveInternalDragMediaIds(DataPackageView dataView, out List<string> mediaIds)
+    {
+        mediaIds = new List<string>();
+        if (!dataView.Properties.TryGetValue(InternalDragData.MediaDragMarkerProperty, out _)
+            || !dataView.Properties.TryGetValue(InternalDragData.MediaIdsProperty, out var mediaIdsObject)
+            || mediaIdsObject is not List<string> dragIds)
+        {
+            return false;
+        }
+
+        mediaIds = dragIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return mediaIds.Count > 0;
+    }
+
+    private bool IsDragFromCurrentPlaylist(DataPackageView dataView)
+    {
+        return _viewModel.SelectedPlaylist != null
+            && dataView.Properties.TryGetValue(InternalDragData.SourcePlaylistIdProperty, out var playlistIdObject)
+            && playlistIdObject is string sourcePlaylistId
+            && string.Equals(sourcePlaylistId, _viewModel.SelectedPlaylist.Id, StringComparison.Ordinal);
     }
 }

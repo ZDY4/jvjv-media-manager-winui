@@ -3,13 +3,18 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels.MainPage;
 
 namespace JvJvMediaManager.Views.Controls;
 
 public sealed partial class SettingsPanel : UserControl
 {
+    private const string ClearWatchedFoldersButtonDefaultText = "清空";
+    private const string ClearWatchedFoldersButtonConfirmText = "再次确认";
+    private const string ClearWatchedFoldersConfirmationMessage = "再次点击“再次确认”以清空监控文件夹。";
     private readonly TextBox[] _numpadTagTextBoxes;
+    private bool _clearWatchedFoldersConfirmationPending;
 
     public event EventHandler? PortableModeCommitted;
 
@@ -86,6 +91,8 @@ public sealed partial class SettingsPanel : UserControl
 
     public WatchedFolder? SelectedWatchedFolder => WatchedFoldersList.SelectedItem as WatchedFolder;
 
+    public bool IsClearWatchedFoldersConfirmationPending => _clearWatchedFoldersConfirmationPending;
+
     public void SetValidationMessage(string message)
     {
         ValidationText.Text = message;
@@ -119,11 +126,13 @@ public sealed partial class SettingsPanel : UserControl
             return false;
         }
 
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
         var watchedFolder = new WatchedFolder { Path = folder, Locked = false };
         WatchedFolders.Add(watchedFolder);
         WatchedFoldersList.SelectedItem = watchedFolder;
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
+        AppTraceLogger.Log("SettingsPanel", $"Added watched folder '{folder}'. Count={WatchedFolders.Count}.");
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -140,10 +149,31 @@ public sealed partial class SettingsPanel : UserControl
 
     public void ClearWatchedFolders()
     {
+        AppTraceLogger.Log("SettingsPanel", $"ClearWatchedFolders starting. ExistingCount={WatchedFolders.Count}, Selected='{SelectedWatchedFolder?.Path ?? "<null>"}'.");
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
         WatchedFolders.Clear();
         WatchedFoldersList.SelectedIndex = -1;
         RefreshWatchedFolderStatus();
+        AppTraceLogger.Log("SettingsPanel", "ClearWatchedFolders completed. Count=0.");
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void BeginClearWatchedFoldersConfirmation()
+    {
+        _clearWatchedFoldersConfirmationPending = true;
+        ClearWatchedFoldersButton.Content = ClearWatchedFoldersButtonConfirmText;
+        SetValidationMessage(ClearWatchedFoldersConfirmationMessage);
+        AppTraceLogger.Log("SettingsPanel", $"Clear watched folders confirmation armed. Count={WatchedFolders.Count}.");
+    }
+
+    public void ResetClearWatchedFoldersConfirmation(bool clearValidationMessage)
+    {
+        _clearWatchedFoldersConfirmationPending = false;
+        ClearWatchedFoldersButton.Content = ClearWatchedFoldersButtonDefaultText;
+        if (clearValidationMessage && string.Equals(ValidationText.Text, ClearWatchedFoldersConfirmationMessage, StringComparison.Ordinal))
+        {
+            ClearValidationMessage();
+        }
     }
 
     public bool ProtectSelectedFolder()
@@ -161,6 +191,7 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         folder.Locked = true;
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
         RefreshWatchedFolderCollection(folder);
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
@@ -177,6 +208,7 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         folder.Locked = false;
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
         RefreshWatchedFolderCollection(folder);
         ClearValidationMessage();
         RefreshWatchedFolderStatus();
@@ -203,6 +235,7 @@ public sealed partial class SettingsPanel : UserControl
 
     private void WatchedFoldersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        AppTraceLogger.Log("SettingsPanel", $"WatchedFoldersList selection changed. Selected='{SelectedWatchedFolder?.Path ?? "<null>"}', Count={WatchedFolders.Count}.");
         RefreshWatchedFolderStatus();
     }
 
@@ -254,6 +287,8 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         UpdateToggleVisibilityButtonState(button, folder.Visible);
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
+        AppTraceLogger.Log("SettingsPanel", $"Toggled watched folder visibility. Path='{folder.Path}', Visible={folder.Visible}.");
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -286,6 +321,8 @@ public sealed partial class SettingsPanel : UserControl
         }
 
         UpdateToggleLockedButtonState(button, folder.Locked);
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
+        AppTraceLogger.Log("SettingsPanel", $"Toggled watched folder protection. Path='{folder.Path}', Locked={folder.Locked}.");
         RefreshWatchedFolderStatus();
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -349,6 +386,7 @@ public sealed partial class SettingsPanel : UserControl
             return;
         }
 
+        ResetClearWatchedFoldersConfirmation(clearValidationMessage: true);
         var wasSelected = ReferenceEquals(SelectedWatchedFolder, folder);
         WatchedFolders.RemoveAt(removedIndex);
 
@@ -361,6 +399,7 @@ public sealed partial class SettingsPanel : UserControl
             WatchedFoldersList.SelectedIndex = Math.Min(removedIndex, WatchedFolders.Count - 1);
         }
 
+        AppTraceLogger.Log("SettingsPanel", $"Removed watched folder '{folder.Path}'. RemainingCount={WatchedFolders.Count}.");
         RefreshWatchedFolderStatus();
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
     }

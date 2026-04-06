@@ -37,15 +37,15 @@ public sealed partial class MainPage : Page
         _controller ??= new MainPageShellController(this, _shell, LibraryPaneHost, PlayerPaneHost, _dialogService, _modules);
         _shortcutRouter ??= new MainPageShortcutRouter(_controller);
 
-        KeyDown -= MainPage_KeyDown;
-        KeyDown += MainPage_KeyDown;
+        RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown));
+        AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown), true);
 
         await _controller.InitializeAsync();
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        KeyDown -= MainPage_KeyDown;
+        RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown));
         _controller?.Dispose();
         _controller = null;
         _shortcutRouter = null;
@@ -71,30 +71,6 @@ public sealed partial class MainPage : Page
         if (_shortcutRouter != null)
         {
             await _shortcutRouter.HandleKeyDownAsync(e);
-        }
-    }
-
-    private void PlayPauseKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (_shortcutRouter?.HandlePlayPauseAccelerator() == true)
-        {
-            args.Handled = true;
-        }
-    }
-
-    private async void DeleteKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (_shortcutRouter != null && await _shortcutRouter.HandleDeleteAcceleratorAsync())
-        {
-            args.Handled = true;
-        }
-    }
-
-    private void SplitClipKeyboardAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (_shortcutRouter?.HandleSplitClipAccelerator() == true)
-        {
-            args.Handled = true;
         }
     }
 }

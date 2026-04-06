@@ -12,6 +12,8 @@ artifacts/
 
 # App data and runtime files
 data/
+.build-check/
+.dotnet-home/
 
 # Planning docs (not source code)
 docs/plans/

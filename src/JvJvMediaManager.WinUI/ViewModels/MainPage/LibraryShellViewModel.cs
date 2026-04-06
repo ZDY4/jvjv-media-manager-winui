@@ -16,6 +16,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     private readonly MediaDb _db;
     private readonly MediaLibraryService _library;
     private readonly ThumbnailService _thumbnails;
+    private readonly TimelineThumbnailStripService _timelineThumbnails;
     private readonly HashSet<string> _sessionUnlockedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly SelectionViewModel _selection;
     private readonly SemaphoreSlim _scanRefreshLock = new(1, 1);
@@ -52,6 +53,7 @@ public sealed class LibraryShellViewModel : ObservableObject
         _db.Initialize();
         _library = new MediaLibraryService(_db);
         _thumbnails = new ThumbnailService(_settings.GetThumbnailCacheDir());
+        _timelineThumbnails = new TimelineThumbnailStripService(_settings.GetTimelineThumbnailCacheDir());
         FilteredMediaItems = new IncrementalMediaCollection(LoadMediaPageAsync);
         WatchedFolders = new ObservableCollection<WatchedFolder>(_settings.WatchedFolders);
         Playlists = new ObservableCollection<Playlist>(_db.GetPlaylists());
@@ -70,7 +72,8 @@ public sealed class LibraryShellViewModel : ObservableObject
     {
         return WatchedFolders
             .Where(f => f.Visible)
-            .Select(f => f.Path)
+            .Select(f => PathHelpers.NormalizeFolderPath(f.Path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
@@ -169,13 +172,18 @@ public sealed class LibraryShellViewModel : ObservableObject
         get => _selectedPlaylist;
         set
         {
+            var previousPlaylistId = _selectedPlaylist?.Id;
             if (SetProperty(ref _selectedPlaylist, value))
             {
                 OnPropertyChanged(nameof(CurrentScopeTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitle));
                 OnPropertyChanged(nameof(SelectedPlaylistTitleVisibility));
                 OnPropertyChanged(nameof(RefreshButtonVisibility));
-                QueueRefreshMedia(false);
+
+                if (!string.Equals(previousPlaylistId, value?.Id, StringComparison.Ordinal))
+                {
+                    QueueRefreshMedia(false);
+                }
             }
         }
     }
@@ -308,7 +316,13 @@ public sealed class LibraryShellViewModel : ObservableObject
                 (MediaSortField.ModifiedAt, MediaSortOrder.Desc) => "时间 ↓",
                 (MediaSortField.ModifiedAt, MediaSortOrder.Asc) => "时间 ↑",
                 (MediaSortField.FileName, MediaSortOrder.Asc) => "名称 A-Z",
-                _ => "名称 Z-A"
+                (MediaSortField.FileName, MediaSortOrder.Desc) => "名称 Z-A",
+                (MediaSortField.Size, MediaSortOrder.Asc) => "大小 ↑",
+                (MediaSortField.Size, MediaSortOrder.Desc) => "大小 ↓",
+                (MediaSortField.Duration, MediaSortOrder.Asc) => "时长 ↑",
+                (MediaSortField.Duration, MediaSortOrder.Desc) => "时长 ↓",
+                (MediaSortField.Resolution, MediaSortOrder.Asc) => "分辨率 ↑",
+                _ => "分辨率 ↓"
             };
         }
     }
@@ -360,10 +374,12 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     public void UpdateWatchedFolders(IEnumerable<WatchedFolder> folders, bool refreshMedia = true)
     {
+        var requestedFolders = folders.ToList();
         var previousFolderPaths = WatchedFolders
             .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
             .ToList();
-        var normalized = folders
+        AppTraceLogger.Log("LibraryShell", $"UpdateWatchedFolders start. RequestedCount={requestedFolders.Count}, PreviousCount={previousFolderPaths.Count}, RefreshMedia={refreshMedia}.");
+        var normalized = requestedFolders
             .Where(folder => !string.IsNullOrWhiteSpace(folder.Path))
             .GroupBy(folder => PathHelpers.NormalizeFolderPath(folder.Path), StringComparer.OrdinalIgnoreCase)
             .Select(group => new WatchedFolder
@@ -377,6 +393,7 @@ public sealed class LibraryShellViewModel : ObservableObject
         var currentFolderPaths = normalized
             .Select(folder => PathHelpers.NormalizeFolderPath(folder.Path))
             .ToList();
+        AppTraceLogger.Log("LibraryShell", $"UpdateWatchedFolders normalized. CurrentCount={currentFolderPaths.Count}, Current=[{string.Join(", ", currentFolderPaths)}].");
 
         RemoveMediaOutsideWatchedFolders(previousFolderPaths, currentFolderPaths);
 
@@ -387,9 +404,11 @@ public sealed class LibraryShellViewModel : ObservableObject
         }
 
         _settings.SetWatchedFolders(WatchedFolders.ToList());
+        AppTraceLogger.Log("LibraryShell", $"UpdateWatchedFolders saved settings. ViewModelCount={WatchedFolders.Count}.");
         CleanupUnlockedFolders();
         if (refreshMedia)
         {
+            AppTraceLogger.Log("LibraryShell", "UpdateWatchedFolders queueing media refresh.");
             QueueRefreshMedia(false);
         }
     }
@@ -403,6 +422,7 @@ public sealed class LibraryShellViewModel : ObservableObject
             .ToList();
         if (removedFolderPaths.Count == 0)
         {
+            AppTraceLogger.Log("LibraryShell", "RemoveMediaOutsideWatchedFolders skipped. No removed folders.");
             return;
         }
 
@@ -411,12 +431,16 @@ public sealed class LibraryShellViewModel : ObservableObject
             .Select(entry => entry.Id)
             .Distinct(StringComparer.Ordinal)
             .ToList();
+        AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders removedFolders=[{string.Join(", ", removedFolderPaths)}], staleMediaCount={staleIds.Count}.");
         if (staleIds.Count == 0)
         {
             return;
         }
 
+        _thumbnails.ClearCacheForMediaIds(staleIds);
+        _timelineThumbnails.ClearCacheForMediaIds(staleIds);
         _db.DeleteMedia(staleIds);
+        AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders deleted stale media records and caches. DeletedCount={staleIds.Count}.");
     }
 
     public void RemoveSelectedTagFilter(string tag)
@@ -576,14 +600,17 @@ public sealed class LibraryShellViewModel : ObservableObject
             .Where(index => index >= 0)
             .DefaultIfEmpty(FilteredMediaItems.Count)
             .Min();
+        AppTraceLogger.Log(
+            "LibraryShell",
+            $"DeleteMediaAsync start. Requested={list.Count}, LoadedCount={loadedCount}, FirstRemovedIndex={firstRemovedIndex}, SelectedId='{selectedId ?? "<null>"}'.");
         _db.DeleteMedia(list.Select(item => item.Id));
 
         await RunOnUiThreadAsync(() =>
         {
-            foreach (var item in list)
-            {
-                FilteredMediaItems.Remove(item);
-            }
+            var removedCount = FilteredMediaItems.RemoveByIds(removedIds);
+            AppTraceLogger.Log(
+                "LibraryShell",
+                $"DeleteMediaAsync UI removal finished. Removed={removedCount}, Remaining={FilteredMediaItems.Count}.");
         });
 
         if (!string.IsNullOrWhiteSpace(selectedId) && !removedIds.Contains(selectedId))
@@ -606,6 +633,9 @@ public sealed class LibraryShellViewModel : ObservableObject
         var fallbackIndex = Math.Clamp(firstRemovedIndex, 0, FilteredMediaItems.Count - 1);
         var replacement = FilteredMediaItems[fallbackIndex];
         await RunOnUiThreadAsync(() => SelectedMedia = replacement);
+        AppTraceLogger.Log(
+            "LibraryShell",
+            $"DeleteMediaAsync fallback selection applied. FallbackIndex={fallbackIndex}, ReplacementId='{replacement.Id}'.");
         return replacement;
     }
 
@@ -613,6 +643,11 @@ public sealed class LibraryShellViewModel : ObservableObject
     {
         var refreshVersion = Interlocked.Increment(ref _refreshVersion);
         var selectedId = preserveSelection ? SelectedMedia?.Id : null;
+        AppTraceLogger.LogSampled(
+            "LibraryShell",
+            "refresh-media-start",
+            $"RefreshMediaAsync start. Version={refreshVersion}, PreserveSelection={preserveSelection}, UpdateLoadingState={updateLoadingState}, SelectedId='{selectedId ?? "<null>"}'.",
+            TimeSpan.FromSeconds(1));
         if (updateLoadingState)
         {
             await RunOnUiThreadAsync(() => IsLoading = true);
@@ -625,6 +660,16 @@ public sealed class LibraryShellViewModel : ObservableObject
             {
                 await RestoreSelectionAsync(refreshVersion, selectedId);
             }
+            AppTraceLogger.LogSampled(
+                "LibraryShell",
+                "refresh-media-complete",
+                $"RefreshMediaAsync completed. Version={refreshVersion}, ItemCount={FilteredMediaItems.Count}, SelectedId='{SelectedMedia?.Id ?? "<null>"}'.",
+                TimeSpan.FromSeconds(1));
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.Log("LibraryShell", $"RefreshMediaAsync failed. Version={refreshVersion}. {ex}");
+            throw;
         }
         finally
         {
@@ -826,6 +871,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     {
         _db.ClearAllMedia(includePlaylists);
         _thumbnails.ClearCache();
+        _timelineThumbnails.ClearCache();
         _sessionUnlockedFolders.Clear();
         ReloadPlaylists();
         SelectedMedia = null;
@@ -841,6 +887,7 @@ public sealed class LibraryShellViewModel : ObservableObject
     public void ClearThumbnailCache()
     {
         _thumbnails.ClearCache();
+        _timelineThumbnails.ClearCache();
         foreach (var item in FilteredMediaItems)
         {
             item.ResetThumbnailLoadState();
@@ -896,11 +943,18 @@ public sealed class LibraryShellViewModel : ObservableObject
 
     private Task<MediaPageResult> LoadMediaPageAsync(int offset, int limit)
     {
+        var visibleFolders = GetVisibleWatchedFolderPaths();
+        AppTraceLogger.LogSampled(
+            "LibraryShell",
+            "load-media-page",
+            $"LoadMediaPageAsync requested. Offset={offset}, Limit={limit}, VisibleFolders={visibleFolders.Count}, PlaylistId='{SelectedPlaylist?.Id ?? "<null>"}'.",
+            TimeSpan.FromSeconds(1));
         return _library.QueryPageAsync(new MediaQuery
         {
             SearchText = SearchQuery,
             SelectedTags = SelectedTags.ToList(),
             PlaylistId = SelectedPlaylist?.Id,
+            IncludedFolderPaths = visibleFolders,
             ExcludedFolderPaths = GetActiveLockedFolderPaths(),
             SortField = SortField,
             SortOrder = SortOrder,

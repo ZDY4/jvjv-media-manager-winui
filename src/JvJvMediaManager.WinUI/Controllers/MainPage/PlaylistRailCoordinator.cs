@@ -36,6 +36,7 @@ public sealed class PlaylistRailCoordinator : IDisposable
         _confirmAsync = confirmAsync;
 
         _playlistRailView.MediaTabButton.Click += MediaTabButton_Click;
+        _playlistRailView.PlaylistDropRequested += PlaylistRailView_PlaylistDropRequested;
         _playlistRailView.PlaylistRailListView.ItemClick += PlaylistRailListView_ItemClick;
         _playlistRailView.PlaylistRailListView.DragItemsCompleted += PlaylistRailListView_DragItemsCompleted;
         _playlistRailView.PlaylistRailListView.RightTapped += PlaylistRailListView_RightTapped;
@@ -46,11 +47,17 @@ public sealed class PlaylistRailCoordinator : IDisposable
     public void Dispose()
     {
         _playlistRailView.MediaTabButton.Click -= MediaTabButton_Click;
+        _playlistRailView.PlaylistDropRequested -= PlaylistRailView_PlaylistDropRequested;
         _playlistRailView.PlaylistRailListView.ItemClick -= PlaylistRailListView_ItemClick;
         _playlistRailView.PlaylistRailListView.DragItemsCompleted -= PlaylistRailListView_DragItemsCompleted;
         _playlistRailView.PlaylistRailListView.RightTapped -= PlaylistRailListView_RightTapped;
         _playlistRailView.CreatePlaylistRailButton.Click -= CreatePlaylist_Click;
         _headerView.SelectedPlaylistTitleButton.Click -= SelectedPlaylistTitleButton_Click;
+    }
+
+    public void HighlightPlaylist(string playlistId)
+    {
+        _playlistRailView.HighlightPlaylist(playlistId);
     }
 
     private void MediaTabButton_Click(object sender, RoutedEventArgs e)
@@ -64,6 +71,20 @@ public sealed class PlaylistRailCoordinator : IDisposable
         {
             _libraryPaneController.TogglePlaylist(playlist);
         }
+    }
+
+    private async Task PlaylistRailView_PlaylistDropRequested(string playlistId, List<string> mediaIds)
+    {
+        var items = _viewModel.FilteredMediaItems
+            .Where(item => mediaIds.Contains(item.Id, StringComparer.Ordinal))
+            .ToList();
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        await _viewModel.AddMediaToPlaylistAsync(playlistId, items);
+        HighlightPlaylist(playlistId);
     }
 
     private async void CreatePlaylist_Click(object sender, RoutedEventArgs e)

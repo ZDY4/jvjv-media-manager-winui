@@ -79,6 +79,56 @@ public sealed class ThumbnailService
         }
     }
 
+    public void ClearCacheForMediaIds(IEnumerable<string> mediaIds)
+    {
+        var ids = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            foreach (var cacheKey in _memoryCache.Keys.Where(key => ids.Any(id => key.StartsWith($"{id}:", StringComparison.OrdinalIgnoreCase))).ToList())
+            {
+                _memoryCache.Remove(cacheKey);
+                if (_memoryCacheNodes.Remove(cacheKey, out var node))
+                {
+                    _memoryCacheLru.Remove(node);
+                }
+            }
+
+            foreach (var inflightKey in _inflight.Keys.Where(key => ids.Any(id => key.StartsWith($"{id}:", StringComparison.OrdinalIgnoreCase))).ToList())
+            {
+                _inflight.Remove(inflightKey);
+            }
+        }
+
+        if (!Directory.Exists(_cacheDir))
+        {
+            return;
+        }
+
+        foreach (var id in ids)
+        {
+            var pattern = $"{id}_*.thumb";
+            foreach (var file in Directory.EnumerateFiles(_cacheDir, pattern, SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch
+                {
+                    // Best-effort cleanup only.
+                }
+            }
+        }
+    }
+
     private async Task<ImageSource?> LoadThumbnailCoreAsync(MediaFile media, string cacheKey)
     {
         await _loadGate.WaitAsync();

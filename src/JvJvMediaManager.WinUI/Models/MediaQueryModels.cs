@@ -3,7 +3,10 @@ namespace JvJvMediaManager.Models;
 public enum MediaSortField
 {
     FileName,
-    ModifiedAt
+    ModifiedAt,
+    Size,
+    Duration,
+    Resolution
 }
 
 public enum MediaSortOrder
@@ -17,6 +20,7 @@ public sealed class MediaQuery
     public string SearchText { get; init; } = string.Empty;
     public IReadOnlyList<string> SelectedTags { get; init; } = Array.Empty<string>();
     public string? PlaylistId { get; init; }
+    public IReadOnlyList<string>? IncludedFolderPaths { get; init; }
     public IReadOnlyList<string> ExcludedFolderPaths { get; init; } = Array.Empty<string>();
     public MediaSortField SortField { get; init; } = MediaSortField.ModifiedAt;
     public MediaSortOrder SortOrder { get; init; } = MediaSortOrder.Desc;

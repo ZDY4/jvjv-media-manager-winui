@@ -14,6 +14,8 @@ public sealed class MediaContextMenuCoordinator
     public const string RemoveFromPlaylistShortcutText = "Ctrl+Shift+R";
     public const string DeleteShortcutText = "Delete";
 
+    public event Action<string>? PlaylistModified;
+
     private readonly LibraryShellViewModel _viewModel;
     private readonly IContentDialogService _dialogService;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _applyTagEditorAsync;
@@ -193,6 +195,7 @@ public sealed class MediaContextMenuCoordinator
         {
             var playlist = _viewModel.CreatePlaylist(name);
             await _viewModel.AddMediaToPlaylistAsync(playlist.Id, _currentSelection);
+            PlaylistModified?.Invoke(playlist.Id);
         }
         catch (Exception ex)
         {
@@ -208,6 +211,7 @@ public sealed class MediaContextMenuCoordinator
         }
 
         await _viewModel.AddMediaToPlaylistAsync(playlistId, _currentSelection);
+        PlaylistModified?.Invoke(playlistId);
     }
 
     private async void RemoveFromPlaylistItem_Click(object sender, RoutedEventArgs e)

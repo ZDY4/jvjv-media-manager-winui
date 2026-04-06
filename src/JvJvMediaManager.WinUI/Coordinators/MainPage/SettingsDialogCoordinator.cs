@@ -19,6 +19,7 @@ public sealed class SettingsDialogCoordinator
 
     public async Task ShowAsync()
     {
+        AppTraceLogger.Log("SettingsDialog", $"Opening settings dialog. WatchedFolders={_viewModel.WatchedFolders.Count}, HasPassword={_viewModel.HasLockPassword}.");
         var panel = new SettingsPanel(_viewModel);
         panel.PortableModeCommitted += (_, _) => _viewModel.SetPortableMode(panel.PortableModeEnabled);
         panel.DataDirectoryCommitted += (_, _) => _viewModel.SetDataDir(panel.DataDirectory);
@@ -59,18 +60,22 @@ public sealed class SettingsDialogCoordinator
 
         panel.ClearWatchedFoldersButton.Click += async (_, _) =>
         {
-            var confirmDialog = new ContentDialog
+            try
             {
-                Title = "确认",
-                Content = "确定要清空监控文件夹列表吗？",
-                PrimaryButtonText = "确定",
-                CloseButtonText = "取消"
-            };
+                AppTraceLogger.Log("SettingsDialog", $"Clear watched folders button clicked. PendingConfirm={panel.IsClearWatchedFoldersConfirmationPending}, Count={panel.WatchedFolders.Count}.");
+                if (!panel.IsClearWatchedFoldersConfirmationPending)
+                {
+                    panel.BeginClearWatchedFoldersConfirmation();
+                    return;
+                }
 
-            var result = await _dialogService.ShowAsync(confirmDialog);
-            if (result == ContentDialogResult.Primary)
-            {
                 panel.ClearWatchedFolders();
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.Log("SettingsDialog", $"Clear watched folders action failed: {ex}");
+                App.WriteExceptionLog("SettingsDialog ClearWatchedFolders", ex);
+                throw;
             }
         };
         panel.ClearCacheButton.Click += (_, _) => _viewModel.ClearThumbnailCache();
@@ -91,11 +96,22 @@ public sealed class SettingsDialogCoordinator
             CloseButtonText = "关闭",
         };
 
-        await _dialogService.ShowAsync(dialog);
+        try
+        {
+            var result = await _dialogService.ShowAsync(dialog);
+            AppTraceLogger.Log("SettingsDialog", $"Settings dialog closed with result {result}.");
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.Log("SettingsDialog", $"Settings dialog failed: {ex}");
+            App.WriteExceptionLog("SettingsDialog ShowAsync", ex);
+            throw;
+        }
     }
 
     private void PersistGlobalPassword(SettingsPanel panel)
     {
+        AppTraceLogger.Log("SettingsDialog", $"PersistGlobalPassword invoked. PasswordLength={panel.GlobalPassword.Length}, HasProtectedFoldersWithoutPassword={panel.HasProtectedFoldersWithoutPassword()}.");
         if (panel.HasProtectedFoldersWithoutPassword())
         {
             panel.SetValidationMessage("存在受保护文件夹时必须设置全局密码。");
@@ -108,6 +124,7 @@ public sealed class SettingsDialogCoordinator
 
     private void PersistWatchedFolders(SettingsPanel panel)
     {
+        AppTraceLogger.Log("SettingsDialog", $"PersistWatchedFolders invoked. PanelCount={panel.WatchedFolders.Count}, PendingConfirm={panel.IsClearWatchedFoldersConfirmationPending}.");
         if (panel.HasProtectedFoldersWithoutPassword())
         {
             panel.SetValidationMessage("存在受保护文件夹时必须设置全局密码。");

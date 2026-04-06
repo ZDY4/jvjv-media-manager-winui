@@ -8,12 +8,6 @@
     mc:Ignorable="d"
     Background="Transparent">
 
-    <Page.KeyboardAccelerators>
-        <KeyboardAccelerator Key="Space" Invoked="PlayPauseKeyboardAccelerator_Invoked" />
-        <KeyboardAccelerator Key="Delete" Invoked="DeleteKeyboardAccelerator_Invoked" />
-        <KeyboardAccelerator Key="K" Invoked="SplitClipKeyboardAccelerator_Invoked" />
-    </Page.KeyboardAccelerators>
-
     <Page.Transitions>
         <TransitionCollection>
             <NavigationThemeTransition />

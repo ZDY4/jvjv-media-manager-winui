@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Data;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.ViewModels;
 
@@ -16,7 +19,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
     private bool _hasMoreItems = true;
     private DispatcherQueue? _dispatcher;
 
-    public IncrementalMediaCollection(Func<int, int, Task<MediaPageResult>> pageLoader, int pageSize = 200)
+    public IncrementalMediaCollection(Func<int, int, Task<MediaPageResult>> pageLoader, int pageSize = 120)
     {
         _pageLoader = pageLoader;
         _pageSize = pageSize;
@@ -87,13 +90,10 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 return 0;
             }
 
-            await RunOnUiThreadAsync(() =>
-            {
-                foreach (var item in result.Items)
-                {
-                    Add(new MediaItemViewModel(item));
-                }
-            });
+            var pageItems = result.Items
+                .Select(item => new MediaItemViewModel(item))
+                .ToList();
+            await RunOnUiThreadAsync(() => AddRange(pageItems));
 
             _hasMoreItems = result.HasMore;
             return (uint)result.Items.Count;
@@ -130,5 +130,65 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         }
 
         return tcs.Task;
+    }
+
+    private void AddRange(IReadOnlyList<MediaItemViewModel> items)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        CheckReentrancy();
+
+        var startIndex = Count;
+        foreach (var item in items)
+        {
+            Items.Add(item);
+        }
+
+        // WinUI collection views are unstable with range Add notifications followed by later single-item mutations.
+        // A single Reset keeps page appends cheap without leaving the native projection in an invalid state.
+        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        AppTraceLogger.LogSampled(
+            "IncrementalMediaCollection",
+            "range-add-reset",
+            $"Applied page append via Reset. StartIndex={startIndex}, Added={items.Count}, Total={Count}.",
+            TimeSpan.FromSeconds(2));
+    }
+
+    public int RemoveByIds(ISet<string> ids)
+    {
+        if (ids.Count == 0)
+        {
+            return 0;
+        }
+
+        CheckReentrancy();
+
+        var removed = 0;
+        for (var index = Items.Count - 1; index >= 0; index--)
+        {
+            if (Items[index] is MediaItemViewModel item && ids.Contains(item.Id))
+            {
+                Items.RemoveAt(index);
+                removed++;
+            }
+        }
+
+        if (removed == 0)
+        {
+            return 0;
+        }
+
+        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        AppTraceLogger.Log(
+            "IncrementalMediaCollection",
+            $"Removed media items via Reset. Removed={removed}, Remaining={Count}.");
+        return removed;
     }
 }

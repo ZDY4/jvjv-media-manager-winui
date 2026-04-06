@@ -74,6 +74,40 @@ public sealed class TimelineThumbnailStripService
         return result;
     }
 
+    public void ClearCache()
+    {
+        if (!Directory.Exists(_cacheDir))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
+        {
+            TryDelete(file);
+        }
+    }
+
+    public void ClearCacheForMediaIds(IEnumerable<string> mediaIds)
+    {
+        var ids = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (ids.Count == 0 || !Directory.Exists(_cacheDir))
+        {
+            return;
+        }
+
+        foreach (var id in ids)
+        {
+            var prefix = $"{SanitizeToken(id)}_";
+            foreach (var file in Directory.EnumerateFiles(_cacheDir, $"{prefix}*.jpg", SearchOption.TopDirectoryOnly))
+            {
+                TryDelete(file);
+            }
+        }
+    }
+
     private async Task GenerateFrameAsync(
         TimelineThumbnailStripRequest request,
         string cachePath,

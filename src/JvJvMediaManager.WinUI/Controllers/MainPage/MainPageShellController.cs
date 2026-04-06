@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Threading;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -56,6 +57,9 @@ public sealed class MainPageShellController
     private bool _isNavigationHotspotPressed;
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
+    private int _selectionSyncQueued;
+    private readonly object _missingMediaCleanupLock = new();
+    private readonly HashSet<string> _missingMediaCleanupIds = new(StringComparer.Ordinal);
     private Windows.Foundation.Point _navigationHotspotPressPoint;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
@@ -124,6 +128,7 @@ public sealed class MainPageShellController
             _mediaContextMenuCoordinator,
             (paths, refreshMedia) => UpdateWatchedFolders(paths, refreshMedia),
             ShowInfoDialogAsync);
+        _mediaContextMenuCoordinator.PlaylistModified += MediaContextMenuCoordinator_PlaylistModified;
         _videoPlaybackController = _modules.CreateVideoPlaybackController(
             shell.Library,
             shell.Player.VideoPlayback,
@@ -195,6 +200,7 @@ public sealed class MainPageShellController
 
     public void Dispose()
     {
+        _mediaContextMenuCoordinator.PlaylistModified -= MediaContextMenuCoordinator_PlaylistModified;
         ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
         _playerPane.ShortcutHintInvoked -= PlayerPane_ShortcutHintInvoked;
         _mediaBrowserController.Dispose();
@@ -207,11 +213,36 @@ public sealed class MainPageShellController
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(LibraryShellViewModel.SelectedMedia)
-            || e.PropertyName == nameof(LibraryShellViewModel.IsLoading))
+        if (e.PropertyName == nameof(LibraryShellViewModel.SelectedMedia))
         {
-            _page.DispatcherQueue.TryEnqueue(SyncSelectionFromViewModel);
+            QueueSelectionSync();
         }
+
+        if (e.PropertyName == nameof(LibraryShellViewModel.IsLoading)
+            && !ViewModel.IsLoading
+            && ViewModel.SelectedMedia == null)
+        {
+            QueueSelectionSync();
+        }
+    }
+
+    private void QueueSelectionSync()
+    {
+        if (Interlocked.Exchange(ref _selectionSyncQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _page.DispatcherQueue.TryEnqueue(() =>
+        {
+            Interlocked.Exchange(ref _selectionSyncQueued, 0);
+            SyncSelectionFromViewModel();
+        });
+    }
+
+    private void MediaContextMenuCoordinator_PlaylistModified(string playlistId)
+    {
+        _playlistRailCoordinator.HighlightPlaylist(playlistId);
     }
 
     public Task HandleAddFolderFromTitleBarAsync()
@@ -267,6 +298,12 @@ public sealed class MainPageShellController
 
     private void UpdatePlayer(MediaItemViewModel media)
     {
+        if (!IsMediaFileAvailable(media))
+        {
+            QueueMissingMediaCleanup(media, "update-player");
+            return;
+        }
+
         var isSameActiveMedia = string.Equals(_activePlayerMediaId, media.Id, StringComparison.Ordinal)
             && _activePlayerMediaType == media.Type;
         _shell.Player.EmptyStateVisibility = Visibility.Collapsed;
@@ -295,6 +332,67 @@ public sealed class MainPageShellController
 
         _activePlayerMediaId = media.Id;
         _activePlayerMediaType = media.Type;
+    }
+
+    private bool IsMediaFileAvailable(MediaItemViewModel media)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(media.FileSystemPath) && File.Exists(media.FileSystemPath);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.Log("MainPageShell", $"IsMediaFileAvailable failed. MediaId='{media.Id}', Path='{media.FileSystemPath}'. {ex}");
+            return false;
+        }
+    }
+
+    private void QueueMissingMediaCleanup(MediaItemViewModel media, string source)
+    {
+        lock (_missingMediaCleanupLock)
+        {
+            if (!_missingMediaCleanupIds.Add(media.Id))
+            {
+                return;
+            }
+        }
+
+        AppTraceLogger.Log(
+            "MainPageShell",
+            $"Missing media detected. Source={source}, MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
+        ClearPlayerSelection();
+        _ = HandleMissingMediaAsync(media);
+    }
+
+    private async Task HandleMissingMediaAsync(MediaItemViewModel media)
+    {
+        try
+        {
+            var nextSelection = await ViewModel.DeleteMediaAsync(new[] { media });
+            ViewModel.StatusMessage = $"媒体文件已不存在，已从媒体库移除：{media.FileName}";
+
+            if (nextSelection == null)
+            {
+                ClearPlayerSelection();
+            }
+
+            _mediaBrowserController.SyncSelectionFromViewModel(ViewModel.SelectedMedia);
+            AppTraceLogger.Log(
+                "MainPageShell",
+                $"Missing media cleanup completed. MediaId='{media.Id}', NextSelection='{ViewModel.SelectedMedia?.Id ?? "<null>"}'.");
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.Log("MainPageShell", $"Missing media cleanup failed. MediaId='{media.Id}'. {ex}");
+            await ShowInfoDialogAsync("媒体已失效", $"文件不存在，且从媒体库移除失败：{media.FileName}{Environment.NewLine}{ex.Message}");
+        }
+        finally
+        {
+            lock (_missingMediaCleanupLock)
+            {
+                _missingMediaCleanupIds.Remove(media.Id);
+            }
+        }
     }
 
     private void ClearPlayerSelection()
@@ -402,7 +500,15 @@ public sealed class MainPageShellController
             return;
         }
 
-        if (e.Key == Windows.System.VirtualKey.Left)
+        if (e.Key == Windows.System.VirtualKey.Space)
+        {
+            e.Handled = TryTogglePlaybackFromShortcut();
+        }
+        else if (e.Key == Windows.System.VirtualKey.Delete)
+        {
+            e.Handled = await TryDeleteSelectedFromShortcutAsync();
+        }
+        else if (e.Key == Windows.System.VirtualKey.Left)
         {
             await NavigateRelativeAsync(-1);
             e.Handled = true;
@@ -471,26 +577,6 @@ public sealed class MainPageShellController
         await ExecuteUiActionAsync(
             () => TryApplyNumpadTagShortcutAsync(digit),
             "快捷标签添加失败");
-    }
-
-    public bool HandlePlayPauseAccelerator()
-    {
-        if (!TryTogglePlaybackFromShortcut())
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    public Task<bool> HandleDeleteAcceleratorAsync()
-    {
-        return TryDeleteSelectedFromShortcutAsync();
-    }
-
-    public bool HandleSplitClipAccelerator()
-    {
-        return TrySplitClipFromShortcut();
     }
 
     private bool TryTogglePlaybackFromShortcut()

@@ -91,6 +91,8 @@
                                TextTrimming="CharacterEllipsis" />
 
                     <ToggleButton Grid.Column="1"
+                                  Width="30"
+                                  Height="30"
                                   Padding="6"
                                   Background="Transparent"
                                   BorderThickness="0"
@@ -99,10 +101,13 @@
                                   Click="ToggleWatchedFolderVisibilityButton_Click"
                                   Loaded="ToggleWatchedFolderVisibilityButton_Loaded"
                                   Tag="{Binding}">
-                        <FontIcon FontSize="12" />
+                        <FontIcon FontSize="12"
+                                  FontFamily="Segoe MDL2 Assets" />
                     </ToggleButton>
 
                     <ToggleButton Grid.Column="2"
+                                  Width="30"
+                                  Height="30"
                                   Padding="6"
                                   Background="Transparent"
                                   BorderThickness="0"
@@ -111,10 +116,13 @@
                                   Click="ToggleWatchedFolderLockedButton_Click"
                                   Loaded="ToggleWatchedFolderLockedButton_Loaded"
                                   Tag="{Binding}">
-                        <FontIcon FontSize="12" />
+                        <FontIcon FontSize="12"
+                                  FontFamily="Segoe MDL2 Assets" />
                     </ToggleButton>
 
                     <Button Grid.Column="3"
+                            Width="30"
+                            Height="30"
                             Padding="6"
                             Background="Transparent"
                             BorderThickness="0"
@@ -123,7 +131,8 @@
                             Tag="{Binding}"
                             ToolTipService.ToolTip="删除这个监控文件夹">
                         <FontIcon Glyph="&#xE711;"
-                                  FontSize="12" />
+                                  FontSize="12"
+                                  FontFamily="Segoe MDL2 Assets" />
                     </Button>
                 </Grid>
             </Border>
@@ -214,10 +223,13 @@
 
                     <ListView x:Name="WatchedFoldersList"
                               x:FieldModifier="public"
-                              MaxHeight="240"
                               Background="Transparent"
                               BorderThickness="0"
                               SelectionMode="Single"
+                              ScrollViewer.HorizontalScrollMode="Disabled"
+                              ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                              ScrollViewer.VerticalScrollMode="Disabled"
+                              ScrollViewer.VerticalScrollBarVisibility="Hidden"
                               ItemContainerStyle="{StaticResource WatchedFolderListItemContainerStyle}"
                               ItemTemplate="{StaticResource WatchedFolderTemplate}" />
                 </StackPanel>
