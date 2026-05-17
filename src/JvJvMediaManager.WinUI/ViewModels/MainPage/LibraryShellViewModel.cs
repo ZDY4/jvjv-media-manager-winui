@@ -884,15 +884,14 @@ public sealed class LibraryShellViewModel : ObservableObject
         StatusMessage = includePlaylists ? "媒体库、标签和播放列表已清空。" : "媒体库和标签已清空。";
     }
 
-    public void ClearThumbnailCache()
+    public void ClearInvalidThumbnailCache()
     {
-        _thumbnails.ClearCache();
-        _timelineThumbnails.ClearCache();
-        foreach (var item in FilteredMediaItems)
-        {
-            item.ResetThumbnailLoadState();
-            item.Thumbnail = null;
-        }
+        AppTraceLogger.Log("LibraryShell", $"ClearInvalidThumbnailCache start. LoadedCount={FilteredMediaItems.Count}.");
+        var deleted = _thumbnails.ClearInvalidCache(_db.GetAllMedia());
+        StatusMessage = deleted == 0
+            ? "没有发现失效的缩略图缓存。"
+            : $"已清理 {deleted} 个失效的缩略图缓存。";
+        AppTraceLogger.Log("LibraryShell", $"ClearInvalidThumbnailCache completed. DeletedCount={deleted}, LoadedCount={FilteredMediaItems.Count}.");
     }
 
     public IReadOnlyList<string> GetAllTags()

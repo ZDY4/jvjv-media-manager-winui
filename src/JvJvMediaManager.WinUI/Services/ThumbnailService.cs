@@ -129,6 +129,61 @@ public sealed class ThumbnailService
         }
     }
 
+    public int ClearInvalidCache(IEnumerable<MediaFile> mediaItems)
+    {
+        var validFileNames = mediaItems
+            .Where(media => !string.IsNullOrWhiteSpace(media.Id))
+            .Select(media => Path.GetFileName(GetCachePath(media)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var validCacheKeys = mediaItems
+            .Where(media => !string.IsNullOrWhiteSpace(media.Id))
+            .Select(BuildCacheKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        lock (_sync)
+        {
+            foreach (var cacheKey in _memoryCache.Keys.Where(key => !validCacheKeys.Contains(key)).ToList())
+            {
+                _memoryCache.Remove(cacheKey);
+                if (_memoryCacheNodes.Remove(cacheKey, out var node))
+                {
+                    _memoryCacheLru.Remove(node);
+                }
+            }
+
+            foreach (var inflightKey in _inflight.Keys.Where(key => !validCacheKeys.Contains(key)).ToList())
+            {
+                _inflight.Remove(inflightKey);
+            }
+        }
+
+        if (!Directory.Exists(_cacheDir))
+        {
+            return 0;
+        }
+
+        var deleted = 0;
+        foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
+        {
+            var fileName = Path.GetFileName(file);
+            if (validFileNames.Contains(fileName))
+            {
+                continue;
+            }
+
+            try
+            {
+                File.Delete(file);
+                deleted++;
+            }
+            catch
+            {
+                // Best-effort stale cache cleanup only.
+            }
+        }
+
+        return deleted;
+    }
     private async Task<ImageSource?> LoadThumbnailCoreAsync(MediaFile media, string cacheKey)
     {
         await _loadGate.WaitAsync();

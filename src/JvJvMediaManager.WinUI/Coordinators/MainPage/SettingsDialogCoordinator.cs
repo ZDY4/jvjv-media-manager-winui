@@ -78,7 +78,7 @@ public sealed class SettingsDialogCoordinator
                 throw;
             }
         };
-        panel.ClearCacheButton.Click += (_, _) => _viewModel.ClearThumbnailCache();
+        panel.ClearCacheButton.Click += (_, _) => _viewModel.ClearInvalidThumbnailCache();
         panel.ResetLibraryButton.Click += async (_, _) =>
         {
             await _viewModel.ResetLibraryAsync(false);

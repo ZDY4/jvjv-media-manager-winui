@@ -344,7 +344,7 @@
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button x:Name="ClearCacheButton"
                                 x:FieldModifier="public"
-                                Content="清理缩略图缓存"
+                                Content="清理失效缩略图缓存"
                                 Style="{StaticResource SecondaryToolbarButtonStyle}" />
                         <Button x:Name="ResetLibraryButton"
                                 x:FieldModifier="public"
