@@ -64,7 +64,7 @@
       <Color x:Key="PlayerInfoColor">#B8242424</Color>
       <Color x:Key="ZoomBadgeColor">#D8242424</Color>
       <Color x:Key="ControlBarColor">#D8262626</Color>
-      <Color x:Key="ControlBarFallbackColor">#BC1B1B1B</Color>
+      <Color x:Key="ControlBarFallbackColor">#711B1B1B</Color>
       <Color x:Key="ControlBarBorderColor">#26FFFFFF</Color>
       <Color x:Key="ControlBarTintColor">#FF1B1B1B</Color>
       <Color x:Key="VolumeFlyoutFallbackColor">#C8262626</Color>

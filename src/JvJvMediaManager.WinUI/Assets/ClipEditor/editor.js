@@ -198,9 +198,24 @@
   function updateState(payload) {
     const nextPayload = payload || {};
     const hasPositionUpdate = Object.prototype.hasOwnProperty.call(nextPayload, "currentPositionSeconds");
+    const requiresFullRender =
+      Object.prototype.hasOwnProperty.call(nextPayload, "durationSeconds")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "zoomFactor")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "mode")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "segments")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "previewSegments")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "selectedSegmentIndex")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "mediaId")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "mediaName")
+      || Object.prototype.hasOwnProperty.call(nextPayload, "isExporting");
     const previousZoomFactor = state.zoomFactor;
     Object.assign(state, payload || {});
-    render();
+    if (requiresFullRender) {
+      render();
+    } else {
+      renderPlayhead();
+      renderMeta();
+    }
 
     if (pendingZoomAnchor && previousZoomFactor !== state.zoomFactor) {
       const anchorX = timeToX(pendingZoomAnchor.seconds);

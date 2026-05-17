@@ -296,7 +296,7 @@ public sealed partial class SettingsPanel : UserControl
     {
         if (button.Content is FontIcon icon)
         {
-            icon.Glyph = visible ? "\uE7BD" : "\uE7BA";
+            icon.Glyph = visible ? "\uE890" : "\uE891";
             icon.Opacity = visible ? 1.0 : 0.5;
         }
 
@@ -368,6 +368,11 @@ public sealed partial class SettingsPanel : UserControl
                 ? "该文件夹中的媒体在媒体库中可见。"
                 : "该文件夹中的媒体已从媒体库隐藏，不会在扫描时处理。";
 
+        if (!DoesWatchedFolderPathExist(folder))
+        {
+            instructionText += " 警告：当前文件夹路径不存在，扫描时会被跳过。";
+        }
+
         WatchedFolderStatusText.Text = $"当前状态：{statusText}。{instructionText}";
     }
 
@@ -402,5 +407,29 @@ public sealed partial class SettingsPanel : UserControl
         AppTraceLogger.Log("SettingsPanel", $"Removed watched folder '{folder.Path}'. RemainingCount={WatchedFolders.Count}.");
         RefreshWatchedFolderStatus();
         WatchedFoldersChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void WatchedFolderWarningPanel_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: WatchedFolder folder } element)
+        {
+            return;
+        }
+
+        element.Visibility = DoesWatchedFolderPathExist(folder)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private static bool DoesWatchedFolderPathExist(WatchedFolder folder)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(folder.Path) && Directory.Exists(folder.Path);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

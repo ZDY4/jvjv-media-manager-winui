@@ -66,29 +66,40 @@ public class Playlist
     public string? ColorHex { get; set; }
     public int SortOrder { get; set; }
     public long CreatedAt { get; set; }
+    public string RailDisplayText { get; private set; } = "?";
 
-    public string RailDisplayText
+    internal void UpdateRailDisplayText(bool useTwoTextElements)
     {
-        get
+        var normalized = Name?.Trim() ?? string.Empty;
+        RailDisplayText = useTwoTextElements
+            ? GetLeadingTextElements(normalized, 2)
+            : GetPrimaryTextElement(normalized);
+    }
+
+    internal static string GetRailInitialKey(string? value)
+    {
+        var displayText = GetPrimaryTextElement(value?.Trim() ?? string.Empty);
+        return displayText.ToUpperInvariant();
+    }
+
+    private static string GetPrimaryTextElement(string value)
+    {
+        if (string.IsNullOrEmpty(value))
         {
-            var normalized = Name?.Trim() ?? string.Empty;
-            if (string.IsNullOrEmpty(normalized))
-            {
-                return "?";
-            }
-
-            var enumerator = StringInfo.GetTextElementEnumerator(normalized);
-            while (enumerator.MoveNext())
-            {
-                var element = enumerator.GetTextElement();
-                if (element.Length > 0 && char.IsLetter(element, 0))
-                {
-                    return element;
-                }
-            }
-
-            return GetLeadingTextElements(normalized, 2);
+            return "?";
         }
+
+        var enumerator = StringInfo.GetTextElementEnumerator(value);
+        while (enumerator.MoveNext())
+        {
+            var element = enumerator.GetTextElement();
+            if (element.Length > 0 && char.IsLetter(element, 0))
+            {
+                return element;
+            }
+        }
+
+        return GetLeadingTextElements(value, 2);
     }
 
     private static string GetLeadingTextElements(string value, int count)

@@ -4,12 +4,14 @@ using Microsoft.UI.Xaml.Controls;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Controllers.MainPage;
 
 public sealed class MediaContextMenuCoordinator
 {
     public const string OpenFolderShortcutText = "Ctrl+Shift+O";
+    public const string FocusInLibraryShortcutText = "";
     public const string EditTagsShortcutText = "Ctrl+T";
     public const string RemoveFromPlaylistShortcutText = "Ctrl+Shift+R";
     public const string DeleteShortcutText = "Delete";
@@ -18,11 +20,13 @@ public sealed class MediaContextMenuCoordinator
 
     private readonly LibraryShellViewModel _viewModel;
     private readonly IContentDialogService _dialogService;
+    private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _focusInMediaLibraryAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _applyTagEditorAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _addToPlaylistAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _deleteSelectionAsync;
     private readonly MenuFlyout _flyout;
     private readonly MenuFlyoutItem _openFolderItem;
+    private readonly MenuFlyoutItem _focusInLibraryItem;
     private readonly MenuFlyoutItem _editTagsItem;
     private readonly MenuFlyoutSubItem _addToPlaylistItem;
     private readonly MenuFlyoutItem _removeFromPlaylistItem;
@@ -34,18 +38,21 @@ public sealed class MediaContextMenuCoordinator
     public MediaContextMenuCoordinator(
         LibraryShellViewModel viewModel,
         IContentDialogService dialogService,
+        Func<IReadOnlyList<MediaItemViewModel>, Task> focusInMediaLibraryAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
     {
         _viewModel = viewModel;
         _dialogService = dialogService;
+        _focusInMediaLibraryAsync = focusInMediaLibraryAsync;
         _applyTagEditorAsync = applyTagEditorAsync;
         _addToPlaylistAsync = addToPlaylistAsync;
         _deleteSelectionAsync = deleteSelectionAsync;
 
         _flyout = new MenuFlyout();
         _openFolderItem = CreateMenuItem("打开所在目录", OpenFolderShortcutText, OpenFolderItem_Click);
+        _focusInLibraryItem = CreateMenuItem("在媒体库中聚焦当前媒体", FocusInLibraryShortcutText, FocusInLibraryItem_Click);
         _editTagsItem = CreateMenuItem("编辑标签", EditTagsShortcutText, EditTagsItem_Click);
         _addToPlaylistItem = new MenuFlyoutSubItem { Text = "加入播放列表" };
         _removeFromPlaylistItem = CreateMenuItem(string.Empty, RemoveFromPlaylistShortcutText, RemoveFromPlaylistItem_Click);
@@ -53,6 +60,7 @@ public sealed class MediaContextMenuCoordinator
         _deleteItem = CreateMenuItem("删除文件", DeleteShortcutText, DeleteItem_Click);
 
         _flyout.Items.Add(_openFolderItem);
+        _flyout.Items.Add(_focusInLibraryItem);
         _flyout.Items.Add(_editTagsItem);
         _flyout.Items.Add(_addToPlaylistItem);
         _flyout.Items.Add(_deleteSeparator);
@@ -168,6 +176,17 @@ public sealed class MediaContextMenuCoordinator
         OpenMediaFolder(_currentSelection[0]);
     }
 
+    private async void FocusInLibraryItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentSelection.Count == 0)
+        {
+            return;
+        }
+
+        AppTraceLogger.Log("MediaContextMenu", $"FocusInLibrary requested. SelectionCount={_currentSelection.Count}, MediaId='{_currentSelection[0].Id}'.");
+        await _focusInMediaLibraryAsync(_currentSelection);
+    }
+
     private async void EditTagsItem_Click(object sender, RoutedEventArgs e)
     {
         if (_currentSelection.Count == 0)
@@ -193,12 +212,15 @@ public sealed class MediaContextMenuCoordinator
 
         try
         {
+            AppTraceLogger.Log("MediaContextMenu", $"CreateNewPlaylistAndAdd start. SelectionCount={_currentSelection.Count}, NameLength={name.Length}.");
             var playlist = _viewModel.CreatePlaylist(name);
             await _viewModel.AddMediaToPlaylistAsync(playlist.Id, _currentSelection);
             PlaylistModified?.Invoke(playlist.Id);
+            AppTraceLogger.Log("MediaContextMenu", $"CreateNewPlaylistAndAdd completed. PlaylistId='{playlist.Id}', SelectionCount={_currentSelection.Count}.");
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("MediaContextMenu", $"CreateNewPlaylistAndAdd failed. SelectionCount={_currentSelection.Count}.", ex);
             await _dialogService.ShowInfoAsync("创建失败", ex.Message);
         }
     }
@@ -210,8 +232,10 @@ public sealed class MediaContextMenuCoordinator
             return;
         }
 
+        AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd start. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
         await _viewModel.AddMediaToPlaylistAsync(playlistId, _currentSelection);
         PlaylistModified?.Invoke(playlistId);
+        AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd completed. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
     }
 
     private async void RemoveFromPlaylistItem_Click(object sender, RoutedEventArgs e)
@@ -221,7 +245,9 @@ public sealed class MediaContextMenuCoordinator
             return;
         }
 
+        AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist start. PlaylistId='{_viewModel.SelectedPlaylist.Id}', SelectionCount={_currentSelection.Count}.");
         await _viewModel.RemoveMediaFromSelectedPlaylistAsync(_currentSelection);
+        AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist completed. SelectionCount={_currentSelection.Count}.");
     }
 
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
@@ -231,6 +257,7 @@ public sealed class MediaContextMenuCoordinator
             return;
         }
 
+        AppTraceLogger.Log("MediaContextMenu", $"DeleteSelection requested. SelectionCount={_currentSelection.Count}.");
         await _deleteSelectionAsync(_currentSelection);
     }
 }

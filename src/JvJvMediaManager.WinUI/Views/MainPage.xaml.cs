@@ -3,8 +3,10 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using JvJvMediaManager.Controllers.MainPage;
 using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
+using Windows.System;
 
 namespace JvJvMediaManager.Views;
 
@@ -30,6 +32,22 @@ public sealed partial class MainPage : Page
 
     public SplitView LibrarySplitView => LibrarySplitViewHost;
 
+    public void FocusKeyboardHost()
+    {
+        KeyboardFocusHost.Focus(FocusState.Programmatic);
+    }
+
+    public bool TryHandleWindowShortcutKey(VirtualKey key)
+    {
+        if (_shortcutRouter == null || !_shortcutRouter.ShouldHandleWindowShortcutKey(key))
+        {
+            return false;
+        }
+
+        _ = HandleWindowShortcutKeyAsync(key);
+        return true;
+    }
+
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
         _dialogService.AttachHost(XamlRoot);
@@ -39,6 +57,8 @@ public sealed partial class MainPage : Page
 
         RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown));
         AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown), true);
+
+        FocusKeyboardHost();
 
         await _controller.InitializeAsync();
     }
@@ -71,6 +91,21 @@ public sealed partial class MainPage : Page
         if (_shortcutRouter != null)
         {
             await _shortcutRouter.HandleKeyDownAsync(e);
+        }
+    }
+
+    private async Task HandleWindowShortcutKeyAsync(VirtualKey key)
+    {
+        try
+        {
+            if (_shortcutRouter != null)
+            {
+                await _shortcutRouter.HandleVirtualKeyDownAsync(key);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPage", $"HandleWindowShortcutKeyAsync failed. Key={key}.", ex);
         }
     }
 }

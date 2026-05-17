@@ -6,12 +6,15 @@ namespace JvJvMediaManager.Controllers.MainPage;
 internal interface IClipTimelineWebBridge : IDisposable
 {
     bool IsReady { get; }
+    string StatusText { get; }
 
     event EventHandler<ClipTimelineWebCommand>? CommandReceived;
 
     void Attach(WebView2 webView);
 
     Task PublishStateAsync(ClipTimelineWebState state);
+
+    Task PublishStateDeltaAsync(object payload);
 
     void FocusPlayhead();
 }

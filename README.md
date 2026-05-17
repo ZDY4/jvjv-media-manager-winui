@@ -60,5 +60,4 @@ package.bat win-x64 framework-dependent
 
 ## 文档
 
-- [功能需求](docs/requirements.md)
-- [开发计划](docs/development-plan.md)
+- [播放列表拖拽功能剩余任务](docs/playlist-drag-drop-remaining-tasks.md)

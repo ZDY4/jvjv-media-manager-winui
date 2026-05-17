@@ -153,6 +153,16 @@ public sealed class ClipEditorController : IClipTimelineEditor
         UpdateUi();
     }
 
+    public void HandlePlaybackProgressChanged()
+    {
+        if (!_isClipModeActive || _host.SelectedMedia?.Type != MediaType.Video)
+        {
+            return;
+        }
+
+        UpdatePlaybackProgressUi();
+    }
+
     public void HandleMediaChanged(MediaItemViewModel? media)
     {
         EndTimelineInteraction();
@@ -418,6 +428,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("ClipEditor", $"Export clip failed. MediaId='{media.Id}', OutputPath='{outputPath}'.", ex);
             _clipStatusMessage = $"导出失败：{ex.Message}";
         }
         finally
@@ -1248,6 +1259,35 @@ public sealed class ClipEditorController : IClipTimelineEditor
         UpdateWebTimelineSurfaceState(media, duration, currentPosition, configuredSegments);
     }
 
+    private void UpdatePlaybackProgressUi()
+    {
+        var media = _host.SelectedMedia;
+        if (media?.Type != MediaType.Video || !_isClipModeActive)
+        {
+            return;
+        }
+
+        var duration = _getCurrentVideoDuration();
+        if (duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        SyncPreviewPlaybackIfNeeded(duration);
+
+        var currentPosition = ClampToDuration(_getCurrentPlaybackPosition(), duration);
+        var configuredSegments = GetConfiguredSegments();
+        ApplyPreviewTimeDisplayOverride(duration, currentPosition);
+        UpdateTimelineLabels(duration, currentPosition);
+        UpdateTimelinePlayhead(duration, currentPosition);
+
+        SetButtonGlyph(_clipPlayPauseButton, _isPlaybackPlaying() ? "\uE769" : "\uE768");
+        ToolTipService.SetToolTip(_clipPlayPauseButton, _isPlaybackPlaying() ? "暂停" : "播放");
+        _splitClipButton.IsEnabled = !_isExportingClip && CanSplitAtCurrentPosition(duration);
+
+        UpdateWebTimelinePlaybackState(media, duration, currentPosition);
+    }
+
     private void UpdateWebTimelineSurfaceState(
         MediaItemViewModel? media,
         TimeSpan duration,
@@ -1257,7 +1297,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
         if (!_webBridge.IsReady)
         {
             _clipBarView.TimelineWebLoadingOverlay.Visibility = Visibility.Visible;
-            _clipBarView.TimelineWebStatusText.Text = "正在连接时间线编辑器...";
+            _clipBarView.TimelineWebStatusText.Text = _webBridge.StatusText;
         }
         else
         {
@@ -1303,6 +1343,15 @@ public sealed class ClipEditorController : IClipTimelineEditor
                 false,
                 true)).ToList());
         return _webBridge.PublishStateAsync(webState);
+    }
+
+    private Task PublishWebTimelinePlaybackStateAsync(TimeSpan currentPosition)
+    {
+        return _webBridge.PublishStateDeltaAsync(new
+        {
+            currentPositionSeconds = currentPosition.TotalSeconds,
+            isPlaying = _isPlaybackPlaying()
+        });
     }
 
     private void WebBridge_CommandReceived(object? sender, ClipTimelineWebCommand command)
@@ -1555,6 +1604,33 @@ public sealed class ClipEditorController : IClipTimelineEditor
             ? FormatTime(TimeSpan.FromSeconds(duration.TotalSeconds / 2))
             : "--";
         _clipBarView.TimelineEndLabel.Text = duration > TimeSpan.Zero ? FormatTime(duration) : "--";
+    }
+
+    private void UpdateTimelinePlayhead(TimeSpan duration, TimeSpan currentPosition)
+    {
+        var viewportWidth = _clipBarView.TimelineViewport.ActualWidth;
+        var canvasHeight = _clipBarView.TimelineContentCanvas.Height;
+        if (duration <= TimeSpan.Zero || viewportWidth <= 0 || canvasHeight <= 0)
+        {
+            return;
+        }
+
+        var contentWidth = ResolveTimelineContentWidth();
+        var playheadHeight = Math.Max(TimelineHandleHeight + 8, canvasHeight - 8);
+        var playheadX = TimeToTimelineX(currentPosition, duration, contentWidth);
+        _clipBarView.TimelinePlayhead.Height = playheadHeight;
+        Canvas.SetLeft(_clipBarView.TimelinePlayhead, playheadX - (TimelinePlayheadWidth / 2));
+        Canvas.SetTop(_clipBarView.TimelinePlayhead, TimelinePlayheadTop);
+    }
+
+    private void UpdateWebTimelinePlaybackState(MediaItemViewModel? media, TimeSpan duration, TimeSpan currentPosition)
+    {
+        if (!_webBridge.IsReady || media?.Type != MediaType.Video || duration <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        _ = PublishWebTimelinePlaybackStateAsync(currentPosition);
     }
 
     private void UpdateTimelineVisuals(TimeSpan duration, TimeSpan currentPosition, IReadOnlyList<VideoClipSegment> configuredSegments)

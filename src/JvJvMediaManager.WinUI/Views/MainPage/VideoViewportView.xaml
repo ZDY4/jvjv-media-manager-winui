@@ -8,6 +8,8 @@
                             x:FieldModifier="public"
                             AreTransportControlsEnabled="False"
                             AutoPlay="True"
+                            IsTabStop="False"
+                            IsHitTestVisible="False"
                             Visibility="Collapsed"
                             Stretch="Uniform" />
 

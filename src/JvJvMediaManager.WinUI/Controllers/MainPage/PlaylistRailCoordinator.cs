@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Services.MainPage;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
 
@@ -62,6 +63,7 @@ public sealed class PlaylistRailCoordinator : IDisposable
 
     private void MediaTabButton_Click(object sender, RoutedEventArgs e)
     {
+        AppTraceLogger.Log("PlaylistRail", "Media tab clicked.");
         _libraryPaneController.ToggleMediaLibrary();
     }
 
@@ -69,22 +71,26 @@ public sealed class PlaylistRailCoordinator : IDisposable
     {
         if (e.ClickedItem is Playlist playlist)
         {
+            AppTraceLogger.Log("PlaylistRail", $"Playlist clicked. PlaylistId='{playlist.Id}', Name='{playlist.Name}'.");
             _libraryPaneController.TogglePlaylist(playlist);
         }
     }
 
     private async Task PlaylistRailView_PlaylistDropRequested(string playlistId, List<string> mediaIds)
     {
+        AppTraceLogger.Log("PlaylistRail", $"PlaylistDropRequested start. PlaylistId='{playlistId}', DragMediaCount={mediaIds.Count}.");
         var items = _viewModel.FilteredMediaItems
             .Where(item => mediaIds.Contains(item.Id, StringComparer.Ordinal))
             .ToList();
         if (items.Count == 0)
         {
+            AppTraceLogger.Log("PlaylistRail", $"PlaylistDropRequested skipped. PlaylistId='{playlistId}', ResolvedMediaCount=0.");
             return;
         }
 
         await _viewModel.AddMediaToPlaylistAsync(playlistId, items);
         HighlightPlaylist(playlistId);
+        AppTraceLogger.Log("PlaylistRail", $"PlaylistDropRequested completed. PlaylistId='{playlistId}', ResolvedMediaCount={items.Count}.");
     }
 
     private async void CreatePlaylist_Click(object sender, RoutedEventArgs e)
@@ -97,11 +103,13 @@ public sealed class PlaylistRailCoordinator : IDisposable
 
         try
         {
+            AppTraceLogger.Log("PlaylistRail", $"CreatePlaylist requested from rail. NameLength={name.Length}.");
             _viewModel.CreatePlaylist(name);
             _libraryPaneController.SetPaneOpen(true);
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("PlaylistRail", "CreatePlaylist failed from rail.", ex);
             await _showInfoAsync("创建失败", ex.Message);
         }
     }
@@ -165,10 +173,12 @@ public sealed class PlaylistRailCoordinator : IDisposable
 
         try
         {
+            AppTraceLogger.Log("PlaylistRail", $"RenamePlaylist requested from rail. PlaylistId='{playlist.Id}', NameLength={name.Length}.");
             _viewModel.RenamePlaylist(playlist.Id, name);
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("PlaylistRail", $"RenamePlaylist failed from rail. PlaylistId='{playlist.Id}'.", ex);
             await _showInfoAsync("重命名失败", ex.Message);
         }
     }
@@ -178,9 +188,11 @@ public sealed class PlaylistRailCoordinator : IDisposable
         var confirmed = await _confirmAsync("删除播放列表", $"确定要删除“{playlist.Name}”吗？\n媒体文件本身不会被删除。", "删除");
         if (!confirmed)
         {
+            AppTraceLogger.Log("PlaylistRail", $"DeletePlaylist canceled. PlaylistId='{playlist.Id}'.");
             return;
         }
 
+        AppTraceLogger.Log("PlaylistRail", $"DeletePlaylist confirmed. PlaylistId='{playlist.Id}'.");
         await _viewModel.DeletePlaylistAsync(playlist.Id);
     }
 
@@ -194,10 +206,12 @@ public sealed class PlaylistRailCoordinator : IDisposable
 
         try
         {
+            AppTraceLogger.Log("PlaylistRail", $"ChangePlaylistColor requested. PlaylistId='{playlist.Id}', HasColor={!string.IsNullOrWhiteSpace(colorHex)}.");
             _viewModel.SetPlaylistColor(playlist.Id, colorHex);
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("PlaylistRail", $"ChangePlaylistColor failed. PlaylistId='{playlist.Id}'.", ex);
             await _showInfoAsync("更改颜色失败", ex.Message);
         }
     }

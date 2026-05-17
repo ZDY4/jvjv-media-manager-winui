@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
@@ -78,8 +79,9 @@ public sealed class ImagePreviewController
     public void ShowImage(MediaItemViewModel media)
     {
         _imageViewportView.ImageScrollViewer.Visibility = Visibility.Visible;
+        SetPreviewImageVisible(false);
         Interlocked.Increment(ref _imageLoadVersion);
-        _imageViewportView.PreviewImageElement.Source = media.Thumbnail;
+        _imageViewportView.PreviewImageElement.Source = null;
         BeginImagePreviewSession(media);
         _ = LoadImagePreviewAsync(media, Volatile.Read(ref _imageLoadVersion));
     }
@@ -95,6 +97,7 @@ public sealed class ImagePreviewController
         _imageViewportView.PreviewImageElement.Width = double.NaN;
         _imageViewportView.PreviewImageElement.Height = double.NaN;
         _imageViewportView.PreviewImageElement.Source = null;
+        SetPreviewImageVisible(true);
         ResetImageViewTransform();
         UpdateImageZoomUi(MinImageZoomFactor);
     }
@@ -138,12 +141,12 @@ public sealed class ImagePreviewController
     {
         EndImageDrag();
         _pendingImageFitMediaId = media.Id;
+        SetPreviewImageVisible(false);
         _imageViewportView.PreviewImageElement.Width = double.NaN;
         _imageViewportView.PreviewImageElement.Height = double.NaN;
-        UpdatePreviewImageSourceSize(media.Media.Width, media.Media.Height);
+        UpdatePreviewImageSourceSize(null, null);
         ResetImageViewTransform();
         UpdateImageZoomUi(MinImageZoomFactor);
-        TryApplyPendingImageFit();
     }
 
     private async Task LoadImagePreviewAsync(MediaItemViewModel media, int loadVersion)
@@ -167,14 +170,10 @@ public sealed class ImagePreviewController
 
             _imageViewportView.PreviewImageElement.Source = bitmap;
             UpdatePreviewImageSourceSize(bitmap.PixelWidth, bitmap.PixelHeight);
-            if (media.Media.Width is not > 0 || media.Media.Height is not > 0)
-            {
-                _pendingImageFitMediaId = media.Id;
-            }
-
+            _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
         }
-        catch
+        catch (Exception ex)
         {
             if (loadVersion != Volatile.Read(ref _imageLoadVersion))
             {
@@ -186,7 +185,13 @@ public sealed class ImagePreviewController
                 return;
             }
 
+            AppTraceLogger.LogSampled(
+                "ImagePreview",
+                $"load-image-failed:{media.Id}",
+                $"LoadImagePreviewAsync failed, falling back to thumbnail. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}', ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(5));
             _imageViewportView.PreviewImageElement.Source = media.Thumbnail;
+            _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
         }
     }
@@ -292,6 +297,7 @@ public sealed class ImagePreviewController
         ApplyPreviewImageDisplaySize(imageWidth * fitScale, imageHeight * fitScale);
         ResetImageViewTransform();
         UpdateImageZoomUi(MinImageZoomFactor);
+        SetPreviewImageVisible(true);
         return true;
     }
 
@@ -505,5 +511,10 @@ public sealed class ImagePreviewController
         {
             Rect = new Windows.Foundation.Rect(0, 0, _imageViewportView.ImageScrollViewer.ActualWidth, _imageViewportView.ImageScrollViewer.ActualHeight)
         };
+    }
+
+    private void SetPreviewImageVisible(bool visible)
+    {
+        _imageViewportView.PreviewImageElement.Opacity = visible ? 1 : 0;
     }
 }

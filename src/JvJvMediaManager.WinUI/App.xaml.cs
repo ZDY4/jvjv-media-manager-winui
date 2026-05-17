@@ -6,23 +6,27 @@ namespace JvJvMediaManager;
 
 public partial class App : Application
 {
-    private static string LogDirectory => AppDataPaths.GetLogsDirectory();
     public static Window? MainWindow { get; private set; }
     public MainPageModuleFactory MainPageModules { get; } = new();
 
     public App()
     {
         Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+        AppTraceLogger.LogSessionStart();
         UnhandledException += App_UnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
         InitializeComponent();
+        AppTraceLogger.Log("App", "Application initialized.");
+        WerReportHarvester.HarvestPreviousCrashReports();
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        AppTraceLogger.Log("App", "OnLaunched start.");
         MainWindow = new MainWindow();
         MainWindow.Activate();
+        AppTraceLogger.Log("App", "OnLaunched completed.");
     }
 
     private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
@@ -38,25 +42,21 @@ public partial class App : Application
     private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
         WriteExceptionLog("TaskScheduler UnobservedTaskException", e.Exception);
+        e.SetObserved();
     }
 
     internal static void WriteExceptionLog(string source, Exception? exception)
     {
-        try
+        if (exception != null)
         {
-            Directory.CreateDirectory(LogDirectory);
-            var logPath = Path.Combine(LogDirectory, $"crash-{DateTime.Now:yyyyMMdd}.log");
-            var lines = new[]
-            {
-                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {source}",
-                exception?.ToString() ?? "No managed exception details were available.",
-                string.Empty
-            };
-            File.AppendAllLines(logPath, lines);
+            AppTraceLogger.LogException("App", $"Unhandled exception captured. Source='{source}'.", exception);
         }
-        catch
+        else
         {
-            // Best-effort crash logging only.
+            AppTraceLogger.Log("App", $"Unhandled exception captured without managed exception details. Source='{source}'.");
         }
+
+        AppTraceLogger.FlushNow();
+        CrashDiagnostics.WriteCrashArtifacts(source, exception);
     }
 }

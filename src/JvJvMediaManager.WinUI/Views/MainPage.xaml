@@ -16,6 +16,14 @@
 
     <Grid x:Name="RootLayoutHost"
           Padding="{ThemeResource PageOuterPadding}">
+        <ContentControl x:Name="KeyboardFocusHost"
+                        Width="1"
+                        Height="1"
+                        Opacity="0"
+                        IsTabStop="True"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"
+                        TabNavigation="Local" />
         <Rectangle Fill="{ThemeResource HeroPanelBrush}"
                    IsHitTestVisible="False" />
         <SplitView x:Name="LibrarySplitViewHost"

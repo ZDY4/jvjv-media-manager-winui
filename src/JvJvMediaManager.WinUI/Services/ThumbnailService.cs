@@ -10,9 +10,9 @@ namespace JvJvMediaManager.Services;
 
 public sealed class ThumbnailService
 {
-    private const int MaxMemoryCacheEntries = 256;
+    private const int MaxMemoryCacheEntries = 96;
 
-    private readonly SemaphoreSlim _loadGate = new(4, 4);
+    private readonly SemaphoreSlim _loadGate = new(2, 2);
     private readonly Dictionary<string, ImageSource> _memoryCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LinkedListNode<string>> _memoryCacheNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task<ImageSource?>> _inflight = new(StringComparer.OrdinalIgnoreCase);
@@ -184,9 +184,11 @@ public sealed class ThumbnailService
 
         return deleted;
     }
+
     private async Task<ImageSource?> LoadThumbnailCoreAsync(MediaFile media, string cacheKey)
     {
         await _loadGate.WaitAsync();
+        var startedAt = Environment.TickCount64;
         try
         {
             var cachePath = GetCachePath(media);
@@ -208,8 +210,28 @@ public sealed class ThumbnailService
 
             return source;
         }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("ThumbnailService", $"LoadThumbnailCoreAsync failed. MediaId='{media.Id}', File='{media.FileName}'.", ex);
+            return null;
+        }
         finally
         {
+            var elapsedMs = Environment.TickCount64 - startedAt;
+            if (elapsedMs >= 750)
+            {
+                AppTraceLogger.LogSampled(
+                    "ThumbnailService",
+                    "slow-thumbnail",
+                    $"Slow thumbnail load. MediaId='{media.Id}', File='{media.FileName}', ElapsedMs={elapsedMs}.",
+                    TimeSpan.FromSeconds(2));
+            }
+
+            lock (_sync)
+            {
+                _inflight.Remove(cacheKey);
+            }
+
             _loadGate.Release();
         }
     }
@@ -227,9 +249,13 @@ public sealed class ThumbnailService
                 return await TryLoadBitmapAsync(cachePath);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore Windows thumbnail generation failures and fall back below.
+            AppTraceLogger.LogSampled(
+                "ThumbnailService",
+                "generate-thumbnail-failed",
+                $"GenerateAndPersistThumbnailAsync failed. MediaId='{media.Id}', File='{media.FileName}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(5));
         }
 
         return null;
@@ -258,14 +284,28 @@ public sealed class ThumbnailService
 
         try
         {
-            var file = await StorageFile.GetFileFromPathAsync(cachePath);
-            using var stream = await file.OpenReadAsync();
+            var bytes = await File.ReadAllBytesAsync(cachePath);
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+
+            stream.Seek(0);
             var bitmap = new BitmapImage();
             await bitmap.SetSourceAsync(stream);
             return bitmap;
         }
-        catch
+        catch (Exception ex)
         {
+            AppTraceLogger.LogSampled(
+                "ThumbnailService",
+                "load-cache-failed",
+                $"TryLoadBitmapAsync failed. CachePath='{cachePath}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(5));
             try
             {
                 File.Delete(cachePath);

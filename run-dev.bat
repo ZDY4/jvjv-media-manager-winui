@@ -6,7 +6,9 @@ set JVJVMM_STORAGE_ROOT=%ROOT%data
 set CONFIG=Debug
 if not "%~1"=="" set CONFIG=%~1
 
-set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\JvJvMediaManager.WinUI.exe
+set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\win-x64\JvJvMediaManager.WinUI.exe
+if not exist "%EXE%" set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\JvJvMediaManager.WinUI.exe
+taskkill /IM JvJvMediaManager.WinUI.exe /F >nul 2>&1
 set RUNTIME_CHECK=pwsh -NoLogo -NoProfile -Command "if (Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime.1.8*' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 
 echo Building JvJv Media Manager (%CONFIG%)...

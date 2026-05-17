@@ -25,4 +25,14 @@ public static class AppDataPaths
     {
         return Path.Combine(GetStorageRoot(), "logs");
     }
+
+    public static string GetDumpsDirectory()
+    {
+        return Path.Combine(GetStorageRoot(), "dumps");
+    }
+
+    public static string GetWerReportsDirectory()
+    {
+        return Path.Combine(GetDumpsDirectory(), "wer");
+    }
 }

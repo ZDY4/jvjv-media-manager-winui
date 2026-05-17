@@ -8,6 +8,8 @@ public interface IClipTimelineEditor : IDisposable
 
     void Refresh();
 
+    void HandlePlaybackProgressChanged();
+
     void HandleMediaChanged(MediaItemViewModel? media);
 
     void HandleMediaOpened(TimeSpan duration);

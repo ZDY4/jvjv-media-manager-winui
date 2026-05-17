@@ -38,6 +38,12 @@ public sealed class SettingsService
 
     public IReadOnlyList<string> NumpadTagShortcuts => NormalizeNumpadTagShortcuts(_settings.NumpadTagShortcuts);
 
+    public string PlaybackMode => _settings.PlaybackMode ?? string.Empty;
+
+    public bool PlaybackAutoAdvanceEnabled => _settings.PlaybackAutoAdvanceEnabled ?? false;
+
+    public bool ShuffleVideoOnly => _settings.ShuffleVideoOnly ?? false;
+
     public void SetDataDir(string path)
     {
         _settings.DataDir = string.IsNullOrWhiteSpace(path)
@@ -67,6 +73,26 @@ public sealed class SettingsService
     public void SetNumpadTagShortcuts(IReadOnlyList<string> shortcuts)
     {
         _settings.NumpadTagShortcuts = NormalizeNumpadTagShortcuts(shortcuts);
+        Save();
+    }
+
+    public void SetPlaybackMode(string playbackMode)
+    {
+        _settings.PlaybackMode = string.IsNullOrWhiteSpace(playbackMode)
+            ? null
+            : playbackMode.Trim();
+        Save();
+    }
+
+    public void SetPlaybackAutoAdvanceEnabled(bool enabled)
+    {
+        _settings.PlaybackAutoAdvanceEnabled = enabled;
+        Save();
+    }
+
+    public void SetShuffleVideoOnly(bool enabled)
+    {
+        _settings.ShuffleVideoOnly = enabled;
         Save();
     }
 
@@ -139,5 +165,8 @@ public sealed class SettingsService
         public List<WatchedFolder> WatchedFolders { get; set; } = new();
         public string? LockPassword { get; set; }
         public List<string> NumpadTagShortcuts { get; set; } = new();
+        public string? PlaybackMode { get; set; }
+        public bool? PlaybackAutoAdvanceEnabled { get; set; }
+        public bool? ShuffleVideoOnly { get; set; }
     }
 }

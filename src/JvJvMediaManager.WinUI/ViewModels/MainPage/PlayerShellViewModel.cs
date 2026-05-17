@@ -1,17 +1,31 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.ViewModels.MainPage;
 
 public sealed class NumpadTagShortcutHintItem
 {
+    private static readonly Brush DefaultBackgroundBrush = new SolidColorBrush(ColorHelper.FromArgb(0, 0, 0, 0));
+    private static readonly Brush AppliedBackgroundBrush = new SolidColorBrush(ColorHelper.FromArgb(64, 255, 255, 255));
+
     public required int Digit { get; init; }
 
     public required string Tag { get; init; }
 
+    public required bool IsApplied { get; init; }
+
     public string DisplayText => $"{Digit}  {Tag}";
+
+    public Brush BackgroundBrush => IsApplied ? AppliedBackgroundBrush : DefaultBackgroundBrush;
+}
+
+public sealed class PlayerMediaTagItem
+{
+    public required string Tag { get; init; }
 }
 
 public sealed class PlayerShellViewModel : ObservableObject
@@ -30,6 +44,7 @@ public sealed class PlayerShellViewModel : ObservableObject
         ImagePreview = new ImagePreviewViewModel();
         ClipEditor = new ClipEditorViewModel();
         ShortcutHintItems.CollectionChanged += ShortcutHintItems_CollectionChanged;
+        PlayerTags.CollectionChanged += PlayerTags_CollectionChanged;
     }
 
     public SelectionViewModel Selection { get; }
@@ -41,6 +56,8 @@ public sealed class PlayerShellViewModel : ObservableObject
     public ClipEditorViewModel ClipEditor { get; }
 
     public ObservableCollection<NumpadTagShortcutHintItem> ShortcutHintItems { get; } = new();
+
+    public ObservableCollection<PlayerMediaTagItem> PlayerTags { get; } = new();
 
     public Visibility EmptyStateVisibility
     {
@@ -86,9 +103,18 @@ public sealed class PlayerShellViewModel : ObservableObject
         ? Visibility.Visible
         : Visibility.Collapsed;
 
+    public Visibility PlayerTagsVisibility => PlayerTags.Count > 0
+        ? Visibility.Visible
+        : Visibility.Collapsed;
+
     private void ShortcutHintItems_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         OnPropertyChanged(nameof(ShortcutHintItemsVisibility));
         OnPropertyChanged(nameof(ShortcutHintEmptyStateVisibility));
+    }
+
+    private void PlayerTags_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        OnPropertyChanged(nameof(PlayerTagsVisibility));
     }
 }

@@ -111,6 +111,7 @@
                                 <DataTemplate x:DataType="viewModels:NumpadTagShortcutHintItem">
                                     <Button Click="ShortcutHintButton_Click"
                                             Style="{StaticResource ShortcutHintButtonStyle}"
+                                            Background="{Binding BackgroundBrush}"
                                             Tag="{Binding Digit}">
                                         <TextBlock Text="{Binding DisplayText}"
                                                    Foreground="{ThemeResource TextBrush}"

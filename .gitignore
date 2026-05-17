@@ -11,7 +11,7 @@ artifacts/
 *.lnk
 
 # App data and runtime files
-data/
+/data/
 .build-check/
 .dotnet-home/
 

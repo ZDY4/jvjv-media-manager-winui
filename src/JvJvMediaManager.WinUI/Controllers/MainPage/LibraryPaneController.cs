@@ -9,15 +9,12 @@ namespace JvJvMediaManager.Controllers.MainPage;
 public sealed class LibraryPaneController : IDisposable
 {
     private const double MinLibraryPaneWidth = 240;
-    private const double MaxLibraryPaneWidth = 640;
 
-    private readonly JvJvMediaManager.Views.MainPage _page;
     private readonly LibraryShellViewModel _viewModel;
     private readonly LibraryPaneView _libraryPane;
 
     public LibraryPaneController(JvJvMediaManager.Views.MainPage page, LibraryShellViewModel viewModel, LibraryPaneView libraryPane)
     {
-        _page = page;
         _viewModel = viewModel;
         _libraryPane = libraryPane;
 
@@ -98,11 +95,7 @@ public sealed class LibraryPaneController : IDisposable
 
     private void LibraryPaneResizer_DragDelta(object sender, DragDeltaEventArgs e)
     {
-        var maxWidth = _page.RootLayout.ActualWidth > 0
-            ? Math.Min(MaxLibraryPaneWidth, Math.Max(MinLibraryPaneWidth, _page.RootLayout.ActualWidth - 200))
-            : MaxLibraryPaneWidth;
-
-        _viewModel.LibraryPaneWidth = Math.Clamp(_viewModel.LibraryPaneWidth + e.HorizontalChange, MinLibraryPaneWidth, maxWidth);
+        _viewModel.LibraryPaneWidth = Math.Max(MinLibraryPaneWidth, _viewModel.LibraryPaneWidth + e.HorizontalChange);
     }
 
     private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)

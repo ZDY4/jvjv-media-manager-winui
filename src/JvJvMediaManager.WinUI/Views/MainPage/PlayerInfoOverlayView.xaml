@@ -1,19 +1,16 @@
 <UserControl
     x:Class="JvJvMediaManager.Views.MainPageParts.PlayerInfoOverlayView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:viewModels="using:JvJvMediaManager.ViewModels.MainPage">
 
-    <Border x:Name="PlayerInfoBadge"
-            x:FieldModifier="public"
-            Visibility="{Binding PlayerInfoVisibility}"
-            HorizontalAlignment="Left"
-            VerticalAlignment="Top"
-            Margin="16"
-            Padding="10,8"
-            Background="{ThemeResource PlayerInfoBrush}"
-            BorderThickness="0"
-            CornerRadius="{ThemeResource RadiusMedium}"
-            IsHitTestVisible="False">
+    <StackPanel x:Name="PlayerInfoBadge"
+                x:FieldModifier="public"
+                Visibility="{Binding PlayerInfoVisibility}"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Margin="16"
+                Spacing="8">
         <StackPanel Spacing="2">
             <TextBlock x:Name="FileNameText"
                        x:FieldModifier="public"
@@ -28,5 +25,30 @@
                        Foreground="{ThemeResource MutedTextBrush}"
                        FontSize="12" />
         </StackPanel>
-    </Border>
+        <ItemsControl x:Name="PlayerTagsItemsControl"
+                      x:FieldModifier="public"
+                      ItemsSource="{Binding PlayerTags}"
+                      Visibility="{Binding PlayerTagsVisibility}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal"
+                                Spacing="6" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="viewModels:PlayerMediaTagItem">
+                    <Border Background="{ThemeResource MediaTagChipBrush}"
+                            Padding="8,4"
+                            CornerRadius="{ThemeResource RadiusMedium}"
+                            RightTapped="PlayerTag_RightTapped"
+                            Tag="{Binding}">
+                        <TextBlock Text="{Binding Tag}"
+                                   Foreground="{ThemeResource TextBrush}"
+                                   FontSize="11"
+                                   FontWeight="Normal" />
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </StackPanel>
 </UserControl>
