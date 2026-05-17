@@ -28,11 +28,41 @@ public sealed class MainPageModuleFactory
     public MediaContextMenuCoordinator CreateMediaContextMenuCoordinator(
         LibraryShellViewModel library,
         IContentDialogService dialogService,
+        Func<IReadOnlyList<MediaItemViewModel>, Task> focusInMediaLibraryAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
     {
-        return new MediaContextMenuCoordinator(library, dialogService, applyTagEditorAsync, addToPlaylistAsync, deleteSelectionAsync);
+        return new MediaContextMenuCoordinator(
+            library,
+            dialogService,
+            focusInMediaLibraryAsync,
+            applyTagEditorAsync,
+            addToPlaylistAsync,
+            deleteSelectionAsync);
+    }
+
+    public MediaDeletionWorkflow CreateMediaDeletionWorkflow(
+        LibraryShellViewModel library,
+        Func<int, Task<bool>> confirmBatchDeleteAsync,
+        Func<string, string, Task> showInfoAsync,
+        Action releasePreviewHandles,
+        Action clearPlayerSelection,
+        Action<MediaItemViewModel> updatePlayer,
+        Action<MediaItemViewModel> forceUpdatePlayer,
+        Action<MediaItemViewModel?> syncSelection,
+        Func<MediaItemViewModel?, IDisposable> preserveSelectionDuringCollectionMutation)
+    {
+        return new MediaDeletionWorkflow(
+            library,
+            confirmBatchDeleteAsync,
+            showInfoAsync,
+            releasePreviewHandles,
+            clearPlayerSelection,
+            updatePlayer,
+            forceUpdatePlayer,
+            syncSelection,
+            preserveSelectionDuringCollectionMutation);
     }
 
     public PlaylistRailCoordinator CreatePlaylistRailCoordinator(
@@ -72,6 +102,7 @@ public sealed class MainPageModuleFactory
     }
 
     public VideoPlaybackController CreateVideoPlaybackController(
+        SettingsService settings,
         LibraryShellViewModel library,
         VideoPlaybackViewModel viewModel,
         TransportControlBarView transportBarView,
@@ -87,6 +118,7 @@ public sealed class MainPageModuleFactory
         Action notifyPlaybackProgressChanged)
     {
         return new VideoPlaybackController(
+            settings,
             library,
             viewModel,
             transportBarView,

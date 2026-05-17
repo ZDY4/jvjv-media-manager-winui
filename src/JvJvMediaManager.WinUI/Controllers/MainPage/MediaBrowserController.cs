@@ -1,4 +1,5 @@
 using System.Collections.Specialized;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -23,6 +24,9 @@ public sealed class MediaBrowserController : IDisposable
     private const double DragSelectionAutoScrollEdgeThreshold = 40;
     private const double DragSelectionAutoScrollMaxStep = 28;
     private static readonly TimeSpan DragSelectionAutoScrollInterval = TimeSpan.FromMilliseconds(16);
+    private static readonly TimeSpan RecentUserSelectionRevealSuppression = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ItemsChangedVisibilityVerificationWindow = TimeSpan.FromSeconds(5);
+    private const int MaxMediaScrollAttempts = 3;
 
     private readonly JvJvMediaManager.Views.MainPage _page;
     private readonly LibraryShellViewModel _viewModel;
@@ -33,6 +37,20 @@ public sealed class MediaBrowserController : IDisposable
     private readonly DebounceDispatcher _debouncer = new();
     private readonly Dictionary<string, MediaItemViewModel> _loadedMediaById = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _dragSelectionAutoScrollTimer = new();
+    private int _mediaScrollRequestId;
+    private int _pendingMediaScrollRequestId;
+    private string? _pendingMediaScrollMediaId;
+    private string? _pendingMediaScrollReason;
+    private int _itemsChangedVisibilityVersion;
+    private int _itemsChangedVisibilityVerificationScheduled;
+    private string? _lastMediaScrollCandidateId;
+    private long _lastMediaScrollCandidateTicks;
+    private string? _recentUserVisibleSelectionId;
+    private long _recentUserVisibleSelectionTicks;
+    private int _selectionMutationDepth;
+    private string? _selectionMutationPreserveId;
+    private bool _selectionMutationSuppressedEmptySelection;
+    private int _isLoadingMoreMedia;
 
     private bool _isSyncingSelection;
     private ScrollViewer? _listViewScrollViewer;
@@ -78,7 +96,9 @@ public sealed class MediaBrowserController : IDisposable
         _dragSelectionAutoScrollTimer.Tick += DragSelectionAutoScrollTimer_Tick;
 
         _libraryPane.HeaderView.RefreshButton.Click += Refresh_Click;
+        _libraryPane.HeaderView.CancelScanButton.Click += CancelScan_Click;
         _libraryPane.HeaderView.ViewModeToggleButton.Click += ToggleViewMode_Click;
+        _libraryPane.HeaderView.FolderGroupToggleButton.Click += ToggleFolderGroups_Click;
         _libraryPane.HeaderView.SortButton.Click += Sort_Click;
         SearchBox.TextChanged += SearchBox_TextChanged;
         SearchBox.KeyDown += SearchBox_KeyDown;
@@ -117,7 +137,9 @@ public sealed class MediaBrowserController : IDisposable
     public void Dispose()
     {
         _libraryPane.HeaderView.RefreshButton.Click -= Refresh_Click;
+        _libraryPane.HeaderView.CancelScanButton.Click -= CancelScan_Click;
         _libraryPane.HeaderView.ViewModeToggleButton.Click -= ToggleViewMode_Click;
+        _libraryPane.HeaderView.FolderGroupToggleButton.Click -= ToggleFolderGroups_Click;
         _libraryPane.HeaderView.SortButton.Click -= Sort_Click;
         SearchBox.TextChanged -= SearchBox_TextChanged;
         SearchBox.KeyDown -= SearchBox_KeyDown;
@@ -151,6 +173,8 @@ public sealed class MediaBrowserController : IDisposable
         _libraryPane.DropTargetBorder.Drop -= LibraryPanel_Drop;
         _libraryPane.PaneRoot.SizeChanged -= LibraryPaneRoot_SizeChanged;
         _viewModel.FilteredMediaItems.CollectionChanged -= FilteredMediaItems_CollectionChanged;
+        SetListViewScrollViewer(null);
+        SetGridViewScrollViewer(null);
         _dragSelectionAutoScrollTimer.Tick -= DragSelectionAutoScrollTimer_Tick;
         _dragSelectionAutoScrollTimer.Stop();
         EndDragSelection();
@@ -158,31 +182,38 @@ public sealed class MediaBrowserController : IDisposable
 
     public async Task InitializeAsync()
     {
+        AppTraceLogger.Log("MediaBrowser", "InitializeAsync start.");
         await _viewModel.InitializeAsync();
         RebuildLoadedMediaIndex();
         UpdateMediaItemSize();
         ConfigureListViewScrolling();
         ConfigureGridViewScrolling();
+        AppTraceLogger.Log("MediaBrowser", $"InitializeAsync completed. LoadedIndex={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.");
     }
 
     public Task AddFolderAsync()
     {
         return ExecuteUiActionAsync(async () =>
         {
+            AppTraceLogger.Log("MediaBrowser", "AddFolderAsync picker opening.");
             var window = App.MainWindow;
             if (window == null)
             {
+                AppTraceLogger.Log("MediaBrowser", "AddFolderAsync skipped. MainWindowMissing=True.");
                 return;
             }
 
             var folder = await PickerHelpers.PickFolderAsync(window);
             if (string.IsNullOrWhiteSpace(folder))
             {
+                AppTraceLogger.Log("MediaBrowser", "AddFolderAsync canceled by user.");
                 return;
             }
 
+            AppTraceLogger.Log("MediaBrowser", $"AddFolderAsync picked folder. Path='{folder}'.");
             await _viewModel.AddFolderAsync(folder);
             _updateWatchedFolders(new[] { folder }, false);
+            AppTraceLogger.Log("MediaBrowser", $"AddFolderAsync completed. Path='{folder}'.");
         }, "导入文件夹失败", _showInfoAsync);
     }
 
@@ -190,20 +221,25 @@ public sealed class MediaBrowserController : IDisposable
     {
         return ExecuteUiActionAsync(async () =>
         {
+            AppTraceLogger.Log("MediaBrowser", "AddFilesAsync picker opening.");
             var window = App.MainWindow;
             if (window == null)
             {
+                AppTraceLogger.Log("MediaBrowser", "AddFilesAsync skipped. MainWindowMissing=True.");
                 return;
             }
 
             var paths = await PickerHelpers.PickFilesAsync(window);
             if (paths.Count == 0)
             {
+                AppTraceLogger.Log("MediaBrowser", "AddFilesAsync canceled by user.");
                 return;
             }
 
+            AppTraceLogger.Log("MediaBrowser", $"AddFilesAsync picked files. Count={paths.Count}.");
             await _viewModel.AddFilesAsync(paths);
             _updateWatchedFolders(paths, false);
+            AppTraceLogger.Log("MediaBrowser", $"AddFilesAsync completed. Count={paths.Count}.");
         }, "导入文件失败", _showInfoAsync);
     }
 
@@ -217,6 +253,11 @@ public sealed class MediaBrowserController : IDisposable
 
     public void SyncSelectionFromViewModel(MediaItemViewModel? selectedMedia)
     {
+        if (selectedMedia != null)
+        {
+            _viewModel.EnsureMediaFolderExpanded(selectedMedia);
+        }
+
         var currentSelection = ResolveLoadedSelection(selectedMedia);
         if (selectedMedia != null && currentSelection == null)
         {
@@ -229,6 +270,12 @@ public sealed class MediaBrowserController : IDisposable
 
         if (IsSelectionAlreadyApplied(selectedMedia, currentSelection))
         {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selection-already-applied",
+                $"SyncSelectionFromViewModel no-op. SelectedId='{selectedMedia?.Id ?? "<null>"}', CurrentSelectionId='{currentSelection?.Id ?? "<null>"}', LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, ListSelectedCount={ListView.SelectedItems.Count}, GridSelectedCount={GridView.SelectedItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            UpdateNowPlayingState(currentSelection);
             return;
         }
 
@@ -248,6 +295,7 @@ public sealed class MediaBrowserController : IDisposable
             ApplySelectionToView(ListView, currentSelection);
             ApplySelectionToView(GridView, currentSelection);
             UpdateSelectedStateFlags(previousSelectedIds);
+            UpdateNowPlayingState(currentSelection);
         }
         finally
         {
@@ -255,15 +303,30 @@ public sealed class MediaBrowserController : IDisposable
         }
     }
 
-    public void RevealSelectedMedia(MediaItemViewModel media)
+    public IDisposable PreserveSelectionDuringCollectionMutation(MediaItemViewModel? selectedMedia)
     {
-        if (_viewModel.ViewMode == MediaViewMode.Grid)
+        var preserveId = selectedMedia?.Id;
+        _selectionMutationDepth++;
+        if (!string.IsNullOrWhiteSpace(preserveId))
         {
-            GridView.ScrollIntoView(media);
-            return;
+            _selectionMutationPreserveId = preserveId;
+            _selectionMutationSuppressedEmptySelection = false;
         }
 
-        ListView.ScrollIntoView(media);
+        AppTraceLogger.Log(
+            "MediaBrowser",
+            $"Selection mutation scope entered. Depth={_selectionMutationDepth}, PreserveId='{preserveId ?? "<null>"}', CurrentSelectedId='{_viewModel.SelectedMedia?.Id ?? "<null>"}'.");
+        return new SelectionMutationScope(this);
+    }
+
+    public void RevealSelectedMedia(MediaItemViewModel media)
+    {
+        RequestMediaScroll(media, "RevealSelectedMedia", "reveal-selected-media", "reveal-selected-media-applied", "reveal-selection-miss");
+    }
+
+    public void FocusMediaInLibrary(MediaItemViewModel media)
+    {
+        RequestMediaScroll(media, "FocusMediaInLibrary", "focus-media", "focus-media-applied", "focus-media-miss");
     }
 
     public void FocusSearchBox()
@@ -283,6 +346,12 @@ public sealed class MediaBrowserController : IDisposable
 
             await _viewModel.RescanFoldersAsync();
         }, "刷新媒体库失败", _showInfoAsync);
+    }
+
+    private void CancelScan_Click(object sender, RoutedEventArgs e)
+    {
+        AppTraceLogger.Log("MediaBrowser", "CancelScan button clicked.");
+        _viewModel.CancelScan();
     }
 
     private void ToggleViewMode_Click(object sender, RoutedEventArgs e)
@@ -309,6 +378,12 @@ public sealed class MediaBrowserController : IDisposable
             ConfigureListViewScrolling();
             SynchronizeSelectionToActiveView();
         });
+    }
+
+    private void ToggleFolderGroups_Click(object sender, RoutedEventArgs e)
+    {
+        EndDragSelection();
+        _viewModel.ToggleAllMediaFolderGroups();
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -386,8 +461,29 @@ public sealed class MediaBrowserController : IDisposable
             .OfType<MediaItemViewModel>()
             .Select(item => item.Id)
             .ToHashSet(StringComparer.Ordinal);
+        if (selectedIds.Count == 0 && TrySuppressEmptySelectionDuringCollectionMutation(listViewBase))
+        {
+            return;
+        }
+
+        if (selectedIds.Count == 0
+            && _selectedItemIds.Count > 0
+            && _selectedItemIds
+                .Select(id => _loadedMediaById.TryGetValue(id, out var item) ? item : null)
+                .OfType<MediaItemViewModel>()
+                .All(item => !_viewModel.IsMediaVisibleInLibrary(item)))
+        {
+            return;
+        }
+
         var selectedMedia = ResolvePrimarySelection(listViewBase, e, selectedIds);
         var previousSelectedIds = _selectedItemIds.ToHashSet(StringComparer.Ordinal);
+        if (selectedMedia != null
+            && ReferenceEquals(listViewBase, GetActiveMediaView())
+            && IsMediaVisible(listViewBase, selectedMedia))
+        {
+            StoreRecentUserVisibleSelection(selectedMedia.Id);
+        }
 
         _selectedItemIds = selectedIds;
         _isSyncingSelection = true;
@@ -395,6 +491,7 @@ public sealed class MediaBrowserController : IDisposable
         {
             ApplySelectionToView(ReferenceEquals(listViewBase, ListView) ? GridView : ListView, selectedMedia);
             UpdateSelectedStateFlags(previousSelectedIds);
+            UpdateNowPlayingState(selectedMedia);
         }
         finally
         {
@@ -407,8 +504,21 @@ public sealed class MediaBrowserController : IDisposable
     private void MediaView_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (sender is not ListViewBase listViewBase
-            || !ReferenceEquals(listViewBase, GetActiveMediaView())
-            || !CanBeginDragSelection(listViewBase, e))
+            || !ReferenceEquals(listViewBase, GetActiveMediaView()))
+        {
+            return;
+        }
+
+        var pointerPoint = e.GetCurrentPoint(listViewBase);
+        if (pointerPoint.Properties.IsLeftButtonPressed
+            && TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var pressedMedia)
+            && pressedMedia != null
+            && IsMediaVisible(listViewBase, pressedMedia))
+        {
+            StoreRecentUserVisibleSelection(pressedMedia.Id);
+        }
+
+        if (!CanBeginDragSelection(listViewBase, e))
         {
             return;
         }
@@ -515,6 +625,17 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        if (args.Phase == 0)
+        {
+            args.RegisterUpdateCallback(Media_ContainerContentChanging);
+            return;
+        }
+
+        if (media.Thumbnail != null)
+        {
+            return;
+        }
+
         _ = _viewModel.EnsureThumbnailAsync(media);
     }
 
@@ -590,7 +711,105 @@ public sealed class MediaBrowserController : IDisposable
             _loadedMediaById[item.Id] = item;
             item.IsSelected = _selectedItemIds.Contains(item.Id);
         }
+        UpdateNowPlayingState(_viewModel.SelectedMedia);
+        TryApplyPendingMediaScroll();
+        ScheduleSelectedMediaVisibilityVerificationAfterItemsChanged("filtered-items-added");
+    }
 
+    private bool TrySuppressEmptySelectionDuringCollectionMutation(ListViewBase listViewBase)
+    {
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null
+            || _selectionMutationDepth <= 0
+            || string.IsNullOrWhiteSpace(_selectionMutationPreserveId)
+            || !string.Equals(_selectionMutationPreserveId, selectedMedia.Id, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!IsMediaInFilteredItems(selectedMedia.Id))
+        {
+            return false;
+        }
+
+        _selectionMutationSuppressedEmptySelection = true;
+        AppTraceLogger.Log(
+            "MediaBrowser",
+            $"Suppressed transient empty SelectionChanged during selection mutation. SelectedId='{selectedMedia.Id}', Sender={listViewBase.GetType().Name}, Depth={_selectionMutationDepth}, ListSelectedCount={ListView.SelectedItems.Count}, GridSelectedCount={GridView.SelectedItems.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.");
+        SyncSelectionFromViewModel(selectedMedia);
+        return true;
+    }
+
+    private bool IsMediaInFilteredItems(string mediaId)
+    {
+        return _viewModel.FilteredMediaItems.Any(item => string.Equals(item.Id, mediaId, StringComparison.Ordinal));
+    }
+
+    private void EndSelectionMutationScope()
+    {
+        if (_selectionMutationDepth <= 0)
+        {
+            AppTraceLogger.Log("MediaBrowser", "Selection mutation scope dispose ignored because depth is already zero.");
+            return;
+        }
+
+        _selectionMutationDepth--;
+        var preserveId = _selectionMutationPreserveId;
+        var suppressedEmptySelection = _selectionMutationSuppressedEmptySelection;
+        AppTraceLogger.Log(
+            "MediaBrowser",
+            $"Selection mutation scope exited. Depth={_selectionMutationDepth}, PreserveId='{preserveId ?? "<null>"}', SuppressedEmptySelection={suppressedEmptySelection}, CurrentSelectedId='{_viewModel.SelectedMedia?.Id ?? "<null>"}'.");
+
+        if (_selectionMutationDepth > 0)
+        {
+            return;
+        }
+
+        _selectionMutationPreserveId = null;
+        _selectionMutationSuppressedEmptySelection = false;
+
+        if (string.IsNullOrWhiteSpace(preserveId)
+            || _viewModel.SelectedMedia == null
+            || !string.Equals(_viewModel.SelectedMedia.Id, preserveId, StringComparison.Ordinal)
+            || !IsMediaInFilteredItems(preserveId))
+        {
+            return;
+        }
+
+        if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            {
+                var selectedMedia = _viewModel.SelectedMedia;
+                if (selectedMedia == null
+                    || !string.Equals(selectedMedia.Id, preserveId, StringComparison.Ordinal)
+                    || !IsMediaInFilteredItems(preserveId))
+                {
+                    return;
+                }
+
+                AppTraceLogger.Log(
+                    "MediaBrowser",
+                    $"Selection mutation scope applying deferred selection sync. PreserveId='{preserveId}', SuppressedEmptySelection={suppressedEmptySelection}, ListSelectedCount={ListView.SelectedItems.Count}, GridSelectedCount={GridView.SelectedItems.Count}.");
+                SyncSelectionFromViewModel(selectedMedia);
+            }))
+        {
+            AppTraceLogger.Log("MediaBrowser", $"Selection mutation scope failed to enqueue deferred selection sync. PreserveId='{preserveId}'.");
+        }
+    }
+
+    private sealed class SelectionMutationScope : IDisposable
+    {
+        private MediaBrowserController? _owner;
+
+        public SelectionMutationScope(MediaBrowserController owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            var owner = Interlocked.Exchange(ref _owner, null);
+            owner?.EndSelectionMutationScope();
+        }
     }
 
     private void MediaLibraryView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
@@ -672,6 +891,7 @@ public sealed class MediaBrowserController : IDisposable
     {
         if (TryResolveInternalDragMediaIds(e.DataView, out var mediaIds))
         {
+            AppTraceLogger.Log("MediaBrowser", $"LibraryPanel_Drop internal drag. MediaCount={mediaIds.Count}, SelectedPlaylist='{_viewModel.SelectedPlaylist?.Id ?? "<null>"}'.");
             if (_viewModel.SelectedPlaylist == null || !IsDragFromCurrentPlaylist(e.DataView))
             {
                 return;
@@ -686,6 +906,7 @@ public sealed class MediaBrowserController : IDisposable
             }
 
             await _viewModel.RemoveMediaFromSelectedPlaylistAsync(items);
+            AppTraceLogger.Log("MediaBrowser", $"LibraryPanel_Drop removed from current playlist. MediaCount={items.Count}.");
             e.Handled = true;
             return;
         }
@@ -707,11 +928,19 @@ public sealed class MediaBrowserController : IDisposable
 
             if (paths.Count == 0)
             {
+                AppTraceLogger.Log("MediaBrowser", "LibraryPanel_Drop skipped. StorageItemPathCount=0.");
                 return;
             }
 
+            AppTraceLogger.Log("MediaBrowser", $"LibraryPanel_Drop importing storage items. PathCount={paths.Count}.");
             await _viewModel.AddFilesAsync(paths);
             _updateWatchedFolders(paths, false);
+            AppTraceLogger.Log("MediaBrowser", $"LibraryPanel_Drop import completed. PathCount={paths.Count}.");
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaBrowser", "LibraryPanel_Drop failed.", ex);
+            throw;
         }
         finally
         {
@@ -736,15 +965,80 @@ public sealed class MediaBrowserController : IDisposable
             panel.ItemWidth = CalculateAdaptiveGridSlotSize(iconSize);
             panel.ItemHeight = iconSize;
         }
-
-        _gridViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
+        SetGridViewScrollViewer(MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView));
     }
 
     private void ConfigureListViewScrolling()
     {
         ListView.ApplyTemplate();
         ListView.UpdateLayout();
-        _listViewScrollViewer = MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView);
+        SetListViewScrollViewer(MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView));
+    }
+
+    private void SetListViewScrollViewer(ScrollViewer? scrollViewer)
+    {
+        if (ReferenceEquals(_listViewScrollViewer, scrollViewer))
+        {
+            return;
+        }
+
+        if (_listViewScrollViewer != null)
+        {
+            _listViewScrollViewer.ViewChanged -= MediaScrollViewer_ViewChanged;
+        }
+
+        _listViewScrollViewer = scrollViewer;
+        if (_listViewScrollViewer != null)
+        {
+            _listViewScrollViewer.ViewChanged += MediaScrollViewer_ViewChanged;
+        }
+    }
+
+    private void SetGridViewScrollViewer(ScrollViewer? scrollViewer)
+    {
+        if (ReferenceEquals(_gridViewScrollViewer, scrollViewer))
+        {
+            return;
+        }
+
+        if (_gridViewScrollViewer != null)
+        {
+            _gridViewScrollViewer.ViewChanged -= MediaScrollViewer_ViewChanged;
+        }
+
+        _gridViewScrollViewer = scrollViewer;
+        if (_gridViewScrollViewer != null)
+        {
+            _gridViewScrollViewer.ViewChanged += MediaScrollViewer_ViewChanged;
+        }
+    }
+
+    private async void MediaScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        if (sender is not ScrollViewer scrollViewer
+            || scrollViewer.ScrollableHeight <= 0
+            || scrollViewer.ScrollableHeight - scrollViewer.VerticalOffset > 600)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _isLoadingMoreMedia, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            await _viewModel.EnsureNextMediaPageLoadedAsync();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaBrowser", "Manual incremental media load failed.", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _isLoadingMoreMedia, 0);
+        }
     }
 
     private void UpdateMediaItemSize()
@@ -797,9 +1091,9 @@ public sealed class MediaBrowserController : IDisposable
 
     private void UpdateVisibleListItemSizes()
     {
-        for (var index = 0; index < ListView.Items.Count; index++)
+        foreach (var item in _viewModel.FilteredMediaItems)
         {
-            if (ListView.ContainerFromIndex(index) is SelectorItem container)
+            if (ListView.ContainerFromItem(item) is SelectorItem container)
             {
                 ApplyListItemSize(container);
             }
@@ -1096,25 +1390,33 @@ public sealed class MediaBrowserController : IDisposable
     {
         if (ReferenceEquals(listViewBase, GridView))
         {
-            _gridViewScrollViewer ??= MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView);
+            if (_gridViewScrollViewer == null)
+            {
+                SetGridViewScrollViewer(MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(GridView));
+            }
+
             return _gridViewScrollViewer;
         }
 
-        _listViewScrollViewer ??= MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView);
+        if (_listViewScrollViewer == null)
+        {
+            SetListViewScrollViewer(MainPageVisualTreeHelpers.FindDescendant<ScrollViewer>(ListView));
+        }
+
         return _listViewScrollViewer;
     }
 
     private IReadOnlyList<MediaItemViewModel> GetIntersectingItems(ListViewBase? listViewBase, Rect selectionRect)
     {
-        if (listViewBase?.ItemsPanelRoot is not Panel itemsPanel)
+        if (listViewBase == null)
         {
             return Array.Empty<MediaItemViewModel>();
         }
 
-        var result = new List<MediaItemViewModel>(itemsPanel.Children.Count);
-        foreach (var container in itemsPanel.Children.OfType<SelectorItem>())
+        var result = new List<MediaItemViewModel>();
+        foreach (var media in _viewModel.FilteredMediaItems)
         {
-            if (container.Content is not MediaItemViewModel media
+            if (listViewBase.ContainerFromItem(media) is not SelectorItem container
                 || container.Visibility != Visibility.Visible
                 || container.ActualWidth <= 0
                 || container.ActualHeight <= 0)
@@ -1150,6 +1452,7 @@ public sealed class MediaBrowserController : IDisposable
         if (_selectedItemIds.SetEquals(nextSelectedIds)
             && string.Equals(_viewModel.SelectedMedia?.Id, primaryId, StringComparison.Ordinal))
         {
+            UpdateNowPlayingState(_viewModel.SelectedMedia);
             return;
         }
 
@@ -1163,6 +1466,7 @@ public sealed class MediaBrowserController : IDisposable
             ApplySelectionToView(ListView, selectedMedia);
             ApplySelectionToView(GridView, selectedMedia);
             UpdateSelectedStateFlags(previousSelectedIds);
+            UpdateNowPlayingState(selectedMedia);
         }
         finally
         {
@@ -1204,9 +1508,563 @@ public sealed class MediaBrowserController : IDisposable
             return null;
         }
 
-        return _loadedMediaById.TryGetValue(selectedMedia.Id, out var loaded)
-            ? loaded
-            : null;
+        if (_loadedMediaById.TryGetValue(selectedMedia.Id, out var loaded))
+        {
+            return loaded;
+        }
+
+        return _viewModel.FilteredMediaItems.FirstOrDefault(item => string.Equals(item.Id, selectedMedia.Id, StringComparison.Ordinal));
+    }
+
+    private void RequestMediaScroll(
+        MediaItemViewModel media,
+        string operationName,
+        string scheduledSampleKey,
+        string appliedSampleKey,
+        string missSampleKey)
+    {
+        var requestId = Interlocked.Increment(ref _mediaScrollRequestId);
+        StorePendingMediaScroll(requestId, media.Id, operationName);
+        RememberMediaScrollCandidate(media.Id);
+
+        var target = ResolveLoadedSelection(media);
+        if (target == null)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                missSampleKey,
+                $"{operationName} queued but media '{media.Id}' is not loaded yet. RequestId={requestId}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, ViewMode={_viewModel.ViewMode}.",
+                TimeSpan.FromSeconds(2));
+            return;
+        }
+
+        _viewModel.EnsureMediaFolderExpanded(target);
+
+        if (ShouldSuppressRevealForRecentUserSelection(operationName, target.Id))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "media-scroll-suppressed-recent-user-selection",
+                $"{operationName} skipped because media '{target.Id}' was just selected visibly by the user. RequestId={requestId}, ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            ClearPendingMediaScroll(requestId, target.Id);
+            return;
+        }
+
+        var activeView = GetActiveMediaView();
+        var isVisible = IsMediaVisible(activeView, target);
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            scheduledSampleKey,
+            $"{operationName} scheduled. RequestId={requestId}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', AlreadyVisible={isVisible}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+            TimeSpan.FromSeconds(1));
+
+        if (isVisible)
+        {
+            ClearPendingMediaScroll(requestId, target.Id);
+            return;
+        }
+
+        EnqueueMediaScroll(requestId, target.Id, operationName, appliedSampleKey);
+    }
+
+    private void EnqueueMediaScroll(int requestId, string mediaId, string operationName, string appliedSampleKey, int attempt = 1)
+    {
+        if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => ScrollMediaIntoViewCore(requestId, mediaId, operationName, appliedSampleKey, attempt)))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "media-scroll-dispatch-failed",
+                $"{operationName} dispatch failed. RequestId={requestId}, MediaId='{mediaId}', Attempt={attempt}.",
+                TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private void ScrollMediaIntoViewCore(int requestId, string mediaId, string operationName, string appliedSampleKey, int attempt)
+    {
+        if (requestId != Volatile.Read(ref _mediaScrollRequestId))
+        {
+            return;
+        }
+
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null || !string.Equals(selectedMedia.Id, mediaId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var target = ResolveLoadedSelection(selectedMedia);
+        if (target == null)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                $"{operationName}-late-miss",
+                $"{operationName} skipped because media '{mediaId}' is still not loaded. RequestId={requestId}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, ViewMode={_viewModel.ViewMode}.",
+                TimeSpan.FromSeconds(2));
+            return;
+        }
+
+        _viewModel.EnsureMediaFolderExpanded(target);
+
+        if (ShouldSuppressRevealForRecentUserSelection(operationName, target.Id))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "media-scroll-suppressed-recent-user-selection-late",
+                $"{operationName} skipped late because media '{target.Id}' was just selected visibly by the user. RequestId={requestId}, ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            ClearPendingMediaScroll(requestId, target.Id);
+            return;
+        }
+
+        var activeView = GetActiveMediaView();
+        TryUpdateMediaViewLayout(activeView, $"{operationName} pre-scroll");
+        if (IsMediaVisible(activeView, target))
+        {
+            ClearPendingMediaScroll(requestId, target.Id);
+            return;
+        }
+
+        var beforeMetrics = GetScrollMetrics(activeView);
+        var containerState = DescribeMediaContainer(activeView, target);
+        var targetIndex = _viewModel.FilteredMediaItems.IndexOf(target);
+        activeView.ScrollIntoView(target);
+        AppTraceLogger.Log(
+            "MediaBrowser",
+            $"{operationName} applied. RequestId={requestId}, Attempt={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', TargetIndex={targetIndex}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, Before=({beforeMetrics}), Container=({containerState}).");
+        ScheduleMediaScrollConfirmation(requestId, target.Id, operationName, appliedSampleKey, attempt);
+    }
+
+    private void ScheduleMediaScrollConfirmation(int requestId, string mediaId, string operationName, string appliedSampleKey, int attempt)
+    {
+        if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            {
+                if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => ConfirmMediaScroll(requestId, mediaId, operationName, appliedSampleKey, attempt)))
+                {
+                    AppTraceLogger.Log(
+                        "MediaBrowser",
+                        $"{operationName} confirmation dispatch failed. RequestId={requestId}, Attempt={attempt}, MediaId='{mediaId}'.");
+                    ClearPendingMediaScroll(requestId, mediaId);
+                }
+            }))
+        {
+            AppTraceLogger.Log(
+                "MediaBrowser",
+                $"{operationName} confirmation dispatch failed. RequestId={requestId}, Attempt={attempt}, MediaId='{mediaId}'.");
+            ClearPendingMediaScroll(requestId, mediaId);
+        }
+    }
+
+    private void ConfirmMediaScroll(int requestId, string mediaId, string operationName, string appliedSampleKey, int attempt)
+    {
+        if (requestId != Volatile.Read(ref _mediaScrollRequestId))
+        {
+            return;
+        }
+
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null || !string.Equals(selectedMedia.Id, mediaId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var target = ResolveLoadedSelection(selectedMedia);
+        if (target == null)
+        {
+            AppTraceLogger.Log(
+                "MediaBrowser",
+                $"{operationName} confirmation skipped because media is no longer loaded. RequestId={requestId}, Attempt={attempt}, MediaId='{mediaId}', LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.");
+            return;
+        }
+
+        var activeView = GetActiveMediaView();
+        TryUpdateMediaViewLayout(activeView, $"{operationName} confirmation");
+        var visible = IsMediaVisible(activeView, target);
+        var scrollMetrics = GetScrollMetrics(activeView);
+        var containerState = DescribeMediaContainer(activeView, target);
+        if (visible)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                appliedSampleKey,
+                $"{operationName} confirmed visible. RequestId={requestId}, Attempt={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}, Container=({containerState}).",
+                TimeSpan.FromSeconds(1));
+            ClearPendingMediaScroll(requestId, target.Id);
+            return;
+        }
+
+        if (attempt < MaxMediaScrollAttempts)
+        {
+            AppTraceLogger.Log(
+                "MediaBrowser",
+                $"{operationName} did not reveal target; retrying. RequestId={requestId}, Attempt={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}, Container=({containerState}).");
+            EnqueueMediaScroll(requestId, target.Id, operationName, appliedSampleKey, attempt + 1);
+            return;
+        }
+
+        AppTraceLogger.Log(
+            "MediaBrowser",
+            $"{operationName} failed to reveal target after retries. RequestId={requestId}, Attempts={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}, Container=({containerState}).");
+        ClearPendingMediaScroll(requestId, target.Id);
+    }
+
+    private void TryApplyPendingMediaScroll()
+    {
+        var pendingRequestId = Volatile.Read(ref _pendingMediaScrollRequestId);
+        var pendingMediaId = _pendingMediaScrollMediaId;
+        if (pendingRequestId <= 0 || string.IsNullOrWhiteSpace(pendingMediaId))
+        {
+            return;
+        }
+
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null || !string.Equals(selectedMedia.Id, pendingMediaId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (pendingRequestId != Volatile.Read(ref _mediaScrollRequestId))
+        {
+            return;
+        }
+
+        var target = ResolveLoadedSelection(selectedMedia);
+        if (target == null)
+        {
+            return;
+        }
+
+        _viewModel.EnsureMediaFolderExpanded(target);
+
+        if (!IsSelectionAlreadyApplied(selectedMedia, target))
+        {
+            SyncSelectionFromViewModel(selectedMedia);
+            target = ResolveLoadedSelection(selectedMedia);
+            if (target == null)
+            {
+                return;
+            }
+        }
+
+        if (ShouldSuppressRevealForRecentUserSelection(_pendingMediaScrollReason ?? "media scroll", target.Id))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "media-scroll-suppressed-recent-user-selection-retry",
+                $"Pending {(_pendingMediaScrollReason ?? "media scroll")} request skipped after load because media '{target.Id}' was just selected visibly by the user. RequestId={pendingRequestId}, ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            ClearPendingMediaScroll(pendingRequestId, target.Id);
+            return;
+        }
+
+        var activeView = GetActiveMediaView();
+        if (IsMediaVisible(activeView, target))
+        {
+            ClearPendingMediaScroll(pendingRequestId, target.Id);
+            return;
+        }
+
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            "media-scroll-retry",
+            $"Pending {(_pendingMediaScrollReason ?? "media scroll")} request retrying after load. RequestId={pendingRequestId}, MediaId='{target.Id}', ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+            TimeSpan.FromSeconds(1));
+        EnqueueMediaScroll(pendingRequestId, target.Id, _pendingMediaScrollReason ?? "media scroll", "media-scroll-applied");
+    }
+
+    private void ScheduleSelectedMediaVisibilityVerificationAfterItemsChanged(string reason)
+    {
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null || !ShouldVerifySelectedMediaAfterItemsChanged(selectedMedia.Id))
+        {
+            return;
+        }
+
+        var version = Interlocked.Increment(ref _itemsChangedVisibilityVersion);
+        if (Interlocked.Exchange(ref _itemsChangedVisibilityVerificationScheduled, 1) == 1)
+        {
+            return;
+        }
+
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            "selected-media-visibility-check-scheduled",
+            $"Selected media visibility check scheduled after {reason}. Version={version}, MediaId='{selectedMedia.Id}', ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+            TimeSpan.FromSeconds(1));
+
+        if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+            {
+                if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => VerifySelectedMediaVisibleAfterItemsChanged(reason)))
+                {
+                    Interlocked.Exchange(ref _itemsChangedVisibilityVerificationScheduled, 0);
+                    AppTraceLogger.LogSampled(
+                        "MediaBrowser",
+                        "selected-media-visibility-check-dispatch-failed",
+                        $"Selected media visibility check dispatch failed after {reason}. Version={Volatile.Read(ref _itemsChangedVisibilityVersion)}.",
+                        TimeSpan.FromSeconds(2));
+                }
+            }))
+        {
+            Interlocked.Exchange(ref _itemsChangedVisibilityVerificationScheduled, 0);
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selected-media-visibility-check-dispatch-failed",
+                $"Selected media visibility check dispatch failed after {reason}. Version={version}.",
+                TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private bool ShouldVerifySelectedMediaAfterItemsChanged(string mediaId)
+    {
+        if (string.Equals(_pendingMediaScrollMediaId, mediaId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var nowTicks = DateTime.UtcNow.Ticks;
+        if (IsRecentMediaId(_lastMediaScrollCandidateId, _lastMediaScrollCandidateTicks, mediaId, nowTicks, ItemsChangedVisibilityVerificationWindow))
+        {
+            return true;
+        }
+
+        return IsRecentMediaId(_recentUserVisibleSelectionId, _recentUserVisibleSelectionTicks, mediaId, nowTicks, ItemsChangedVisibilityVerificationWindow);
+    }
+
+    private static bool IsRecentMediaId(string? storedMediaId, long storedTicks, string mediaId, long nowTicks, TimeSpan window)
+    {
+        if (string.IsNullOrWhiteSpace(storedMediaId) || !string.Equals(storedMediaId, mediaId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var elapsedTicks = nowTicks - storedTicks;
+        return elapsedTicks >= 0 && elapsedTicks <= window.Ticks;
+    }
+
+    private void VerifySelectedMediaVisibleAfterItemsChanged(string reason)
+    {
+        Interlocked.Exchange(ref _itemsChangedVisibilityVerificationScheduled, 0);
+
+        var version = Volatile.Read(ref _itemsChangedVisibilityVersion);
+        var selectedMedia = _viewModel.SelectedMedia;
+        if (selectedMedia == null)
+        {
+            return;
+        }
+
+        if (!ShouldVerifySelectedMediaAfterItemsChanged(selectedMedia.Id))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selected-media-visibility-check-expired",
+                $"Selected media visibility check skipped after {reason} because the selection is no longer recent. Version={version}, MediaId='{selectedMedia.Id}', ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            return;
+        }
+
+        var target = ResolveLoadedSelection(selectedMedia);
+        if (target == null)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selected-media-visibility-check-not-loaded",
+                $"Selected media visibility check skipped after {reason} because media '{selectedMedia.Id}' is not loaded. Version={version}, ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+                TimeSpan.FromSeconds(2));
+            return;
+        }
+
+        _viewModel.EnsureMediaFolderExpanded(target);
+
+        if (!IsSelectionAlreadyApplied(selectedMedia, target))
+        {
+            SyncSelectionFromViewModel(selectedMedia);
+            target = ResolveLoadedSelection(selectedMedia);
+            if (target == null)
+            {
+                return;
+            }
+        }
+
+        var activeView = GetActiveMediaView();
+        TryUpdateMediaViewLayout(activeView, "selected media visibility check");
+
+        var scrollMetrics = GetScrollMetrics(activeView);
+        if (IsMediaVisible(activeView, target))
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selected-media-visibility-check-visible",
+                $"Selected media visibility check completed after {reason}; media is visible. Version={version}, MediaId='{target.Id}', ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}.",
+                TimeSpan.FromSeconds(1));
+            return;
+        }
+
+        activeView.ScrollIntoView(target);
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            "selected-media-visibility-check-applied",
+            $"Selected media visibility check scrolled after {reason}. Version={version}, MediaId='{target.Id}', ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}.",
+            TimeSpan.FromSeconds(1));
+        ScheduleSelectedMediaVisibilityConfirmation(version, target.Id, reason);
+    }
+
+    private void ScheduleSelectedMediaVisibilityConfirmation(int version, string mediaId, string reason)
+    {
+        _page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            var selectedMedia = _viewModel.SelectedMedia;
+            if (selectedMedia == null || !string.Equals(selectedMedia.Id, mediaId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var target = ResolveLoadedSelection(selectedMedia);
+            if (target == null)
+            {
+                return;
+            }
+
+            var activeView = GetActiveMediaView();
+            TryUpdateMediaViewLayout(activeView, "selected media visibility confirmation");
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "selected-media-visibility-check-confirmed",
+                $"Selected media visibility check confirmation after {reason}. Version={version}, MediaId='{target.Id}', Visible={IsMediaVisible(activeView, target)}, ViewMode={_viewModel.ViewMode}, LoadedCount={_loadedMediaById.Count}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {GetScrollMetrics(activeView)}.",
+                TimeSpan.FromSeconds(1));
+        });
+    }
+
+    private static void TryUpdateMediaViewLayout(ListViewBase activeView, string operationName)
+    {
+        try
+        {
+            activeView.UpdateLayout();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaBrowser", $"{operationName} layout update failed.", ex);
+        }
+    }
+
+    private void StorePendingMediaScroll(int requestId, string mediaId, string reason)
+    {
+        _pendingMediaScrollRequestId = requestId;
+        _pendingMediaScrollMediaId = mediaId;
+        _pendingMediaScrollReason = reason;
+    }
+
+    private void ClearPendingMediaScroll(int requestId, string mediaId)
+    {
+        if (_pendingMediaScrollRequestId == requestId
+            && string.Equals(_pendingMediaScrollMediaId, mediaId, StringComparison.Ordinal))
+        {
+            _pendingMediaScrollRequestId = 0;
+            _pendingMediaScrollMediaId = null;
+            _pendingMediaScrollReason = null;
+        }
+    }
+
+    private void StoreRecentUserVisibleSelection(string mediaId)
+    {
+        RememberMediaScrollCandidate(mediaId);
+        _recentUserVisibleSelectionId = mediaId;
+        _recentUserVisibleSelectionTicks = DateTime.UtcNow.Ticks;
+    }
+
+    private void RememberMediaScrollCandidate(string mediaId)
+    {
+        _lastMediaScrollCandidateId = mediaId;
+        _lastMediaScrollCandidateTicks = DateTime.UtcNow.Ticks;
+    }
+
+    private bool ShouldSuppressRevealForRecentUserSelection(string operationName, string mediaId)
+    {
+        if (!string.Equals(operationName, "RevealSelectedMedia", StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(_recentUserVisibleSelectionId)
+            || !string.Equals(_recentUserVisibleSelectionId, mediaId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var elapsedTicks = DateTime.UtcNow.Ticks - _recentUserVisibleSelectionTicks;
+        return elapsedTicks >= 0 && elapsedTicks <= RecentUserSelectionRevealSuppression.Ticks;
+    }
+
+    private void RebuildLoadedMediaIndex()
+    {
+        _loadedMediaById.Clear();
+        foreach (var item in _viewModel.FilteredMediaItems)
+        {
+            _loadedMediaById[item.Id] = item;
+            item.IsSelected = _selectedItemIds.Contains(item.Id);
+        }
+        UpdateNowPlayingState(_viewModel.SelectedMedia);
+        TryApplyPendingMediaScroll();
+    }
+
+    private bool IsMediaVisible(ListViewBase listViewBase, MediaItemViewModel media)
+    {
+        if (listViewBase.ContainerFromItem(media) is not FrameworkElement container
+            || container.ActualWidth <= 0
+            || container.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        var scrollViewer = GetScrollViewer(listViewBase);
+        if (scrollViewer == null || scrollViewer.ActualWidth <= 0 || scrollViewer.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            var bounds = GetElementBounds(container, scrollViewer);
+            var visibleWidth = Math.Max(0, Math.Min(bounds.Right, scrollViewer.ActualWidth) - Math.Max(bounds.Left, 0));
+            var visibleHeight = Math.Max(0, Math.Min(bounds.Bottom, scrollViewer.ActualHeight) - Math.Max(bounds.Top, 0));
+            var visibleArea = visibleWidth * visibleHeight;
+            var totalArea = bounds.Width * bounds.Height;
+            return totalArea > 0 && visibleArea / totalArea >= 0.7;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string GetScrollMetrics(ListViewBase listViewBase)
+    {
+        var scrollViewer = GetScrollViewer(listViewBase);
+        if (scrollViewer == null)
+        {
+            return "ScrollViewer=<null>";
+        }
+
+        return $"VerticalOffset={scrollViewer.VerticalOffset:0.##}, ScrollableHeight={scrollViewer.ScrollableHeight:0.##}, ViewportHeight={scrollViewer.ViewportHeight:0.##}, ActualHeight={scrollViewer.ActualHeight:0.##}";
+    }
+
+    private string DescribeMediaContainer(ListViewBase listViewBase, MediaItemViewModel media)
+    {
+        if (listViewBase.ContainerFromItem(media) is not FrameworkElement container)
+        {
+            return "Container=<null>";
+        }
+
+        var scrollViewer = GetScrollViewer(listViewBase);
+        if (scrollViewer == null)
+        {
+            return $"ContainerType={container.GetType().Name}, ActualWidth={container.ActualWidth:0.##}, ActualHeight={container.ActualHeight:0.##}, Bounds=<no-scrollviewer>";
+        }
+
+        try
+        {
+            var bounds = GetElementBounds(container, scrollViewer);
+            return $"ContainerType={container.GetType().Name}, ActualWidth={container.ActualWidth:0.##}, ActualHeight={container.ActualHeight:0.##}, Bounds=({bounds.X:0.##},{bounds.Y:0.##},{bounds.Width:0.##},{bounds.Height:0.##})";
+        }
+        catch (Exception ex)
+        {
+            return $"ContainerType={container.GetType().Name}, ActualWidth={container.ActualWidth:0.##}, ActualHeight={container.ActualHeight:0.##}, BoundsError={ex.GetType().Name}";
+        }
     }
 
     private bool IsSelectionAlreadyApplied(MediaItemViewModel? selectedMedia, MediaItemViewModel? currentSelection)
@@ -1321,19 +2179,37 @@ public sealed class MediaBrowserController : IDisposable
     {
         if (_selectedItemIds.Count <= 1)
         {
+            if (IsSingleSelectionAppliedToView(listViewBase, selectedMedia))
+            {
+                return;
+            }
+
             listViewBase.SelectedItems.Clear();
             listViewBase.SelectedItem = selectedMedia;
             return;
         }
 
         listViewBase.SelectedItems.Clear();
-        foreach (var item in listViewBase.Items.OfType<MediaItemViewModel>())
+        foreach (var item in _viewModel.FilteredMediaItems)
         {
-            if (_selectedItemIds.Contains(item.Id))
+            if (_selectedItemIds.Contains(item.Id) && _viewModel.IsMediaVisibleInLibrary(item))
             {
                 listViewBase.SelectedItems.Add(item);
             }
         }
+    }
+
+    private static bool IsSingleSelectionAppliedToView(ListViewBase listViewBase, MediaItemViewModel? selectedMedia)
+    {
+        if (selectedMedia == null)
+        {
+            return listViewBase.SelectedItem == null && listViewBase.SelectedItems.Count == 0;
+        }
+
+        var selectedItem = listViewBase.SelectedItem as MediaItemViewModel;
+        return listViewBase.SelectedItems.Count <= 1
+            && selectedItem != null
+            && string.Equals(selectedItem.Id, selectedMedia.Id, StringComparison.Ordinal);
     }
 
     private MediaItemViewModel? ResolvePrimarySelection(
@@ -1393,13 +2269,17 @@ public sealed class MediaBrowserController : IDisposable
         }
     }
 
-    private void RebuildLoadedMediaIndex()
+    private void UpdateNowPlayingState(MediaItemViewModel? selectedMedia)
     {
-        _loadedMediaById.Clear();
-        foreach (var item in _viewModel.FilteredMediaItems)
+        var selectedId = selectedMedia?.Id;
+        foreach (var item in _loadedMediaById.Values)
         {
-            _loadedMediaById[item.Id] = item;
-            item.IsSelected = _selectedItemIds.Contains(item.Id);
+            var isNowPlaying = !string.IsNullOrWhiteSpace(selectedId)
+                && string.Equals(item.Id, selectedId, StringComparison.Ordinal);
+            if (item.IsNowPlaying != isNowPlaying)
+            {
+                item.IsNowPlaying = isNowPlaying;
+            }
         }
     }
 
@@ -1411,6 +2291,7 @@ public sealed class MediaBrowserController : IDisposable
         }
         catch (Exception ex)
         {
+            AppTraceLogger.LogException("MediaBrowser", $"ExecuteUiActionAsync failed. FailureTitle='{failureTitle}'.", ex);
             await showInfoAsync(failureTitle, ex.Message);
         }
     }
@@ -1432,6 +2313,9 @@ public sealed class MediaBrowserController : IDisposable
         flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(CreateSortMenuItem("按名称排序（A-Z）", MediaSortField.FileName, MediaSortOrder.Asc));
         flyout.Items.Add(CreateSortMenuItem("按名称排序（Z-A）", MediaSortField.FileName, MediaSortOrder.Desc));
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(CreateSortMenuItem("按类型排序（图片优先）", MediaSortField.Type, MediaSortOrder.Asc));
+        flyout.Items.Add(CreateSortMenuItem("按类型排序（视频优先）", MediaSortField.Type, MediaSortOrder.Desc));
         flyout.Items.Add(new MenuFlyoutSeparator());
         flyout.Items.Add(CreateSortMenuItem("按大小排序（小到大）", MediaSortField.Size, MediaSortOrder.Asc));
         flyout.Items.Add(CreateSortMenuItem("按大小排序（大到小）", MediaSortField.Size, MediaSortOrder.Desc));
