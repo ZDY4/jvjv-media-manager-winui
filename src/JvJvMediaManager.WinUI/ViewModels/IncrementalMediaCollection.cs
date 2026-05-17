@@ -60,6 +60,31 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         }
     }
 
+    public async Task RefreshLoadedWindowAsync()
+    {
+        await _loadLock.WaitAsync();
+        try
+        {
+            var generation = Volatile.Read(ref _generation);
+            var windowSize = Math.Max(Count, _pageSize);
+            var result = await _pageLoader(0, windowSize);
+            if (generation != Volatile.Read(ref _generation))
+            {
+                return;
+            }
+
+            var pageItems = result.Items
+                .Select(item => new MediaItemViewModel(item))
+                .ToList();
+            await RunOnUiThreadAsync(() => ReplaceLoadedWindow(pageItems));
+            _hasMoreItems = result.HasMore;
+        }
+        finally
+        {
+            _loadLock.Release();
+        }
+    }
+
     public Windows.Foundation.IAsyncOperation<LoadMoreItemsResult> LoadMoreItemsAsync(uint count)
     {
         return LoadMoreItemsCoreAsync(count).AsAsyncOperation();
@@ -122,10 +147,12 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 }
                 catch (Exception ex)
                 {
+                    AppTraceLogger.LogException("IncrementalMediaCollection", "RunOnUiThreadAsync action failed.", ex);
                     tcs.SetException(ex);
                 }
             }))
         {
+            AppTraceLogger.Log("IncrementalMediaCollection", "RunOnUiThreadAsync failed because DispatcherQueue rejected the callback.");
             tcs.SetException(new InvalidOperationException("无法切换到 UI 线程更新媒体集合。"));
         }
 
@@ -144,18 +171,13 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         var startIndex = Count;
         foreach (var item in items)
         {
-            Items.Add(item);
+            Add(item);
         }
 
-        // WinUI collection views are unstable with range Add notifications followed by later single-item mutations.
-        // A single Reset keeps page appends cheap without leaving the native projection in an invalid state.
-        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
         AppTraceLogger.LogSampled(
             "IncrementalMediaCollection",
-            "range-add-reset",
-            $"Applied page append via Reset. StartIndex={startIndex}, Added={items.Count}, Total={Count}.",
+            "range-add-incremental",
+            $"Applied page append incrementally. StartIndex={startIndex}, Added={items.Count}, Total={Count}.",
             TimeSpan.FromSeconds(2));
     }
 
@@ -173,7 +195,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         {
             if (Items[index] is MediaItemViewModel item && ids.Contains(item.Id))
             {
-                Items.RemoveAt(index);
+                RemoveAt(index);
                 removed++;
             }
         }
@@ -183,12 +205,51 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
             return 0;
         }
 
-        OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-        OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-        OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
         AppTraceLogger.Log(
             "IncrementalMediaCollection",
-            $"Removed media items via Reset. Removed={removed}, Remaining={Count}.");
+            $"Removed media items incrementally. Removed={removed}, Remaining={Count}.");
         return removed;
+    }
+
+    private void ReplaceLoadedWindow(IReadOnlyList<MediaItemViewModel> desiredItems)
+    {
+        for (var index = 0; index < desiredItems.Count; index++)
+        {
+            var desired = desiredItems[index];
+            if (index < Count && string.Equals(this[index].Id, desired.Id, StringComparison.Ordinal))
+            {
+                this[index].UpdateFrom(desired.Media);
+                continue;
+            }
+
+            var existingIndex = IndexOfId(desired.Id, index + 1);
+            if (existingIndex >= 0)
+            {
+                var existing = this[existingIndex];
+                existing.UpdateFrom(desired.Media);
+                Move(existingIndex, index);
+                continue;
+            }
+
+            Insert(index, desired);
+        }
+
+        while (Count > desiredItems.Count)
+        {
+            RemoveAt(Count - 1);
+        }
+    }
+
+    private int IndexOfId(string id, int startIndex)
+    {
+        for (var index = Math.Max(0, startIndex); index < Count; index++)
+        {
+            if (string.Equals(this[index].Id, id, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 }

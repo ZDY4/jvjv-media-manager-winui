@@ -43,6 +43,13 @@
                         ToolTipService.ToolTip="{Binding ViewModeToggleToolTip}">
                     <FontIcon Glyph="{Binding ViewModeToggleGlyph}" />
                 </Button>
+                <Button x:Name="FolderGroupToggleButton"
+                        x:FieldModifier="public"
+                        Style="{StaticResource PanelIconButtonStyle}"
+                        IsEnabled="{Binding HasMediaFolderGroups}"
+                        ToolTipService.ToolTip="{Binding MediaFolderGroupToggleToolTip}">
+                    <FontIcon Glyph="{Binding MediaFolderGroupToggleGlyph}" />
+                </Button>
                 <Button x:Name="SortButton"
                         x:FieldModifier="public"
                         Style="{StaticResource SecondaryToolbarButtonStyle}"
@@ -68,16 +75,31 @@
                        Foreground="{ThemeResource MutedTextBrush}"
                        FontSize="11"
                        TextTrimming="CharacterEllipsis" />
-            <ProgressBar x:Name="ScanProgressBar"
-                         x:FieldModifier="public"
-                         Grid.Row="1"
-                         Margin="0,4,0,0"
-                         Height="3"
-                         Visibility="{Binding ScanProgressVisibility}"
-                         IsIndeterminate="{Binding ScanProgressIsIndeterminate}"
-                         Minimum="0"
-                         Maximum="{Binding ScanProgressMaximum}"
-                         Value="{Binding ScanProgressValue}" />
+            <Grid Grid.Row="1"
+                  Margin="0,4,0,0"
+                  ColumnSpacing="6"
+                  Visibility="{Binding ScanProgressVisibility}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ProgressBar x:Name="ScanProgressBar"
+                             x:FieldModifier="public"
+                             Height="3"
+                             VerticalAlignment="Center"
+                             IsIndeterminate="{Binding ScanProgressIsIndeterminate}"
+                             Minimum="0"
+                             Maximum="{Binding ScanProgressMaximum}"
+                             Value="{Binding ScanProgressValue}" />
+                <Button x:Name="CancelScanButton"
+                        x:FieldModifier="public"
+                        Grid.Column="1"
+                        Style="{StaticResource PanelIconButtonStyle}"
+                        Visibility="{Binding ScanCancelButtonVisibility}"
+                        ToolTipService.ToolTip="取消扫描">
+                    <FontIcon Glyph="&#xE711;" />
+                </Button>
+            </Grid>
             <TextBlock x:Name="ScanPathText"
                        x:FieldModifier="public"
                        Grid.Row="2"

@@ -87,6 +87,59 @@
         </Setter>
     </Style>
 
+    <DataTemplate x:Key="MediaFolderGroupHeaderTemplate" x:DataType="viewModels:MediaFolderGroupViewModel">
+        <ToggleButton IsChecked="{Binding IsCollapsed, Mode=TwoWay}"
+                      HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Stretch"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      Padding="0"
+                      Margin="0,8,0,6">
+            <ToolTipService.ToolTip>
+                <ToolTip Content="{Binding FolderPath}" Style="{StaticResource MediaTooltipStyle}" />
+            </ToolTipService.ToolTip>
+            <Grid ColumnSpacing="8"
+                  MinHeight="28"
+                  Padding="2,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <FontIcon Grid.Column="0"
+                          Glyph="{Binding CollapseGlyph}"
+                          FontSize="12"
+                          Foreground="{ThemeResource MutedTextBrush}"
+                          VerticalAlignment="Center" />
+                <Grid Grid.Column="1"
+                      VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding FolderDisplayName}"
+                               Foreground="{ThemeResource TextBrush}"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               MaxLines="1"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" />
+                    <Rectangle Grid.Column="1"
+                               Height="1"
+                               Margin="10,0,0,0"
+                               Fill="{ThemeResource SurfaceStrokeBrush}"
+                               VerticalAlignment="Center" />
+                </Grid>
+                <TextBlock Grid.Column="2"
+                           Text="{Binding CountText}"
+                           Foreground="{ThemeResource MutedTextBrush}"
+                           FontSize="11"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </ToggleButton>
+    </DataTemplate>
+
     <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
         <Border Padding="6"
                 Background="{ThemeResource MediaCardBrush}"
@@ -107,6 +160,43 @@
                         Opacity="1"
                         Grid.ColumnSpan="2"
                         Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
+                <Border x:Name="ListNowPlayingTint"
+                        Grid.ColumnSpan="2"
+                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                        CornerRadius="{ThemeResource RadiusMedium}"
+                        Opacity="0.18"
+                        Canvas.ZIndex="9"
+                        IsHitTestVisible="False"
+                        Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
+                <Border x:Name="ListNowPlayingFrame"
+                        Grid.ColumnSpan="2"
+                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                        BorderThickness="4"
+                        CornerRadius="{ThemeResource RadiusMedium}"
+                        Canvas.ZIndex="10"
+                        IsHitTestVisible="False"
+                        Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
+                <Border x:Name="ListNowPlayingBadge"
+                        Grid.ColumnSpan="2"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Margin="8"
+                        Padding="8,4"
+                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                        CornerRadius="{ThemeResource RadiusSmall}"
+                        Canvas.ZIndex="11"
+                        IsHitTestVisible="False"
+                        Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <FontIcon Glyph="&#xE768;"
+                                  Foreground="White"
+                                  FontSize="11" />
+                        <TextBlock Text="播放中"
+                                   Foreground="White"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                    </StackPanel>
+                </Border>
 
                 <Border x:Name="ListThumbnailHost"
                         Width="72"
@@ -158,10 +248,8 @@
             <ToolTipService.ToolTip>
                 <ToolTip Content="{Binding FileSystemPath}" Style="{StaticResource MediaTooltipStyle}" />
             </ToolTipService.ToolTip>
-            <Border Width="{Binding ElementName=GridView, Path=Tag}"
-                    Height="{Binding ElementName=GridView, Path=Tag}"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
+            <Border HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
                     Background="{ThemeResource MediaCardBrush}"
                     BorderThickness="0"
                     CornerRadius="{ThemeResource RadiusLarge}">
@@ -172,6 +260,40 @@
                             CornerRadius="{ThemeResource RadiusLarge}"
                             Opacity="1"
                             Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
+                    <Border x:Name="GridNowPlayingTint"
+                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                            CornerRadius="{ThemeResource RadiusLarge}"
+                            Opacity="0.16"
+                            Canvas.ZIndex="9"
+                            IsHitTestVisible="False"
+                            Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
+                    <Border x:Name="GridNowPlayingFrame"
+                            BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                            BorderThickness="5"
+                            CornerRadius="{ThemeResource RadiusLarge}"
+                            Canvas.ZIndex="10"
+                            IsHitTestVisible="False"
+                            Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
+                    <Border x:Name="GridNowPlayingBadge"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Top"
+                            Margin="8"
+                            Padding="8,4"
+                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                            CornerRadius="{ThemeResource RadiusSmall}"
+                            Canvas.ZIndex="11"
+                            IsHitTestVisible="False"
+                            Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <FontIcon Glyph="&#xE768;"
+                                      Foreground="White"
+                                      FontSize="11" />
+                            <TextBlock Text="播放中"
+                                       Foreground="White"
+                                       FontSize="11"
+                                       FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
                     <Border Margin="5"
                             Background="{ThemeResource MediaCardPlaceholderBrush}"
                             CornerRadius="{ThemeResource RadiusMedium}">
@@ -214,8 +336,7 @@
                 Width="34"
                 Height="34"
                 Background="{Binding ColorHex, Converter={StaticResource PlaylistBackgroundBrushConverter}}"
-                CornerRadius="{ThemeResource RadiusSmall}"
-                ToolTipService.ToolTip="{Binding Name}">
+                CornerRadius="{ThemeResource RadiusSmall}">
             <TextBlock Text="{Binding RailDisplayText}"
                        Foreground="{Binding ColorHex, Converter={StaticResource PlaylistForegroundBrushConverter}}"
                        FontSize="13"

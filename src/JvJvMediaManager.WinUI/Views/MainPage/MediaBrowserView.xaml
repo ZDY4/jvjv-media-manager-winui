@@ -8,6 +8,9 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/MainPage/MediaLibraryResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
+            <CollectionViewSource x:Key="GroupedMediaItemsSource"
+                                  IsSourceGrouped="True"
+                                  ItemsPath="VisibleItems" />
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -15,33 +18,35 @@
           x:FieldModifier="public">
         <ListView x:Name="ListView"
                   x:FieldModifier="public"
-                  ItemsSource="{Binding FilteredMediaItems}"
+                  ItemsSource="{Binding Source={StaticResource GroupedMediaItemsSource}}"
                   Visibility="{Binding ListViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
                   ItemTemplate="{StaticResource ListItemTemplate}"
-                  IncrementalLoadingTrigger="Edge"
-                  IncrementalLoadingThreshold="1"
                   DataFetchSize="1"
                   SelectionMode="Extended"
                   CanDragItems="True"
                   IsItemClickEnabled="False">
+            <ListView.GroupStyle>
+                <GroupStyle HeaderTemplate="{StaticResource MediaFolderGroupHeaderTemplate}" />
+            </ListView.GroupStyle>
         </ListView>
 
         <GridView x:Name="GridView"
                   x:FieldModifier="public"
-                  ItemsSource="{Binding FilteredMediaItems}"
+                  ItemsSource="{Binding Source={StaticResource GroupedMediaItemsSource}}"
                   Tag="{Binding IconSize}"
                   Visibility="{Binding GridViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
                   ItemTemplate="{StaticResource GridItemTemplate}"
-                  IncrementalLoadingTrigger="Edge"
-                  IncrementalLoadingThreshold="1"
                   DataFetchSize="1"
                   SelectionMode="Extended"
                   CanDragItems="True"
                   IsItemClickEnabled="False">
+            <GridView.GroupStyle>
+                <GroupStyle HeaderTemplate="{StaticResource MediaFolderGroupHeaderTemplate}" />
+            </GridView.GroupStyle>
             <GridView.ItemsPanel>
                 <ItemsPanelTemplate>
                     <ItemsWrapGrid Orientation="Horizontal"

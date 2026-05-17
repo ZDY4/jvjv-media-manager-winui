@@ -4,6 +4,7 @@ public enum MediaSortField
 {
     FileName,
     ModifiedAt,
+    Type,
     Size,
     Duration,
     Resolution
@@ -32,4 +33,10 @@ public sealed class MediaPageResult
 {
     public IReadOnlyList<MediaFile> Items { get; init; } = Array.Empty<MediaFile>();
     public bool HasMore { get; init; }
+}
+
+public sealed class MediaFolderSummary
+{
+    public string FolderPath { get; init; } = string.Empty;
+    public int Count { get; init; }
 }
