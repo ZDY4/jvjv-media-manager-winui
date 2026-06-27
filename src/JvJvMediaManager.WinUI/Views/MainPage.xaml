@@ -28,19 +28,36 @@
                    IsHitTestVisible="False" />
         <SplitView x:Name="LibrarySplitViewHost"
                    DisplayMode="CompactInline"
-                   IsPaneOpen="{Binding Library.IsLibraryPaneOpen, Mode=TwoWay}"
+                   IsPaneOpen="{x:Bind Library.IsLibraryPaneOpen, Mode=TwoWay}"
                    CompactPaneLength="56"
-                   OpenPaneLength="{Binding Library.LibraryPaneWidth, Mode=TwoWay}"
+                   OpenPaneLength="{x:Bind Library.LibraryPaneWidth, Mode=TwoWay}"
                    Background="Transparent">
             <SplitView.Pane>
                 <mainPage:LibraryPaneView x:Name="LibraryPaneHost"
-                                          DataContext="{Binding Library}" />
+                                          DataContext="{x:Bind Library}" />
             </SplitView.Pane>
 
             <SplitView.Content>
                 <mainPage:PlayerPaneView x:Name="PlayerPaneHost"
-                                         DataContext="{Binding Player}" />
+                                         DataContext="{x:Bind Player}" />
             </SplitView.Content>
         </SplitView>
+        <Button x:Name="BossKeyRecoveryButton"
+                Width="24"
+                Height="24"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Margin="0,0,8,8"
+                Background="Transparent"
+                BorderThickness="0"
+                Opacity="0"
+                IsTabStop="False"
+                Click="BossKeyRecoveryButton_Click"
+                Visibility="Collapsed">
+            <Button.Resources>
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent" />
+                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#11FFFFFF" />
+            </Button.Resources>
+        </Button>
     </Grid>
 </Page>

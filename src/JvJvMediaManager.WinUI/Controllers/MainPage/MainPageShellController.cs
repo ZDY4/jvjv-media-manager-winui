@@ -32,7 +32,10 @@ public sealed class MainPageShellController
     private const double PlayerEdgeNavigationRevealWidth = 96;
     private const double ZoomedImageNavigationHotspotWidth = 32;
     private const double NavigationGestureDragThreshold = 8;
-    private const int MaxMissingMediaBatchSize = 48;
+#if DEBUG
+    private const string SmokeOpenIndependentWindowIdsEnvironmentVariable = "JVJVMM_SMOKE_OPEN_INDEPENDENT_WINDOW_IDS";
+    private const string SmokeShowContextMenuMediaIdEnvironmentVariable = "JVJVMM_SMOKE_SHOW_CONTEXT_MENU_MEDIA_ID";
+#endif
 
     private enum PlayerNavigationEdge
     {
@@ -51,9 +54,14 @@ public sealed class MainPageShellController
     private readonly MediaContextMenuCoordinator _mediaContextMenuCoordinator;
     private readonly MediaBrowserController _mediaBrowserController;
     private readonly MediaDeletionWorkflow _mediaDeletionWorkflow;
+    private readonly IndependentMediaWindowService _independentMediaWindows;
     private readonly IClipTimelineEditor _clipEditorController;
     private readonly VideoPlaybackController _videoPlaybackController;
     private readonly ImagePreviewController _imagePreviewController;
+    private readonly MainPageShortcutHandler _shortcutHandler;
+    private readonly PointerEventHandler _playerRootPointerPressedHandler;
+    private readonly RightTappedEventHandler _playerRootRightTappedHandler;
+    private readonly PointerEventHandler _videoPlayerPointerPressedHandler;
 
     private AppWindow? _appWindow;
 
@@ -61,13 +69,18 @@ public sealed class MainPageShellController
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDisposed;
+    private bool _isBossModeWindowHidden;
     private int _selectionSyncQueued;
-    private int _missingMediaCleanupActive;
-    private readonly object _missingMediaCleanupLock = new();
-    private readonly HashSet<string> _missingMediaCleanupIds = new(StringComparer.Ordinal);
+    private int _playerAvailabilityCheckVersion;
+    private int _playerSwitchTraceId;
+    private int _selectedMediaSwitchTraceId;
+    private long _selectedMediaChangedTimestamp;
+    private string? _selectedMediaSwitchMediaId;
+    private readonly MissingMediaCleanupWorker _missingMediaCleanupWorker;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
+    private MediaItemViewModel? _activePlayerMedia;
     private string? _activePlayerMediaId;
     private MediaType? _activePlayerMediaType;
 
@@ -89,6 +102,7 @@ public sealed class MainPageShellController
     private Border NextMediaHotspot => _playerPane.NavigationOverlay.NextMediaHotspot;
     private Border PreviousMediaCue => _playerPane.NavigationOverlay.PreviousMediaCue;
     private Border NextMediaCue => _playerPane.NavigationOverlay.NextMediaCue;
+    private StackPanel PlayerSideActionButtons => _playerPane.NavigationOverlay.SideActionButtons;
     private Button DeleteCurrentMediaButton => _playerPane.NavigationOverlay.DeleteCurrentMediaButton;
     private Button ClipModeToggleButton => _playerPane.TransportBar.ClipModeToggleButton;
     private Button SplitClipButton => _playerPane.ClipBarView.SplitClipButton;
@@ -112,6 +126,9 @@ public sealed class MainPageShellController
         _playerPane = playerPane;
         _dialogService = dialogService;
         _dialogCoordinator = _modules.CreateDialogWorkflowCoordinator(shell.Library, dialogService);
+        _independentMediaWindows = new IndependentMediaWindowService(
+            SyncIndependentWindowTagsAsync,
+            SyncIndependentWindowDeletedMediaAsync);
         _libraryPaneController = _modules.CreateLibraryPaneController(page, shell.Library, libraryPane);
         _mediaContextMenuCoordinator = _modules.CreateMediaContextMenuCoordinator(
             shell.Library,
@@ -119,7 +136,8 @@ public sealed class MainPageShellController
             FocusMediaInLibraryAsync,
             ApplyTagEditorAsync,
             AddSelectionToPlaylistAsync,
-            DeleteSelectionAsync);
+            DeleteSelectionAsync,
+            OpenSelectionInNewWindows);
         _playlistRailCoordinator = _modules.CreatePlaylistRailCoordinator(
             shell.Library,
             libraryPane.PlaylistRail,
@@ -133,7 +151,7 @@ public sealed class MainPageShellController
             shell.Library,
             libraryPane,
             _mediaContextMenuCoordinator,
-            (paths, refreshMedia) => UpdateWatchedFolders(paths, refreshMedia),
+            (paths, refreshMedia) => UpdateWatchedFoldersAsync(paths, refreshMedia),
             ShowInfoDialogAsync);
         _mediaDeletionWorkflow = _modules.CreateMediaDeletionWorkflow(
             shell.Library,
@@ -142,18 +160,21 @@ public sealed class MainPageShellController
                 $"将 {count} 个文件移到回收站。此操作会同时从媒体库移除这些记录。",
                 "移到回收站"),
             ShowInfoDialogAsync,
-            ReleasePreviewHandles,
+            ReleasePreviewHandlesForMedia,
             ClearPlayerSelection,
-            UpdatePlayer,
             ForceUpdatePlayer,
             selected => _mediaBrowserController.SyncSelectionFromViewModel(selected),
             selected => _mediaBrowserController.PreserveSelectionDuringCollectionMutation(selected));
+        _missingMediaCleanupWorker = new MissingMediaCleanupWorker(
+            () => ViewModel.FilteredMediaItems.ToList(),
+            LogMissingMediaDetected);
         _mediaContextMenuCoordinator.PlaylistModified += MediaContextMenuCoordinator_PlaylistModified;
         _videoPlaybackController = _modules.CreateVideoPlaybackController(
             shell.Settings,
             shell.Library,
             shell.Player.VideoPlayback,
             playerPane.TransportBar,
+            playerPane.NavigationOverlay,
             playerPane.VideoViewport,
             playerPane.VideoViewport.VideoPlayer,
             _page.DispatcherQueue,
@@ -167,7 +188,7 @@ public sealed class MainPageShellController
         var clipEditorHost = new MainPageClipEditorHost(
             shell.Library,
             _videoPlaybackController,
-            paths => UpdateWatchedFolders(paths),
+            paths => UpdateWatchedFoldersAsync(paths),
             ShowControls);
         _clipEditorController = _modules.CreateClipEditorController(
             clipEditorHost,
@@ -180,6 +201,66 @@ public sealed class MainPageShellController
             playerPane.ImageViewport,
             playerPane.PlayerOverlay,
             RefreshPlayerNavigationHotspots);
+        _playerRootPointerPressedHandler = PlayerRoot_PointerPressed;
+        _playerRootRightTappedHandler = PlayerRoot_RightTapped;
+        _videoPlayerPointerPressedHandler = VideoPlayer_PointerPressed;
+
+        var bossKeyController = new BossKeyController(
+            () =>
+            {
+                if (!_isDisposed)
+                {
+                    _videoPlaybackController.Clear();
+                    _shell.Player.EmptyStateVisibility = Visibility.Visible;
+                    _shell.Player.PlayerInfoVisibility = Visibility.Collapsed;
+                    _shell.Library.IsBossMode = true;
+                    _isBossModeWindowHidden = true;
+
+                    var appWindow = GetAppWindow();
+                    if (appWindow != null)
+                    {
+                        appWindow.Hide();
+                    }
+                }
+            },
+            () =>
+            {
+                if (!_isDisposed)
+                {
+                    _isBossModeWindowHidden = false;
+                    _shell.Library.IsBossMode = false;
+                    _page.ExitBossMode();
+                }
+            },
+            () => _isDisposed);
+
+        _shortcutHandler = new MainPageShortcutHandler(
+            () => _isDisposed,
+            IsTextInputFocused,
+            GetCurrentPlayerMedia,
+            () => _clipEditorController.IsClipModeActive,
+            ToggleNumpadShortcutHint,
+            TryOpenSelectedMediaFolderFromShortcut,
+            TryAddSelectionToPlaylistFromShortcutAsync,
+            TryRemoveSelectionFromPlaylistFromShortcutAsync,
+            AddFolderAsync,
+            FocusLibrarySearch,
+            EditSelectedTagsAsync,
+            TryApplyNumpadTagShortcutAsync,
+            TryTogglePlaybackFromShortcut,
+            TryDeleteSelectedFromShortcutAsync,
+            NavigateRelativeAsync,
+            SeekRelative,
+            _clipEditorController.ExportCurrentClipAsync,
+            TrySplitClipFromShortcut,
+            _imagePreviewController.ZoomBy,
+            _imagePreviewController.ResetZoom,
+            key =>
+            {
+                var ctrlDown = (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+                return bossKeyController.ShouldHandleBossKey(key, ctrlDown);
+            },
+            () => bossKeyController.HandleBossKeyTrigger());
         ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         ViewModel.SetDispatcher(_page.DispatcherQueue);
         _playerPane.ShortcutHintInvoked += PlayerPane_ShortcutHintInvoked;
@@ -188,11 +269,11 @@ public sealed class MainPageShellController
         _playerPane.EmptyStateView.SettingsRequested += EmptyStateView_SettingsRequested;
         _playerPane.InfoOverlay.TagRemoveRequested += InfoOverlay_TagRemoveRequested;
         PlayerRoot.PointerMoved += PlayerRoot_PointerMoved;
-        PlayerRoot.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(PlayerRoot_PointerPressed), true);
+        PlayerRoot.AddHandler(UIElement.PointerPressedEvent, _playerRootPointerPressedHandler, true);
         PlayerRoot.PointerExited += PlayerRoot_PointerExited;
-        PlayerRoot.AddHandler(UIElement.RightTappedEvent, new RightTappedEventHandler(PlayerRoot_RightTapped), true);
+        PlayerRoot.AddHandler(UIElement.RightTappedEvent, _playerRootRightTappedHandler, true);
         VideoPlayer.GotFocus += VideoPlayer_GotFocus;
-        VideoPlayer.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(VideoPlayer_PointerPressed), true);
+        VideoPlayer.AddHandler(UIElement.PointerPressedEvent, _videoPlayerPointerPressedHandler, true);
         PreviousMediaHotspot.PointerEntered += PreviousMediaHotspot_PointerEntered;
         PreviousMediaHotspot.PointerPressed += PlayerNavigationHotspot_PointerPressed;
         PreviousMediaHotspot.PointerMoved += PlayerNavigationHotspot_PointerMoved;
@@ -212,6 +293,14 @@ public sealed class MainPageShellController
         _shell.Player.PlayerInfoVisibility = Visibility.Collapsed;
         _shell.Player.ImagePreview.ZoomBadgeVisibility = Visibility.Collapsed;
         _videoPlaybackController.Clear();
+        _page.ConfigureBossKey(bossKeyController);
+
+        var appWindow = GetAppWindow();
+        if (appWindow != null)
+        {
+            appWindow.Changed += AppWindow_BossChanged;
+        }
+
         _clipEditorController.Refresh();
     }
 
@@ -236,8 +325,32 @@ public sealed class MainPageShellController
                 return;
             }
 
-            _libraryPaneController.EnsurePaneState(preferOpen: true);
+            _libraryPaneController.EnsurePaneState();
+#if DEBUG
+            TryOpenIndependentWindowsFromSmokeHook();
+            TryShowContextMenuFromSmokeHook();
+#endif
         }, "初始化失败");
+    }
+
+    private void AppWindow_BossChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (_isDisposed || !_isBossModeWindowHidden)
+        {
+            return;
+        }
+
+        if (args.DidVisibilityChange && sender.IsVisible)
+        {
+            _isBossModeWindowHidden = false;
+            _page.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!_isDisposed)
+                {
+                    _page.ShowBossRecoveryButton();
+                }
+            });
+        }
     }
 
     public void Dispose()
@@ -248,6 +361,11 @@ public sealed class MainPageShellController
         }
 
         _isDisposed = true;
+        var appWindow = GetAppWindow();
+        if (appWindow != null)
+        {
+            appWindow.Changed -= AppWindow_BossChanged;
+        }
         Interlocked.Exchange(ref _selectionSyncQueued, 0);
         ResetNavigationHotspotGesture();
         AppTraceLogger.Log("MainPageShell", "Dispose start.");
@@ -259,11 +377,11 @@ public sealed class MainPageShellController
         _playerPane.EmptyStateView.SettingsRequested -= EmptyStateView_SettingsRequested;
         _playerPane.InfoOverlay.TagRemoveRequested -= InfoOverlay_TagRemoveRequested;
         PlayerRoot.PointerMoved -= PlayerRoot_PointerMoved;
-        PlayerRoot.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(PlayerRoot_PointerPressed));
+        PlayerRoot.RemoveHandler(UIElement.PointerPressedEvent, _playerRootPointerPressedHandler);
         PlayerRoot.PointerExited -= PlayerRoot_PointerExited;
-        PlayerRoot.RemoveHandler(UIElement.RightTappedEvent, new RightTappedEventHandler(PlayerRoot_RightTapped));
+        PlayerRoot.RemoveHandler(UIElement.RightTappedEvent, _playerRootRightTappedHandler);
         VideoPlayer.GotFocus -= VideoPlayer_GotFocus;
-        VideoPlayer.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(VideoPlayer_PointerPressed));
+        VideoPlayer.RemoveHandler(UIElement.PointerPressedEvent, _videoPlayerPointerPressedHandler);
         PreviousMediaHotspot.PointerEntered -= PreviousMediaHotspot_PointerEntered;
         PreviousMediaHotspot.PointerPressed -= PlayerNavigationHotspot_PointerPressed;
         PreviousMediaHotspot.PointerMoved -= PlayerNavigationHotspot_PointerMoved;
@@ -285,6 +403,8 @@ public sealed class MainPageShellController
         _videoPlaybackController.Dispose();
         _clipEditorController.Dispose();
         _imagePreviewController.Dispose();
+        _independentMediaWindows.Dispose();
+        ViewModel.Dispose();
         AppTraceLogger.Log("MainPageShell", "Dispose completed.");
     }
 
@@ -298,9 +418,18 @@ public sealed class MainPageShellController
         if (e.PropertyName == nameof(LibraryShellViewModel.SelectedMedia))
         {
             var selected = ViewModel.SelectedMedia;
+            var switchTraceId = Interlocked.Increment(ref _playerSwitchTraceId);
+            _selectedMediaSwitchTraceId = switchTraceId;
+            _selectedMediaChangedTimestamp = Stopwatch.GetTimestamp();
+            _selectedMediaSwitchMediaId = selected?.Id;
             AppTraceLogger.Log(
                 "MainPageShell",
                 $"SelectedMedia changed. SelectedId='{selected?.Id ?? "<null>"}', Type='{selected?.Type.ToString() ?? "<null>"}', ActiveId='{_activePlayerMediaId ?? "<null>"}', ActiveType='{_activePlayerMediaType.ToString() ?? "<null>"}'.");
+            LogPlayerSwitchTrace(
+                switchTraceId,
+                selected,
+                "SelectedMediaChanged",
+                $"ActiveId='{_activePlayerMediaId ?? "<null>"}', ActiveType='{_activePlayerMediaType.ToString() ?? "<null>"}'.");
             _videoPlaybackController.NotifySelectedMediaChanged(selected);
             QueueSelectionSync();
         }
@@ -327,6 +456,13 @@ public sealed class MainPageShellController
         }
 
         AppTraceLogger.Log("MainPageShell", "QueueSelectionSync queued.");
+        var selected = ViewModel.SelectedMedia;
+        var (switchTraceId, selectedChangedTimestamp) = GetSelectionSwitchTrace(selected);
+        LogPlayerSwitchTrace(
+            switchTraceId,
+            selected,
+            "SelectionSyncQueued",
+            $"SelectedToQueueMs={FormatElapsedMilliseconds(selectedChangedTimestamp)}.");
         if (!_page.DispatcherQueue.TryEnqueue(() =>
         {
             Interlocked.Exchange(ref _selectionSyncQueued, 0);
@@ -415,15 +551,16 @@ public sealed class MainPageShellController
 
     private void PlayerRoot_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (ViewModel.SelectedMedia == null)
+        var currentPlayerMedia = GetCurrentPlayerMedia();
+        if (currentPlayerMedia == null)
         {
             return;
         }
 
         var selected = _mediaBrowserController.GetSelectedItems().ToList();
-        if (selected.Count == 0)
+        if (!selected.Any(item => string.Equals(item.Id, currentPlayerMedia.Id, StringComparison.Ordinal)))
         {
-            selected.Add(ViewModel.SelectedMedia);
+            selected = new List<MediaItemViewModel> { currentPlayerMedia };
         }
 
         selected = selected
@@ -436,7 +573,12 @@ public sealed class MainPageShellController
         }
 
         ShowControls();
-        _mediaContextMenuCoordinator.ShowForTarget(PlayerRoot, e.GetPosition(PlayerRoot), selected);
+        _mediaContextMenuCoordinator.ShowForTarget(
+            PlayerRoot,
+            e.GetPosition(PlayerRoot),
+            selected,
+            ToggleNumpadShortcutHint,
+            GetNumpadShortcutHintMenuText());
         e.Handled = true;
     }
 
@@ -445,13 +587,181 @@ public sealed class MainPageShellController
         ViewModel.SelectedMedia = media;
     }
 
-    private void UpdatePlayer(MediaItemViewModel media)
+    private void OpenSelectionInNewWindows(IReadOnlyList<MediaItemViewModel> mediaItems)
     {
-        if (!IsMediaFileAvailable(media))
+        _independentMediaWindows.OpenMediaWindows(mediaItems, ViewModel.FilteredMediaItems.ToList());
+    }
+
+#if DEBUG
+    private void TryOpenIndependentWindowsFromSmokeHook()
+    {
+        var rawIds = Environment.GetEnvironmentVariable(SmokeOpenIndependentWindowIdsEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(rawIds))
         {
-            QueueMissingMediaCleanup(media, "update-player");
             return;
         }
+
+        var requestedIds = rawIds
+            .Split(new[] { ',', ';', '|' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (requestedIds.Count == 0)
+        {
+            return;
+        }
+
+        var loadedById = ViewModel.FilteredMediaItems.ToDictionary(item => item.Id, StringComparer.Ordinal);
+        var mediaItems = requestedIds
+            .Select(id => loadedById.TryGetValue(id, out var media) ? media : null)
+            .OfType<MediaItemViewModel>()
+            .ToList();
+        if (mediaItems.Count == 0)
+        {
+            AppTraceLogger.Log(
+                "IndependentMediaWindow",
+                $"Smoke hook skipped because none of the requested ids are loaded. Requested='{rawIds}', LoadedCount={ViewModel.FilteredMediaItems.Count}.");
+            return;
+        }
+
+        AppTraceLogger.Log(
+            "IndependentMediaWindow",
+            $"Smoke hook opening independent windows. Requested={requestedIds.Count}, Opening={mediaItems.Count}, LoadedCount={ViewModel.FilteredMediaItems.Count}.");
+        OpenSelectionInNewWindows(mediaItems);
+    }
+
+    private void TryShowContextMenuFromSmokeHook()
+    {
+        var mediaId = Environment.GetEnvironmentVariable(SmokeShowContextMenuMediaIdEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        mediaId = mediaId.Trim();
+        var media = ViewModel.FilteredMediaItems.FirstOrDefault(
+            item => string.Equals(item.Id, mediaId, StringComparison.Ordinal));
+        if (media == null)
+        {
+            AppTraceLogger.Log(
+                "MediaContextMenu",
+                $"Smoke hook skipped because requested media is not loaded. MediaId='{mediaId}', LoadedCount={ViewModel.FilteredMediaItems.Count}.");
+            return;
+        }
+
+        ViewModel.SelectedMedia = media;
+        _mediaBrowserController.SyncSelectionFromViewModel(media);
+        var target = _libraryPane.BrowserView.GridView.Visibility == Visibility.Visible
+            ? (FrameworkElement)_libraryPane.BrowserView.GridView
+            : _libraryPane.BrowserView.ListView;
+        var position = new Windows.Foundation.Point(
+            Math.Max(8, Math.Min(target.ActualWidth / 2, 180)),
+            Math.Max(8, Math.Min(target.ActualHeight / 2, 180)));
+
+        AppTraceLogger.Log(
+            "MediaContextMenu",
+            $"Smoke hook showing media context menu. MediaId='{media.Id}', Target={target.GetType().Name}, Position={position.X:0.#},{position.Y:0.#}.");
+        _mediaContextMenuCoordinator.ShowForTarget(target, position, new[] { media });
+    }
+#endif
+
+    private async Task SyncIndependentWindowTagsAsync(string mediaId, IReadOnlyList<string> tags)
+    {
+        if (_isDisposed || string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        var loadedMedia = ViewModel.FilteredMediaItems
+            .FirstOrDefault(item => string.Equals(item.Id, mediaId, StringComparison.Ordinal));
+        if (loadedMedia != null)
+        {
+            loadedMedia.UpdateTags(tags);
+            if (string.Equals(_activePlayerMediaId, mediaId, StringComparison.Ordinal))
+            {
+                RefreshPlayerTags(loadedMedia);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(ViewModel.SearchQuery) || ViewModel.SelectedTags.Count > 0)
+        {
+            await ViewModel.RefreshMediaAsync(preserveSelection: true, updateLoadingState: false);
+        }
+
+        AppTraceLogger.Log(
+            "IndependentMediaWindow",
+            $"Synced tag changes to main window. MediaId='{mediaId}', Loaded={loadedMedia != null}, TagCount={tags.Count}.");
+    }
+
+    private async Task SyncIndependentWindowDeletedMediaAsync(IReadOnlyList<string> mediaIds)
+    {
+        if (_isDisposed || mediaIds.Count == 0)
+        {
+            return;
+        }
+
+        var deletedIds = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        if (deletedIds.Count == 0)
+        {
+            return;
+        }
+
+        var loadedDeletedMedia = ViewModel.FilteredMediaItems
+            .Where(item => deletedIds.Contains(item.Id))
+            .ToList();
+        var deletedCurrentMediaId = _activePlayerMediaId != null && deletedIds.Contains(_activePlayerMediaId)
+            ? _activePlayerMediaId
+            : null;
+
+        if (deletedCurrentMediaId != null)
+        {
+            ReleasePreviewHandlesForMedia(deletedCurrentMediaId);
+        }
+
+        MediaItemViewModel? nextSelection = null;
+        if (loadedDeletedMedia.Count > 0)
+        {
+            using var selectionMutation = _mediaBrowserController.PreserveSelectionDuringCollectionMutation(ViewModel.SelectedMedia);
+            nextSelection = await ViewModel.DeleteMediaAsync(loadedDeletedMedia);
+        }
+        else
+        {
+            ViewModel.MarkMediaDeletedExternally(deletedIds);
+            await ViewModel.RefreshMediaAsync(preserveSelection: true, updateLoadingState: false);
+        }
+
+        if (deletedCurrentMediaId != null)
+        {
+            if (nextSelection != null)
+            {
+                _mediaBrowserController.SyncSelectionFromViewModel(nextSelection);
+                ForceUpdatePlayer(nextSelection);
+            }
+            else
+            {
+                ClearPlayerSelection();
+            }
+        }
+        else
+        {
+            _mediaBrowserController.SyncSelectionFromViewModel(ViewModel.SelectedMedia);
+        }
+
+        AppTraceLogger.Log(
+            "IndependentMediaWindow",
+            $"Synced deleted media to main window. Requested={deletedIds.Count}, LoadedDeleted={loadedDeletedMedia.Count}, DeletedCurrent={deletedCurrentMediaId != null}, NextSelection='{nextSelection?.Id ?? "<null>"}'.");
+    }
+
+    private void UpdatePlayer(MediaItemViewModel media)
+    {
+        var updateStartTimestamp = Stopwatch.GetTimestamp();
+        var (switchTraceId, selectedChangedTimestamp) = GetSelectionSwitchTrace(media);
+        LogPlayerSwitchTrace(
+            switchTraceId,
+            media,
+            "UpdatePlayerStart",
+            $"SelectedToUpdatePlayerMs={FormatElapsedMilliseconds(selectedChangedTimestamp)}.");
 
         var isSameActiveMedia = string.Equals(_activePlayerMediaId, media.Id, StringComparison.Ordinal)
             && _activePlayerMediaType == media.Type;
@@ -461,9 +771,10 @@ public sealed class MainPageShellController
         _shell.Player.EmptyStateVisibility = Visibility.Collapsed;
         _shell.Player.PlayerInfoVisibility = Visibility.Visible;
         _shell.Player.PlayerFileName = media.FileName;
-        _shell.Player.PlayerResolution = media.ResolutionText;
+        _shell.Player.PlayerResolution = media.PlayerDetailsText;
         RefreshPlayerTags(media);
         _clipEditorController.HandleMediaChanged(media);
+        _activePlayerMedia = media;
 
         if (isSameActiveMedia)
         {
@@ -474,7 +785,12 @@ public sealed class MainPageShellController
         {
             _shell.Player.ImagePreview.ZoomBadgeVisibility = Visibility.Collapsed;
             _imagePreviewController.Clear();
-            _videoPlaybackController.ShowVideo(media);
+            LogPlayerSwitchTrace(
+                switchTraceId,
+                media,
+                "PlayerUiPrepared",
+                $"SelectedToPlayerUiPreparedMs={FormatElapsedMilliseconds(selectedChangedTimestamp)}, UpdatePlayerUiPrepMs={Stopwatch.GetElapsedTime(updateStartTimestamp).TotalMilliseconds:0.###}.");
+            _videoPlaybackController.ShowVideo(media, selectedChangedTimestamp, switchTraceId);
         }
         else
         {
@@ -492,6 +808,61 @@ public sealed class MainPageShellController
 
         _activePlayerMediaId = media.Id;
         _activePlayerMediaType = media.Type;
+        _activePlayerMedia = media;
+    }
+
+    private void QueueVerifiedPlayerUpdate(MediaItemViewModel media)
+    {
+        var version = Interlocked.Increment(ref _playerAvailabilityCheckVersion);
+        _ = VerifyPlayerMediaAvailableAndUpdateAsync(media, version);
+    }
+
+    private async Task VerifyPlayerMediaAvailableAndUpdateAsync(MediaItemViewModel media, int version)
+    {
+        var availabilityStartTimestamp = Stopwatch.GetTimestamp();
+        var isAvailable = await _missingMediaCleanupWorker.IsMediaFileAvailableAsync(media);
+        var availabilityElapsedMs = Stopwatch.GetElapsedTime(availabilityStartTimestamp).TotalMilliseconds;
+
+        if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
+        {
+            return;
+        }
+
+        if (!isAvailable)
+        {
+            LogPlayerSwitchTrace(
+                0,
+                media,
+                "UpdatePlayerMissing",
+                $"FileAvailabilityMs={availabilityElapsedMs:0.###}.");
+            QueueMissingMediaCleanup(media, "update-player");
+            return;
+        }
+
+        if (!_page.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
+            {
+                return;
+            }
+
+            var selected = ViewModel.SelectedMedia;
+            if (selected == null || !string.Equals(selected.Id, media.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var isSameActiveMedia = string.Equals(_activePlayerMediaId, selected.Id, StringComparison.Ordinal)
+                && _activePlayerMediaType == selected.Type;
+            UpdatePlayer(selected);
+            if (!isSameActiveMedia)
+            {
+                _mediaBrowserController.RevealSelectedMedia(selected);
+            }
+        }))
+        {
+            AppTraceLogger.Log("MainPageShell", $"Verified player update dispatcher rejected. MediaId='{media.Id}'.");
+        }
     }
 
     private void ForceUpdatePlayer(MediaItemViewModel media)
@@ -501,35 +872,24 @@ public sealed class MainPageShellController
             $"ForceUpdatePlayer requested. MediaId='{media.Id}', PreviousActiveId='{_activePlayerMediaId ?? "<null>"}', PreviousActiveType='{_activePlayerMediaType.ToString() ?? "<null>"}'.");
         _activePlayerMediaId = null;
         _activePlayerMediaType = null;
-        UpdatePlayer(media);
+        _activePlayerMedia = null;
+        QueueVerifiedPlayerUpdate(media);
     }
 
-    private bool IsMediaFileAvailable(MediaItemViewModel media)
+    private void LogMissingMediaDetected(MediaItemViewModel media, string source)
     {
-        try
-        {
-            return !string.IsNullOrWhiteSpace(media.FileSystemPath) && File.Exists(media.FileSystemPath);
-        }
-        catch (Exception ex)
-        {
-            AppTraceLogger.LogException("MainPageShell", $"IsMediaFileAvailable failed. MediaId='{media.Id}', Path='{media.FileSystemPath}'.", ex);
-            return false;
-        }
+        AppTraceLogger.Log(
+            "MainPageShell",
+            $"Missing media detected. Source={source}, MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
     }
 
     private void QueueMissingMediaCleanup(MediaItemViewModel media, string source)
     {
-        lock (_missingMediaCleanupLock)
+        if (!_missingMediaCleanupWorker.TryQueue(media, source))
         {
-            if (!_missingMediaCleanupIds.Add(media.Id))
-            {
-                return;
-            }
+            return;
         }
 
-        AppTraceLogger.Log(
-            "MainPageShell",
-            $"Missing media detected. Source={source}, MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
         ClearPlayerSelection();
         _ = HandleMissingMediaAsync(media);
     }
@@ -540,31 +900,25 @@ public sealed class MainPageShellController
         MediaItemViewModel? nextSelection = media;
         var removedCount = 0;
 
-        Interlocked.Increment(ref _missingMediaCleanupActive);
+        using var cleanupScope = _missingMediaCleanupWorker.EnterCleanup();
         try
         {
-            for (var round = 0; round < 4 && nextSelection != null && !IsMediaFileAvailable(nextSelection); round++)
+            for (var round = 0; round < 4 && nextSelection != null && !await _missingMediaCleanupWorker.IsMediaFileAvailableAsync(nextSelection); round++)
             {
-                var batch = BuildMissingMediaCleanupBatch(nextSelection);
+                var batch = (await _missingMediaCleanupWorker.BuildCleanupBatchAsync(nextSelection)).ToList();
                 if (batch.Count == 0)
                 {
                     break;
                 }
 
-                lock (_missingMediaCleanupLock)
-                {
-                    foreach (var item in batch)
-                    {
-                        _missingMediaCleanupIds.Add(item.Id);
-                        cleanupIds.Add(item.Id);
-                    }
-                }
+                _missingMediaCleanupWorker.MarkBatchQueued(batch, cleanupIds);
 
                 removedCount += batch.Count;
                 AppTraceLogger.Log(
                     "MainPageShell",
                     $"Missing media cleanup batch deleting. Round={round + 1}, Count={batch.Count}, FirstId='{batch[0].Id}', FirstFile='{batch[0].FileName}'.");
                 nextSelection = await ViewModel.DeleteMediaAsync(batch);
+                _mediaBrowserController.SuppressTransientEmptySelectionFor(nextSelection, "missing-media-cleanup");
             }
 
             ViewModel.StatusMessage = removedCount <= 1
@@ -587,42 +941,9 @@ public sealed class MainPageShellController
         }
         finally
         {
-            lock (_missingMediaCleanupLock)
-            {
-                _missingMediaCleanupIds.Remove(media.Id);
-                foreach (var id in cleanupIds)
-                {
-                    _missingMediaCleanupIds.Remove(id);
-                }
-            }
-
-            Interlocked.Decrement(ref _missingMediaCleanupActive);
+            _missingMediaCleanupWorker.ReleaseQueued(media, cleanupIds);
             SyncSelectionFromViewModel();
         }
-    }
-
-    private List<MediaItemViewModel> BuildMissingMediaCleanupBatch(MediaItemViewModel media)
-    {
-        var list = ViewModel.FilteredMediaItems;
-        var index = list.IndexOf(media);
-        if (index < 0)
-        {
-            return IsMediaFileAvailable(media) ? new List<MediaItemViewModel>() : new List<MediaItemViewModel> { media };
-        }
-
-        var batch = new List<MediaItemViewModel>(capacity: Math.Min(MaxMissingMediaBatchSize, list.Count - index));
-        for (var currentIndex = index; currentIndex < list.Count && batch.Count < MaxMissingMediaBatchSize; currentIndex++)
-        {
-            var candidate = list[currentIndex];
-            if (IsMediaFileAvailable(candidate))
-            {
-                break;
-            }
-
-            batch.Add(candidate);
-        }
-
-        return batch;
     }
 
     private void ClearPlayerSelection()
@@ -670,13 +991,19 @@ public sealed class MainPageShellController
         }
 
         var selected = ViewModel.SelectedMedia;
+        var (switchTraceId, selectedChangedTimestamp) = GetSelectionSwitchTrace(selected);
         AppTraceLogger.Log(
             "MainPageShell",
             $"SyncSelectionFromViewModel start. SelectedId='{selected?.Id ?? "<null>"}', SelectedType='{selected?.Type.ToString() ?? "<null>"}', ActiveId='{_activePlayerMediaId ?? "<null>"}', ActiveType='{_activePlayerMediaType.ToString() ?? "<null>"}', IsLoading={ViewModel.IsLoading}.");
+        LogPlayerSwitchTrace(
+            switchTraceId,
+            selected,
+            "SelectionSyncStart",
+            $"SelectedToSyncStartMs={FormatElapsedMilliseconds(selectedChangedTimestamp)}, IsLoading={ViewModel.IsLoading}.");
         _mediaBrowserController.SyncSelectionFromViewModel(selected);
         RefreshNumpadShortcutHint();
 
-        if (Volatile.Read(ref _missingMediaCleanupActive) > 0)
+        if (_missingMediaCleanupWorker.IsActive)
         {
             AppTraceLogger.LogSampled(
                 "MainPageShell",
@@ -697,18 +1024,44 @@ public sealed class MainPageShellController
             return;
         }
 
-        var isSameActiveMedia = string.Equals(_activePlayerMediaId, selected.Id, StringComparison.Ordinal)
-            && _activePlayerMediaType == selected.Type;
-        UpdatePlayer(selected);
-        if (!isSameActiveMedia)
+        QueueVerifiedPlayerUpdate(selected);
+    }
+
+    private (int SwitchTraceId, long SelectedChangedTimestamp) GetSelectionSwitchTrace(MediaItemViewModel? media)
+    {
+        if (media == null)
         {
-            _mediaBrowserController.RevealSelectedMedia(selected);
+            return string.IsNullOrWhiteSpace(_selectedMediaSwitchMediaId)
+                ? (_selectedMediaSwitchTraceId, _selectedMediaChangedTimestamp)
+                : (0, 0);
         }
+
+        return string.Equals(_selectedMediaSwitchMediaId, media.Id, StringComparison.Ordinal)
+            ? (_selectedMediaSwitchTraceId, _selectedMediaChangedTimestamp)
+            : (0, 0);
+    }
+
+    private static string FormatElapsedMilliseconds(long startTimestamp)
+    {
+        return startTimestamp <= 0
+            ? "<none>"
+            : Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds.ToString("0.###");
+    }
+
+    private static void LogPlayerSwitchTrace(
+        int switchTraceId,
+        MediaItemViewModel? media,
+        string stage,
+        string details)
+    {
+        AppTraceLogger.Log(
+            "PlayerSwitch",
+            $"TraceId={switchTraceId} Stage={stage} MediaId='{media?.Id ?? "<null>"}', Type='{media?.Type.ToString() ?? "<null>"}', File='{media?.FileName ?? "<null>"}'. {details}");
     }
 
     public async Task HandleKeyDownAsync(KeyRoutedEventArgs e)
     {
-        e.Handled = await HandleShortcutKeyAsync(e.Key);
+        e.Handled = await _shortcutHandler.HandleShortcutKeyAsync(e.Key);
         if (e.Handled)
         {
             ShowControls();
@@ -717,38 +1070,12 @@ public sealed class MainPageShellController
 
     public bool ShouldHandleWindowShortcutKey(VirtualKey key)
     {
-        if (_isDisposed)
-        {
-            return false;
-        }
-
-        if (key == VirtualKey.F1)
-        {
-            return true;
-        }
-
-        var ctrlDown = IsCtrlKeyDown();
-        if (ctrlDown)
-        {
-            return key is VirtualKey.O or VirtualKey.A or VirtualKey.R or VirtualKey.F or VirtualKey.T;
-        }
-
-        if (IsTextInputFocused())
-        {
-            return false;
-        }
-
-        if (IsNumpadTagShortcutKey(key))
-        {
-            return true;
-        }
-
-        return IsShortcutKeyForCurrentSelection(key);
+        return _shortcutHandler.ShouldHandleWindowShortcutKey(key);
     }
 
     public Task<bool> HandleVirtualKeyDownAsync(VirtualKey key)
     {
-        return HandleShortcutKeyAsync(key);
+        return _shortcutHandler.HandleShortcutKeyAsync(key);
     }
 
     private async void PlayerPane_ShortcutHintInvoked(object? sender, int digit)
@@ -782,7 +1109,7 @@ public sealed class MainPageShellController
             return false;
         }
 
-        if (ViewModel.SelectedMedia?.Type != MediaType.Video)
+        if (GetCurrentPlayerMedia()?.Type != MediaType.Video)
         {
             return false;
         }
@@ -798,7 +1125,7 @@ public sealed class MainPageShellController
             return false;
         }
 
-        if (ViewModel.SelectedMedia?.Type != MediaType.Video || !_clipEditorController.IsClipModeActive)
+        if (GetCurrentPlayerMedia()?.Type != MediaType.Video || !_clipEditorController.IsClipModeActive)
         {
             return false;
         }
@@ -815,12 +1142,13 @@ public sealed class MainPageShellController
             return false;
         }
 
-        if (ViewModel.SelectedMedia == null)
+        var currentMedia = GetCurrentPlayerMedia();
+        if (currentMedia == null)
         {
             return false;
         }
 
-        if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive)
+        if (currentMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive)
         {
             return _clipEditorController.DeleteSelectedSegment();
         }
@@ -885,218 +1213,15 @@ public sealed class MainPageShellController
         return true;
     }
 
-    private async Task<bool> HandleShortcutKeyAsync(VirtualKey key)
-    {
-        if (_isDisposed)
-        {
-            return false;
-        }
-
-        if (key == VirtualKey.F1)
-        {
-            ToggleNumpadShortcutHint();
-            return true;
-        }
-
-        var ctrlDown = IsCtrlKeyDown();
-        var shiftDown = IsShiftKeyDown();
-
-        if (ctrlDown)
-        {
-            if (shiftDown && key == VirtualKey.O)
-            {
-                return TryOpenSelectedMediaFolderFromShortcut();
-            }
-
-            if (shiftDown && key == VirtualKey.A)
-            {
-                return await TryAddSelectionToPlaylistFromShortcutAsync();
-            }
-
-            if (shiftDown && key == VirtualKey.R)
-            {
-                return await TryRemoveSelectionFromPlaylistFromShortcutAsync();
-            }
-
-            if (key == VirtualKey.O)
-            {
-                await AddFolderAsync();
-                return true;
-            }
-
-            if (key == VirtualKey.F)
-            {
-                _libraryPaneController.SetPaneOpen(true);
-                _mediaBrowserController.FocusSearchBox();
-                return true;
-            }
-
-            if (key == VirtualKey.T)
-            {
-                await EditSelectedTagsAsync();
-                return true;
-            }
-        }
-
-        if (IsTextInputFocused())
-        {
-            return false;
-        }
-
-        if (await TryApplyNumpadTagShortcutAsync(key))
-        {
-            return true;
-        }
-
-        if (ViewModel.SelectedMedia == null)
-        {
-            return false;
-        }
-
-        if (key == VirtualKey.Space)
-        {
-            return TryTogglePlaybackFromShortcut();
-        }
-
-        if (key == VirtualKey.Delete)
-        {
-            return await TryDeleteSelectedFromShortcutAsync();
-        }
-
-        if (key == VirtualKey.Left)
-        {
-            await NavigateRelativeAsync(-1);
-            return true;
-        }
-
-        if (key == VirtualKey.Right)
-        {
-            await NavigateRelativeAsync(1);
-            return true;
-        }
-
-        if (key == VirtualKey.Up && ViewModel.SelectedMedia.Type == MediaType.Video)
-        {
-            SeekRelative(-5);
-            return true;
-        }
-
-        if (key == VirtualKey.Down && ViewModel.SelectedMedia.Type == MediaType.Video)
-        {
-            SeekRelative(5);
-            return true;
-        }
-
-        if (key == VirtualKey.PageUp)
-        {
-            await NavigateRelativeAsync(-1);
-            return true;
-        }
-
-        if (key == VirtualKey.PageDown)
-        {
-            await NavigateRelativeAsync(1);
-            return true;
-        }
-
-        if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && key == VirtualKey.E)
-        {
-            await _clipEditorController.ExportCurrentClipAsync();
-            return true;
-        }
-
-        if (ViewModel.SelectedMedia.Type == MediaType.Video && _clipEditorController.IsClipModeActive && key == VirtualKey.K)
-        {
-            return TrySplitClipFromShortcut();
-        }
-
-        if (ViewModel.SelectedMedia.Type == MediaType.Image)
-        {
-            if (key == VirtualKey.Add || key == (VirtualKey)187)
-            {
-                _imagePreviewController.ZoomBy(0.1);
-                return true;
-            }
-
-            if (key == VirtualKey.Subtract || key == (VirtualKey)189)
-            {
-                _imagePreviewController.ZoomBy(-0.1);
-                return true;
-            }
-
-            if (key == VirtualKey.Number0)
-            {
-                _imagePreviewController.ResetZoom();
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private bool IsShortcutKeyForCurrentSelection(VirtualKey key)
-    {
-        var selected = ViewModel.SelectedMedia;
-        if (selected == null)
-        {
-            return false;
-        }
-
-        if (key is VirtualKey.Space
-            or VirtualKey.Delete
-            or VirtualKey.Left
-            or VirtualKey.Right
-            or VirtualKey.PageUp
-            or VirtualKey.PageDown)
-        {
-            return true;
-        }
-
-        if (selected.Type == MediaType.Video)
-        {
-            return key is VirtualKey.Up
-                or VirtualKey.Down
-                || (_clipEditorController.IsClipModeActive && key is VirtualKey.E or VirtualKey.K);
-        }
-
-        if (selected.Type == MediaType.Image)
-        {
-            return key is VirtualKey.Add
-                or VirtualKey.Subtract
-                or VirtualKey.Number0
-                or (VirtualKey)187
-                or (VirtualKey)189;
-        }
-
-        return false;
-    }
-
-    private static bool IsNumpadTagShortcutKey(VirtualKey key)
-    {
-        return key is VirtualKey.NumberPad1
-            or VirtualKey.NumberPad2
-            or VirtualKey.NumberPad3
-            or VirtualKey.NumberPad4
-            or VirtualKey.NumberPad5
-            or VirtualKey.NumberPad6
-            or VirtualKey.NumberPad7
-            or VirtualKey.NumberPad8
-            or VirtualKey.NumberPad9;
-    }
-
     private bool IsTextInputFocused()
     {
         return FocusManager.GetFocusedElement(_page.XamlRoot) is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or ComboBox;
     }
 
-    private static bool IsCtrlKeyDown()
+    private void FocusLibrarySearch()
     {
-        return (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
-    }
-
-    private static bool IsShiftKeyDown()
-    {
-        return (InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
+        _libraryPaneController.SetPaneOpen(true);
+        _mediaBrowserController.FocusSearchBox();
     }
 
     private void ToggleNumpadShortcutHint()
@@ -1105,6 +1230,19 @@ public sealed class MainPageShellController
         _shell.Player.ShortcutHintVisibility = _shell.Player.ShortcutHintVisibility == Visibility.Visible
             ? Visibility.Collapsed
             : Visibility.Visible;
+    }
+
+    private string GetNumpadShortcutHintMenuText()
+    {
+        return _shell.Player.ShortcutHintVisibility == Visibility.Visible
+            ? "隐藏快捷加tag"
+            : "显示快捷加tag";
+    }
+
+    private void ShowNumpadShortcutHint()
+    {
+        RefreshNumpadShortcutHint();
+        _shell.Player.ShortcutHintVisibility = Visibility.Visible;
     }
 
     private void RefreshNumpadShortcutHint()
@@ -1304,21 +1442,44 @@ public sealed class MainPageShellController
         }
 
         var list = ViewModel.FilteredMediaItems;
-        if (list.Count == 0 || ViewModel.SelectedMedia == null)
+        var currentMedia = GetCurrentPlayerMedia();
+        if (list.Count == 0 || currentMedia == null)
         {
             return;
         }
 
-        if (_videoPlaybackController.IsShuffleMode && list.Count > 1)
+        if (_videoPlaybackController.IsShuffleMode)
         {
-            _videoPlaybackController.TryNavigateShuffle(offset);
+            await _videoPlaybackController.TryNavigateShuffleAsync(offset);
             return;
         }
 
-        var index = list.IndexOf(ViewModel.SelectedMedia);
+        var index = IndexOfMediaId(list, currentMedia.Id);
         if (index < 0)
         {
-            return;
+            var found = await ViewModel.EnsureMediaItemLoadedAsync(currentMedia.Id);
+            index = IndexOfMediaId(list, currentMedia.Id);
+            if (!found || index < 0)
+            {
+                index = ResolveLoadedNavigationAnchorIndex(list, currentMedia);
+                if (index < 0)
+                {
+                    index = offset > 0 ? -1 : list.Count;
+                    AppTraceLogger.LogSampled(
+                        "MainPageShell",
+                        "navigate-relative-current-missing-boundary-fallback",
+                        $"NavigateRelative using boundary fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, FallbackIndex={index}.",
+                        TimeSpan.FromSeconds(1));
+                }
+                else
+                {
+                    AppTraceLogger.LogSampled(
+                        "MainPageShell",
+                        "navigate-relative-current-missing-anchor-fallback",
+                        $"NavigateRelative using loaded anchor fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, AnchorIndex={index}.",
+                        TimeSpan.FromSeconds(1));
+                }
+            }
         }
 
         var nextIndex = index + offset;
@@ -1334,6 +1495,57 @@ public sealed class MainPageShellController
 
         nextIndex = ((nextIndex % list.Count) + list.Count) % list.Count;
         ViewModel.SelectedMedia = list[nextIndex];
+    }
+
+    private int ResolveLoadedNavigationAnchorIndex(IReadOnlyList<MediaItemViewModel> items, MediaItemViewModel currentMedia)
+    {
+        if (ViewModel.SelectedMedia is { } selected
+            && !string.Equals(selected.Id, currentMedia.Id, StringComparison.Ordinal))
+        {
+            var selectedIndex = IndexOfMediaId(items, selected.Id);
+            if (selectedIndex >= 0)
+            {
+                return selectedIndex;
+            }
+        }
+
+        if (_activePlayerMedia is { } active
+            && !string.Equals(active.Id, currentMedia.Id, StringComparison.Ordinal))
+        {
+            var activeIndex = IndexOfMediaId(items, active.Id);
+            if (activeIndex >= 0)
+            {
+                return activeIndex;
+            }
+        }
+
+        foreach (var selectedItem in GetSelectedItems())
+        {
+            var selectedItemIndex = IndexOfMediaId(items, selectedItem.Id);
+            if (selectedItemIndex >= 0)
+            {
+                return selectedItemIndex;
+            }
+        }
+
+        return -1;
+    }
+    private static int IndexOfMediaId(IReadOnlyList<MediaItemViewModel> items, string mediaId)
+    {
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return -1;
+        }
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (string.Equals(items[index].Id, mediaId, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
     }
 
     private void PreviousMediaHotspot_PointerEntered(object sender, PointerRoutedEventArgs e)
@@ -1404,39 +1616,46 @@ public sealed class MainPageShellController
 
     private async void PlayerNavigationHotspot_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (_isDisposed)
+        try
         {
-            return;
-        }
-
-        if (!_isNavigationHotspotPressed || sender is not UIElement hotspot)
-        {
-            return;
-        }
-
-        var edge = _pressedNavigationHotspotEdge;
-        var shouldNavigate = !_isNavigationHotspotDraggingImage
-            && !_isNavigationHotspotTapCanceled
-            && CanShowPlayerNavigationHotspots()
-            && edge != PlayerNavigationEdge.None;
-
-        ResetNavigationHotspotGesture();
-        _imagePreviewController.EndExternalDrag();
-        hotspot.ReleasePointerCaptures();
-
-        if (shouldNavigate)
-        {
-            await NavigateRelativeAsync(edge == PlayerNavigationEdge.Left ? -1 : 1);
             if (_isDisposed)
             {
                 return;
             }
 
-            ShowControls();
-            SetPlayerNavigationEdge(edge);
-        }
+            if (!_isNavigationHotspotPressed || sender is not UIElement hotspot)
+            {
+                return;
+            }
 
-        e.Handled = true;
+            var edge = _pressedNavigationHotspotEdge;
+            var shouldNavigate = !_isNavigationHotspotDraggingImage
+                && !_isNavigationHotspotTapCanceled
+                && CanShowPlayerNavigationHotspots()
+                && edge != PlayerNavigationEdge.None;
+
+            ResetNavigationHotspotGesture();
+            _imagePreviewController.EndExternalDrag();
+            hotspot.ReleasePointerCaptures();
+
+            if (shouldNavigate)
+            {
+                await NavigateRelativeAsync(edge == PlayerNavigationEdge.Left ? -1 : 1);
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                ShowControls();
+                SetPlayerNavigationEdge(edge);
+            }
+
+            e.Handled = true;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPageShell", "Player navigation hotspot release failed.", ex);
+        }
     }
 
     private void PlayerNavigationHotspot_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
@@ -1445,7 +1664,7 @@ public sealed class MainPageShellController
         _imagePreviewController.EndExternalDrag();
     }
 
-    private void UpdateWatchedFolders(IEnumerable<string> paths, bool refreshMedia = true)
+    private async Task UpdateWatchedFoldersAsync(IEnumerable<string> paths, bool refreshMedia = true)
     {
         var folderPaths = paths
             .Select(path => Directory.Exists(path) ? path : Path.GetDirectoryName(path))
@@ -1468,7 +1687,7 @@ public sealed class MainPageShellController
             }
         }
 
-        ViewModel.UpdateWatchedFolders(current, refreshMedia);
+        await ViewModel.UpdateWatchedFoldersAsync(current, refreshMedia);
     }
 
     private void ClearClip_Click(object sender, RoutedEventArgs e)
@@ -1493,7 +1712,7 @@ public sealed class MainPageShellController
             return;
         }
 
-        await _clipEditorController.ExportCurrentClipAsync();
+        await ExecuteUiActionAsync(_clipEditorController.ExportCurrentClipAsync, "导出剪辑失败");
     }
 
     private void SplitClip_Click(object sender, RoutedEventArgs e)
@@ -1541,8 +1760,20 @@ public sealed class MainPageShellController
         return _mediaDeletionWorkflow.DeleteAsync(initialSelection);
     }
 
-    private void ReleasePreviewHandles()
+    private void ReleasePreviewHandlesForMedia(string? mediaId)
     {
+        var current = GetCurrentPlayerMedia();
+        if (string.IsNullOrWhiteSpace(mediaId)
+            || current == null
+            || !string.Equals(current.Id, mediaId, StringComparison.Ordinal))
+        {
+            AppTraceLogger.Log(
+                "MainPageShell",
+                $"ReleasePreviewHandlesForMedia skipped. RequestedId='{mediaId ?? "<null>"}', CurrentId='{current?.Id ?? "<null>"}'.");
+            return;
+        }
+
+        AppTraceLogger.Log("MainPageShell", $"ReleasePreviewHandlesForMedia releasing. MediaId='{mediaId}'.");
         _imagePreviewController.Clear();
         _videoPlaybackController.PauseAndClearSource();
     }
@@ -1559,7 +1790,7 @@ public sealed class MainPageShellController
 
     private MediaItemViewModel? GetCurrentPlayerMedia()
     {
-        return ViewModel.SelectedMedia;
+        return ViewModel.SelectedMedia ?? _activePlayerMedia;
     }
 
     private IReadOnlyList<MediaItemViewModel> GetCommandSelection()
@@ -1573,20 +1804,6 @@ public sealed class MainPageShellController
         return selected;
     }
 
-    private void UpdateSelectedStateFlags()
-    {
-        var selectedIds = new HashSet<string>(GetSelectedItems().Select(item => item.Id), StringComparer.Ordinal);
-        if (ViewModel.SelectedMedia != null)
-        {
-            selectedIds.Add(ViewModel.SelectedMedia.Id);
-        }
-
-        foreach (var item in ViewModel.FilteredMediaItems)
-        {
-            item.IsSelected = selectedIds.Contains(item.Id);
-        }
-    }
-
     private void ShowControls()
     {
         _videoPlaybackController.ShowControls();
@@ -1594,15 +1811,15 @@ public sealed class MainPageShellController
 
     private bool CanShowPlayerNavigationHotspots()
     {
-        return ViewModel.SelectedMedia != null
+        return GetCurrentPlayerMedia() != null
             && ViewModel.FilteredMediaItems.Count > 1
             && !_clipEditorController.IsClipModeActive
             && _shell.Player.EmptyStateVisibility != Visibility.Visible;
     }
 
-    private bool CanShowDeleteCurrentMediaButton()
+    private bool CanShowPlayerSideActions()
     {
-        return ViewModel.SelectedMedia != null
+        return GetCurrentPlayerMedia() != null
             && !_clipEditorController.IsClipModeActive
             && _shell.Player.EmptyStateVisibility != Visibility.Visible;
     }
@@ -1627,11 +1844,11 @@ public sealed class MainPageShellController
 
         UpdatePlayerNavigationHotspotLayout();
 
-        var canShow = CanShowPlayerNavigationHotspots() && _videoPlaybackController.AreControlsVisible;
-        var canShowDelete = CanShowDeleteCurrentMediaButton() && _videoPlaybackController.AreControlsVisible;
+        var canShow = CanShowPlayerNavigationHotspots();
+        var canShowSideActions = CanShowPlayerSideActions() && _videoPlaybackController.AreControlsVisible;
         PreviousMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
         NextMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
-        DeleteCurrentMediaButton.Visibility = canShowDelete ? Visibility.Visible : Visibility.Collapsed;
+        PlayerSideActionButtons.Visibility = canShowSideActions ? Visibility.Visible : Visibility.Collapsed;
         if (!canShow)
         {
             _activePlayerNavigationEdge = PlayerNavigationEdge.None;
@@ -1701,10 +1918,11 @@ public sealed class MainPageShellController
                 || ReferenceEquals(source, _playerPane.TransportBar.VolumeSlider)
                 || ReferenceEquals(source, _playerPane.TransportBar.VolumeButton)
                 || ReferenceEquals(source, _playerPane.TransportBar.PlayPauseButton)
-                || ReferenceEquals(source, _playerPane.TransportBar.PlaybackModeButton)
                 || ReferenceEquals(source, _playerPane.TransportBar.ClipModeToggleButton)
-                || ReferenceEquals(source, _playerPane.TransportBar.FullScreenButton)
                 || ReferenceEquals(source, _playerPane.TransportBar.ProgressSlider)
+                || ReferenceEquals(source, PlayerSideActionButtons)
+                || ReferenceEquals(source, _playerPane.NavigationOverlay.PlaybackModeButton)
+                || ReferenceEquals(source, _playerPane.NavigationOverlay.FullScreenButton)
                 || ReferenceEquals(source, PreviousMediaHotspot)
                 || ReferenceEquals(source, NextMediaHotspot)
                 || ReferenceEquals(source, PreviousMediaCue)
@@ -1822,7 +2040,15 @@ public sealed class MainPageShellController
             }
 
             await ViewModel.AddFilesAsync(paths);
-            UpdateWatchedFolders(paths);
+            await UpdateWatchedFoldersAsync(paths);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPageShell", "LibraryPanel_Drop failed.", ex);
+            if (!_isDisposed)
+            {
+                await ShowInfoDialogAsync("导入失败", ex.Message);
+            }
         }
         finally
         {
@@ -1943,3 +2169,4 @@ public sealed class MainPageShellController
         return _appWindow;
     }
 }
+

@@ -15,13 +15,16 @@ public sealed partial class MainPage : Page
     private readonly MainPageShellViewModel _shell = new();
     private readonly Services.MainPage.MainPageModuleFactory _modules;
     private readonly IContentDialogService _dialogService;
+    private readonly KeyEventHandler _keyDownHandler;
     private MainPageShellController? _controller;
     private MainPageShortcutRouter? _shortcutRouter;
+    private BossKeyController? _bossKeyController;
 
     public MainPage()
     {
         _modules = ((App)Application.Current).MainPageModules;
         _dialogService = _modules.CreateContentDialogService();
+        _keyDownHandler = MainPage_KeyDown;
         InitializeComponent();
         DataContext = _shell;
         Loaded += MainPage_Loaded;
@@ -31,6 +34,10 @@ public sealed partial class MainPage : Page
     public Grid RootLayout => RootLayoutHost;
 
     public SplitView LibrarySplitView => LibrarySplitViewHost;
+
+    public LibraryShellViewModel Library => _shell.Library;
+
+    public PlayerShellViewModel Player => _shell.Player;
 
     public void FocusKeyboardHost()
     {
@@ -50,22 +57,30 @@ public sealed partial class MainPage : Page
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
-        _dialogService.AttachHost(XamlRoot);
+        try
+        {
+            _dialogService.AttachHost(XamlRoot);
 
-        _controller ??= new MainPageShellController(this, _shell, LibraryPaneHost, PlayerPaneHost, _dialogService, _modules);
-        _shortcutRouter ??= new MainPageShortcutRouter(_controller);
+            _controller ??= new MainPageShellController(this, _shell, LibraryPaneHost, PlayerPaneHost, _dialogService, _modules);
+            _shortcutRouter ??= new MainPageShortcutRouter(_controller);
 
-        RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown));
-        AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown), true);
+            RemoveHandler(UIElement.KeyDownEvent, _keyDownHandler);
+            AddHandler(UIElement.KeyDownEvent, _keyDownHandler, true);
 
-        FocusKeyboardHost();
+            FocusKeyboardHost();
 
-        await _controller.InitializeAsync();
+            await _controller.InitializeAsync();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPage", "MainPage_Loaded failed.", ex);
+            await _dialogService.ShowInfoAsync("初始化失败", ex.Message);
+        }
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        RemoveHandler(UIElement.KeyDownEvent, new KeyEventHandler(MainPage_KeyDown));
+        RemoveHandler(UIElement.KeyDownEvent, _keyDownHandler);
         _controller?.Dispose();
         _controller = null;
         _shortcutRouter = null;
@@ -86,11 +101,43 @@ public sealed partial class MainPage : Page
         return _controller?.HandleOpenSettingsFromTitleBarAsync() ?? Task.CompletedTask;
     }
 
+    public void ConfigureBossKey(BossKeyController bossKeyController)
+    {
+        _bossKeyController = bossKeyController;
+    }
+
+    private void BossKeyRecoveryButton_Click(object sender, RoutedEventArgs e)
+    {
+        _bossKeyController?.ExitBossMode();
+    }
+
+    public void EnterBossMode()
+    {
+        BossKeyRecoveryButton.Visibility = Visibility.Collapsed;
+    }
+
+    public void ShowBossRecoveryButton()
+    {
+        BossKeyRecoveryButton.Visibility = Visibility.Visible;
+    }
+
+    public void ExitBossMode()
+    {
+        BossKeyRecoveryButton.Visibility = Visibility.Collapsed;
+    }
+
     private async void MainPage_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (_shortcutRouter != null)
+        try
         {
-            await _shortcutRouter.HandleKeyDownAsync(e);
+            if (_shortcutRouter != null)
+            {
+                await _shortcutRouter.HandleKeyDownAsync(e);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPage", $"MainPage_KeyDown failed. Key={e.Key}.", ex);
         }
     }
 

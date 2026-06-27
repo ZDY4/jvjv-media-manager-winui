@@ -4,7 +4,7 @@ using Windows.System;
 
 namespace JvJvMediaManager.Controllers.MainPage;
 
-internal sealed class BossKeyController
+public sealed class BossKeyController
 {
     private readonly Action _enterBossMode;
     private readonly Action _exitBossMode;
