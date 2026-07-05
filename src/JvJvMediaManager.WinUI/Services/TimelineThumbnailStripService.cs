@@ -20,7 +20,10 @@ public sealed class TimelineThumbnailStripRequest
 
 public sealed class TimelineThumbnailStripService
 {
+    private static readonly TimeSpan FrameGenerationTimeout = TimeSpan.FromSeconds(8);
+
     private readonly SemaphoreSlim _frameGate = new(2, 2);
+    private readonly ExternalProcessRunner _processRunner = new();
     private readonly string _cacheDir;
     private readonly string? _ffmpegPath;
 
@@ -36,6 +39,7 @@ public sealed class TimelineThumbnailStripService
     public async Task<IReadOnlyList<ImageSource?>> GetStripAsync(
         TimelineThumbnailStripRequest request,
         ImageSource? fallbackSource,
+        Action<int, ImageSource?>? frameLoaded = null,
         CancellationToken cancellationToken = default)
     {
         var frameCount = Math.Clamp(request.FrameCount, 1, 64);
@@ -49,26 +53,31 @@ public sealed class TimelineThumbnailStripService
             || !File.Exists(request.MediaPath)
             || string.IsNullOrWhiteSpace(_ffmpegPath))
         {
-            return CreateFallbackStrip(frameCount, fallbackSource);
-        }
-
-        var result = new List<ImageSource?>(frameCount);
-        var cachePrefix = BuildCachePrefix(request, frameCount);
-
-        for (var index = 0; index < frameCount; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var cachePath = Path.Combine(_cacheDir, $"{cachePrefix}_{index:00}.jpg");
-            var source = await TryLoadBitmapAsync(cachePath);
-            if (source == null)
+            var fallbackStrip = CreateFallbackStrip(frameCount, fallbackSource);
+            for (var index = 0; index < fallbackStrip.Count; index++)
             {
-                var timestamp = GetFrameTimestamp(request.Duration, frameCount, index);
-                await GenerateFrameAsync(request, cachePath, timestamp, cancellationToken);
-                source = await TryLoadBitmapAsync(cachePath);
+                frameLoaded?.Invoke(index, fallbackStrip[index]);
             }
 
-            result.Add(source ?? fallbackSource);
+            return fallbackStrip;
+        }
+
+        var result = CreateFallbackStrip(frameCount, fallbackSource).ToArray();
+        var cachePrefix = BuildCachePrefix(request, frameCount);
+        var frameTasks = Enumerable.Range(0, frameCount)
+            .Select(index => LoadFrameAsync(
+                request,
+                cachePrefix,
+                index,
+                fallbackSource,
+                frameLoaded,
+                cancellationToken))
+            .ToArray();
+
+        var frames = await Task.WhenAll(frameTasks);
+        foreach (var frame in frames)
+        {
+            result[frame.Index] = frame.Source;
         }
 
         return result;
@@ -155,21 +164,57 @@ public sealed class TimelineThumbnailStripService
             startInfo.ArgumentList.Add("-y");
             startInfo.ArgumentList.Add(cachePath);
 
-            using var process = new Process { StartInfo = startInfo };
-            process.Start();
-            _ = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            _ = await process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
+            try
+            {
+                var result = await _processRunner.RunAsync(
+                    startInfo,
+                    FrameGenerationTimeout,
+                    readStandardOutputAsync: async (reader, token) =>
+                    {
+                        await reader.BaseStream.CopyToAsync(Stream.Null, token);
+                        return string.Empty;
+                    },
+                    cancellationToken: cancellationToken);
 
-            if (process.ExitCode != 0)
+                if (result.ExitCode != 0)
+                {
+                    TryDelete(cachePath);
+                }
+            }
+            catch
             {
                 TryDelete(cachePath);
+                throw;
             }
         }
         finally
         {
             _frameGate.Release();
         }
+    }
+
+    private async Task<(int Index, ImageSource? Source)> LoadFrameAsync(
+        TimelineThumbnailStripRequest request,
+        string cachePrefix,
+        int index,
+        ImageSource? fallbackSource,
+        Action<int, ImageSource?>? frameLoaded,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var cachePath = Path.Combine(_cacheDir, $"{cachePrefix}_{index:00}.jpg");
+        var source = await TryLoadBitmapAsync(cachePath);
+        if (source == null)
+        {
+            var timestamp = GetFrameTimestamp(request.Duration, Math.Clamp(request.FrameCount, 1, 64), index);
+            await GenerateFrameAsync(request, cachePath, timestamp, cancellationToken);
+            source = await TryLoadBitmapAsync(cachePath);
+        }
+
+        source ??= fallbackSource;
+        frameLoaded?.Invoke(index, source);
+        return (index, source);
     }
 
     private static TimeSpan GetFrameTimestamp(TimeSpan duration, int frameCount, int index)
@@ -290,4 +335,5 @@ public sealed class TimelineThumbnailStripService
             // Best-effort cleanup only.
         }
     }
+
 }

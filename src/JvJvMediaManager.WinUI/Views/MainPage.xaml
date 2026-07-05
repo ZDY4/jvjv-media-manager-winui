@@ -48,15 +48,18 @@
                 HorizontalAlignment="Right"
                 VerticalAlignment="Bottom"
                 Margin="0,0,8,8"
-                Background="Transparent"
-                BorderThickness="0"
-                Opacity="0"
+                Background="#10FFFFFF"
+                BorderBrush="#20FFFFFF"
+                BorderThickness="1"
+                Opacity="0.3"
                 IsTabStop="False"
                 Click="BossKeyRecoveryButton_Click"
                 Visibility="Collapsed">
             <Button.Resources>
-                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent" />
-                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#11FFFFFF" />
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#18FFFFFF" />
+                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#28FFFFFF" />
+                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#30FFFFFF" />
+                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#30FFFFFF" />
             </Button.Resources>
         </Button>
     </Grid>

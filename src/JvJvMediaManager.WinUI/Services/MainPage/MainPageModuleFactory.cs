@@ -5,14 +5,22 @@ using JvJvMediaManager.Coordinators.MainPage;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
 using JvJvMediaManager.Views.MainPageParts;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.Services.MainPage;
 
 public sealed class MainPageModuleFactory
 {
+    private readonly IServiceProvider _services;
+
+    public MainPageModuleFactory(IServiceProvider services)
+    {
+        _services = services;
+    }
+
     public IContentDialogService CreateContentDialogService()
     {
-        return new ContentDialogService();
+        return _services.GetRequiredService<IContentDialogService>();
     }
 
     public DialogWorkflowCoordinator CreateDialogWorkflowCoordinator(LibraryShellViewModel library, IContentDialogService dialogService)
@@ -31,7 +39,8 @@ public sealed class MainPageModuleFactory
         Func<IReadOnlyList<MediaItemViewModel>, Task> focusInMediaLibraryAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
-        Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
+        Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync,
+        Action<IReadOnlyList<MediaItemViewModel>> openInNewWindows)
     {
         return new MediaContextMenuCoordinator(
             library,
@@ -39,16 +48,16 @@ public sealed class MainPageModuleFactory
             focusInMediaLibraryAsync,
             applyTagEditorAsync,
             addToPlaylistAsync,
-            deleteSelectionAsync);
+            deleteSelectionAsync,
+            openInNewWindows);
     }
 
     public MediaDeletionWorkflow CreateMediaDeletionWorkflow(
         LibraryShellViewModel library,
         Func<int, Task<bool>> confirmBatchDeleteAsync,
         Func<string, string, Task> showInfoAsync,
-        Action releasePreviewHandles,
+        Action<string?> releasePreviewHandlesForMedia,
         Action clearPlayerSelection,
-        Action<MediaItemViewModel> updatePlayer,
         Action<MediaItemViewModel> forceUpdatePlayer,
         Action<MediaItemViewModel?> syncSelection,
         Func<MediaItemViewModel?, IDisposable> preserveSelectionDuringCollectionMutation)
@@ -57,9 +66,8 @@ public sealed class MainPageModuleFactory
             library,
             confirmBatchDeleteAsync,
             showInfoAsync,
-            releasePreviewHandles,
+            releasePreviewHandlesForMedia,
             clearPlayerSelection,
-            updatePlayer,
             forceUpdatePlayer,
             syncSelection,
             preserveSelectionDuringCollectionMutation);
@@ -89,7 +97,7 @@ public sealed class MainPageModuleFactory
         LibraryShellViewModel library,
         LibraryPaneView libraryPane,
         MediaContextMenuCoordinator contextMenuCoordinator,
-        Action<IEnumerable<string>, bool> updateWatchedFolders,
+        Func<IEnumerable<string>, bool, Task> updateWatchedFoldersAsync,
         Func<string, string, Task> showInfoAsync)
     {
         return new MediaBrowserController(
@@ -97,7 +105,7 @@ public sealed class MainPageModuleFactory
             library,
             libraryPane,
             contextMenuCoordinator,
-            updateWatchedFolders,
+            updateWatchedFoldersAsync,
             showInfoAsync);
     }
 
@@ -106,6 +114,7 @@ public sealed class MainPageModuleFactory
         LibraryShellViewModel library,
         VideoPlaybackViewModel viewModel,
         TransportControlBarView transportBarView,
+        PlayerNavigationOverlayView navigationOverlayView,
         VideoViewportView videoViewportView,
         Microsoft.UI.Xaml.Controls.MediaPlayerElement videoPlayer,
         DispatcherQueue dispatcherQueue,
@@ -122,6 +131,7 @@ public sealed class MainPageModuleFactory
             library,
             viewModel,
             transportBarView,
+            navigationOverlayView,
             videoViewportView,
             videoPlayer,
             dispatcherQueue,

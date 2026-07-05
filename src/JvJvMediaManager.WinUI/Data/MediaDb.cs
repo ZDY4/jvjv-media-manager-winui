@@ -6,6 +6,13 @@ namespace JvJvMediaManager.Data;
 public sealed class MediaDb
 {
     public readonly record struct MediaEntryRef(string Id, string Path);
+    public readonly record struct MediaFingerprintRef(
+        string Id,
+        string Path,
+        long Size,
+        long ModifiedAt,
+        string? ContentHash,
+        int FingerprintVersion);
 
     private readonly MediaDbConnectionFactory _connections;
     private readonly MediaRepository _media;
@@ -31,118 +38,165 @@ public sealed class MediaDb
         AppTraceLogger.Log("MediaDb", "Initialize completed.");
     }
 
-    public void AddMedia(MediaFile media)
+    public Task AddMediaAsync(MediaFile media, CancellationToken cancellationToken = default)
     {
-        _media.AddMedia(media);
+        return _media.AddMediaAsync(media, cancellationToken);
     }
 
-    public void UpsertMediaBatch(IEnumerable<MediaFile> mediaItems)
+    public Task UpsertMediaBatchAsync(IEnumerable<MediaFile> mediaItems, CancellationToken cancellationToken = default)
     {
-        _media.UpsertMediaBatch(mediaItems);
+        return _media.UpsertMediaBatchAsync(mediaItems, cancellationToken);
     }
 
-    public IReadOnlyList<MediaFile> GetAllMedia()
+    public Task<IReadOnlyList<MediaFile>> GetAllMediaAsync(CancellationToken cancellationToken = default)
     {
-        return _media.GetAllMedia();
+        return _media.GetAllMediaAsync(cancellationToken);
     }
 
-    public MediaPageResult QueryMediaPage(MediaQuery query)
+    public Task<MediaPageResult> QueryMediaPageAsync(MediaQuery query, CancellationToken cancellationToken = default)
     {
-        return _media.QueryMediaPage(query);
+        return _media.QueryMediaPageAsync(query, cancellationToken);
     }
 
-    public IReadOnlyList<MediaFolderSummary> QueryMediaFolderSummaries(MediaQuery query)
+    public Task<IReadOnlyList<MediaFolderSummary>> QueryMediaFolderSummariesAsync(MediaQuery query, CancellationToken cancellationToken = default)
     {
-        return _media.QueryMediaFolderSummaries(query);
+        return _media.QueryMediaFolderSummariesAsync(query, cancellationToken);
     }
 
-    public MediaFile? GetMediaById(string id)
+    public Task<MediaFile?> GetMediaByIdAsync(string id, CancellationToken cancellationToken = default)
     {
-        return _media.GetMediaById(id);
+        return _media.GetMediaByIdAsync(id, cancellationToken);
     }
 
-    public void DeleteMedia(string id)
+    public Task<MediaFile?> GetMediaByPathAsync(string path, CancellationToken cancellationToken = default)
     {
-        _media.DeleteMedia(id);
+        return _media.GetMediaByPathAsync(path, cancellationToken);
     }
 
-    public void DeleteMedia(IEnumerable<string> ids)
+    public Task<MediaFingerprintRef?> GetMediaFingerprintByPathAsync(string path, CancellationToken cancellationToken = default)
     {
-        _media.DeleteMedia(ids);
+        return _media.GetMediaFingerprintByPathAsync(path, cancellationToken);
     }
 
-    public void ClearAllMedia(bool includePlaylists = false)
+    public Task<bool> HasReusableFingerprintCandidateAsync(string path, long size, CancellationToken cancellationToken = default)
     {
-        _media.ClearAllMedia(includePlaylists);
+        return _media.HasReusableFingerprintCandidateAsync(path, size, cancellationToken);
     }
 
-    public IReadOnlyList<MediaEntryRef> GetMediaEntriesUnderFolders(IReadOnlyList<string> folderPaths)
+    public Task UpdateMediaFingerprintByPathAsync(
+        string path,
+        long size,
+        long modifiedAt,
+        string contentHash,
+        int fingerprintVersion,
+        CancellationToken cancellationToken = default)
     {
-        return _media.GetMediaEntriesUnderFolders(folderPaths);
+        return _media.UpdateMediaFingerprintByPathAsync(path, size, modifiedAt, contentHash, fingerprintVersion, cancellationToken);
     }
 
-    public void AddTag(string mediaId, string tag)
+    public Task UpdateMediaMetadataByPathAsync(
+        string path,
+        long size,
+        long modifiedAt,
+        int? width,
+        int? height,
+        double? duration,
+        CancellationToken cancellationToken = default)
     {
-        _tags.AddTag(mediaId, tag);
+        return _media.UpdateMediaMetadataByPathAsync(path, size, modifiedAt, width, height, duration, cancellationToken);
     }
 
-    public void RemoveTag(string mediaId, string tag)
+    public Task DeleteMediaAsync(string id, CancellationToken cancellationToken = default)
     {
-        _tags.RemoveTag(mediaId, tag);
+        return _media.DeleteMediaAsync(id, cancellationToken);
     }
 
-    public IReadOnlyList<string> GetTags(string mediaId)
+    public Task DeleteMediaAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
     {
-        return _tags.GetTags(mediaId);
+        return _media.DeleteMediaAsync(ids, cancellationToken);
     }
 
-    public IReadOnlyList<string> GetAllTags()
+    public Task RemoveMediaRecordsOnlyAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
     {
-        return _tags.GetAllTags();
+        return _media.RemoveMediaRecordsOnlyAsync(ids, cancellationToken);
     }
 
-    public IReadOnlyList<Playlist> GetPlaylists()
+    public Task ClearAllMediaAsync(bool includePlaylists = false, CancellationToken cancellationToken = default)
     {
-        return _playlists.GetPlaylists();
+        return _media.ClearAllMediaAsync(includePlaylists, cancellationToken);
     }
 
-    public Playlist CreatePlaylist(string name)
+    public Task<IReadOnlyList<MediaEntryRef>> GetMediaEntriesUnderFoldersAsync(
+        IReadOnlyList<string> folderPaths,
+        CancellationToken cancellationToken = default)
     {
-        return _playlists.CreatePlaylist(name);
+        return _media.GetMediaEntriesUnderFoldersAsync(folderPaths, cancellationToken);
     }
 
-    public void RenamePlaylist(string playlistId, string name)
+    public async Task AddTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
     {
-        _playlists.RenamePlaylist(playlistId, name);
+        await _tags.AddTagAsync(mediaId, tag, cancellationToken);
+        await _media.RefreshSearchIndexAsync(mediaId, cancellationToken);
     }
 
-    public void SetPlaylistColor(string playlistId, string? colorHex)
+    public async Task RemoveTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
     {
-        _playlists.SetPlaylistColor(playlistId, colorHex);
+        await _tags.RemoveTagAsync(mediaId, tag, cancellationToken);
+        await _media.RefreshSearchIndexAsync(mediaId, cancellationToken);
     }
 
-    public void DeletePlaylist(string playlistId)
+    public Task<IReadOnlyList<string>> GetTagsAsync(string mediaId, CancellationToken cancellationToken = default)
     {
-        _playlists.DeletePlaylist(playlistId);
+        return _tags.GetTagsAsync(mediaId, cancellationToken);
     }
 
-    public void UpdatePlaylistOrder(IReadOnlyList<string> playlistIds)
+    public Task<IReadOnlyList<string>> GetAllTagsAsync(CancellationToken cancellationToken = default)
     {
-        _playlists.UpdatePlaylistOrder(playlistIds);
+        return _tags.GetAllTagsAsync(cancellationToken);
     }
 
-    public void AddMediaToPlaylist(string playlistId, IEnumerable<string> mediaIds)
+    public Task<IReadOnlyList<Playlist>> GetPlaylistsAsync(CancellationToken cancellationToken = default)
     {
-        _playlists.AddMediaToPlaylist(playlistId, mediaIds);
+        return _playlists.GetPlaylistsAsync(cancellationToken);
     }
 
-    public void RemoveMediaFromPlaylist(string playlistId, IEnumerable<string> mediaIds)
+    public Task<Playlist> CreatePlaylistAsync(string name, CancellationToken cancellationToken = default)
     {
-        _playlists.RemoveMediaFromPlaylist(playlistId, mediaIds);
+        return _playlists.CreatePlaylistAsync(name, cancellationToken);
     }
 
-    public bool AreAllMediaInPlaylist(string playlistId, IEnumerable<string> mediaIds)
+    public Task RenamePlaylistAsync(string playlistId, string name, CancellationToken cancellationToken = default)
     {
-        return _playlists.AreAllMediaInPlaylist(playlistId, mediaIds);
+        return _playlists.RenamePlaylistAsync(playlistId, name, cancellationToken);
+    }
+
+    public Task SetPlaylistColorAsync(string playlistId, string? colorHex, CancellationToken cancellationToken = default)
+    {
+        return _playlists.SetPlaylistColorAsync(playlistId, colorHex, cancellationToken);
+    }
+
+    public Task DeletePlaylistAsync(string playlistId, CancellationToken cancellationToken = default)
+    {
+        return _playlists.DeletePlaylistAsync(playlistId, cancellationToken);
+    }
+
+    public Task UpdatePlaylistOrderAsync(IReadOnlyList<string> playlistIds, CancellationToken cancellationToken = default)
+    {
+        return _playlists.UpdatePlaylistOrderAsync(playlistIds, cancellationToken);
+    }
+
+    public Task AddMediaToPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
+    {
+        return _playlists.AddMediaToPlaylistAsync(playlistId, mediaIds, cancellationToken);
+    }
+
+    public Task RemoveMediaFromPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
+    {
+        return _playlists.RemoveMediaFromPlaylistAsync(playlistId, mediaIds, cancellationToken);
+    }
+
+    public Task<bool> AreAllMediaInPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
+    {
+        return _playlists.AreAllMediaInPlaylistAsync(playlistId, mediaIds, cancellationToken);
     }
 }

@@ -14,42 +14,40 @@ namespace JvJvMediaManager;
 
 public partial class MainWindow : Window
 {
-    private delegate IntPtr WindowSubclassProc(
-        IntPtr hWnd,
-        uint msg,
-        UIntPtr wParam,
-        IntPtr lParam,
-        UIntPtr uIdSubclass,
-        UIntPtr dwRefData);
-
     private delegate IntPtr LowLevelKeyboardProc(
         int nCode,
         UIntPtr wParam,
         IntPtr lParam);
 
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmSysKeyDown = 0x0104;
-    private const uint WmNcDestroy = 0x0082;
     private const int WhKeyboardLl = 13;
     private static readonly UIntPtr KeyboardSubclassId = new(0x4A564A56);
     private const double DefaultAspectRatio = 16d / 9d;
     private const int PreferredWindowWidth = 1600;
     private const int MinWindowWidth = 960;
     private const int MinWindowHeight = 540;
-    private readonly WindowSubclassProc _keyboardSubclassProc;
     private readonly LowLevelKeyboardProc _lowLevelKeyboardProc;
+    private readonly WindowKeyboardInterceptor _keyboardInterceptor;
     private AppWindow? _appWindow;
     private MainPage? _mainPage;
     private IntPtr _windowHandle;
     private IntPtr _keyboardHookHandle;
-    private bool _keyboardSubclassInstalled;
 
     public MainWindow()
     {
         AppTraceLogger.Log("MainWindow", "Constructor start.");
-        _keyboardSubclassProc = WindowSubclassProcImpl;
         _lowLevelKeyboardProc = LowLevelKeyboardProcImpl;
-        InitializeComponent();
+        _keyboardInterceptor = new WindowKeyboardInterceptor(KeyboardSubclassId, HandleKeyboardSubclassMessage, "MainWindow");
+        try
+        {
+            InitializeComponent();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.Log("MainWindow", $"InitializeComponent failed. {ex}");
+            AppTraceLogger.FlushNow();
+            throw;
+        }
+
         WindowRoot.RequestedTheme = ElementTheme.Dark;
         RootFrame.RequestedTheme = ElementTheme.Dark;
         Closed += MainWindow_Closed;
@@ -215,6 +213,8 @@ public partial class MainWindow : Window
         {
             _appWindow.Changed -= AppWindow_Changed;
         }
+
+        ((App)Application.Current).DisposeServices();
     }
 
     private async void TitleBarAddFolderButton_Click(object sender, RoutedEventArgs e)
@@ -253,43 +253,12 @@ public partial class MainWindow : Window
 
     private void InstallKeyboardSubclass()
     {
-        if (_keyboardSubclassInstalled)
-        {
-            return;
-        }
-
-        var hWnd = GetWindowHandle();
-        if (hWnd == IntPtr.Zero)
-        {
-            AppTraceLogger.Log("MainWindow", "Keyboard subclass skipped because window handle is missing.");
-            return;
-        }
-
-        if (SetWindowSubclass(hWnd, _keyboardSubclassProc, KeyboardSubclassId, UIntPtr.Zero))
-        {
-            _keyboardSubclassInstalled = true;
-            AppTraceLogger.Log("MainWindow", $"Keyboard subclass installed. Hwnd=0x{hWnd.ToInt64():X}.");
-        }
-        else
-        {
-            AppTraceLogger.Log("MainWindow", $"Keyboard subclass install failed. Hwnd=0x{hWnd.ToInt64():X}, Error={Marshal.GetLastWin32Error()}.");
-        }
+        _keyboardInterceptor.Install(GetWindowHandle());
     }
 
     private void RemoveKeyboardSubclass()
     {
-        if (!_keyboardSubclassInstalled)
-        {
-            return;
-        }
-
-        var hWnd = GetWindowHandle();
-        if (hWnd != IntPtr.Zero)
-        {
-            RemoveWindowSubclass(hWnd, _keyboardSubclassProc, KeyboardSubclassId);
-        }
-
-        _keyboardSubclassInstalled = false;
+        _keyboardInterceptor.Uninstall();
     }
 
     private void InstallLowLevelKeyboardHook()
@@ -359,34 +328,23 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private IntPtr WindowSubclassProcImpl(
-        IntPtr hWnd,
-        uint msg,
-        UIntPtr wParam,
-        IntPtr lParam,
-        UIntPtr uIdSubclass,
-        UIntPtr dwRefData)
+    private bool HandleKeyboardSubclassMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam)
     {
-        if (msg == WmKeyDown || msg == WmSysKeyDown)
+        if (msg == WindowKeyboardInterceptor.WmKeyDown || msg == WindowKeyboardInterceptor.WmSysKeyDown)
         {
             var key = (VirtualKey)wParam.ToUInt32();
             if (TryHandleShortcutFromNativeKey(key, "window-keydown"))
             {
-                return IntPtr.Zero;
+                return true;
             }
         }
 
-        if (msg == WmNcDestroy)
-        {
-            RemoveKeyboardSubclass();
-        }
-
-        return DefSubclassProc(hWnd, msg, wParam, lParam);
+        return false;
     }
 
     private IntPtr LowLevelKeyboardProcImpl(int nCode, UIntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && (wParam.ToUInt32() == WmKeyDown || wParam.ToUInt32() == WmSysKeyDown))
+        if (nCode >= 0 && (wParam.ToUInt32() == WindowKeyboardInterceptor.WmKeyDown || wParam.ToUInt32() == WindowKeyboardInterceptor.WmSysKeyDown))
         {
             var data = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
             if (TryHandleShortcutFromNativeKey((VirtualKey)data.VkCode, "low-level-keydown"))
@@ -407,15 +365,6 @@ public partial class MainWindow : Window
         public uint Time;
         public UIntPtr ExtraInfo;
     }
-
-    [DllImport("comctl32.dll", SetLastError = true, ExactSpelling = true)]
-    private static extern bool SetWindowSubclass(IntPtr hWnd, WindowSubclassProc pfnSubclass, UIntPtr uIdSubclass, UIntPtr dwRefData);
-
-    [DllImport("comctl32.dll", ExactSpelling = true)]
-    private static extern IntPtr DefSubclassProc(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
-
-    [DllImport("comctl32.dll", SetLastError = true, ExactSpelling = true)]
-    private static extern bool RemoveWindowSubclass(IntPtr hWnd, WindowSubclassProc pfnSubclass, UIntPtr uIdSubclass);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);

@@ -13,11 +13,14 @@ public static class AppTraceLogger
     private static readonly ConcurrentDictionary<string, long> LastLogTicksByKey = new();
     private static readonly SemaphoreSlim FlushGate = new(1, 1);
     private static readonly string SessionId = $"{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.ProcessId}";
+    private static readonly string LogDirectory = AppDataPaths.GetLogsDirectory();
     private const int MaxRecentLines = 256;
     private const int MaxMessageLength = 12000;
     private static int _flushScheduled;
     private static int _recentLineCount;
     private static long _sequence;
+    private static string? _currentLogDate;
+    private static string? _currentLogPath;
 
     public static void Log(string category, string message)
     {
@@ -139,9 +142,7 @@ public static class AppTraceLogger
                     return;
                 }
 
-                var logDirectory = AppDataPaths.GetLogsDirectory();
-                Directory.CreateDirectory(logDirectory);
-                var logPath = Path.Combine(logDirectory, $"trace-{DateTime.Now:yyyyMMdd}.log");
+                var logPath = GetLogPathForNow();
                 var builder = new StringBuilder();
                 foreach (var line in lines)
                 {
@@ -164,6 +165,20 @@ public static class AppTraceLogger
                 _ = Task.Run(FlushPendingAsync);
             }
         }
+    }
+
+    private static string GetLogPathForNow()
+    {
+        var date = DateTime.Now.ToString("yyyyMMdd");
+        if (string.Equals(_currentLogDate, date, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(_currentLogPath))
+        {
+            return _currentLogPath;
+        }
+
+        Directory.CreateDirectory(LogDirectory);
+        _currentLogDate = date;
+        _currentLogPath = Path.Combine(LogDirectory, $"trace-{date}.log");
+        return _currentLogPath;
     }
 
     private static string NormalizeMessage(string message)

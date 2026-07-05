@@ -51,7 +51,6 @@ public sealed partial class IndependentMediaWindow : Window
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDeletingCurrentMedia;
     private BossKeyController? _bossKeyController;
-    private bool _isBossModeWindowHidden;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
@@ -849,48 +848,28 @@ public sealed partial class IndependentMediaWindow : Window
         _windowHandle = IntPtr.Zero;
     }
 
+    internal void MinimizeForBossMode()
+    {
+        _bossKeyController?.HandleBossKeyTrigger();
+    }
+
     private void EnterBossMode()
     {
         _videoPlaybackController.Clear();
+        _imagePreviewController.Clear();
         _player.EmptyStateVisibility = Visibility.Visible;
         _player.PlayerInfoVisibility = Visibility.Collapsed;
-        _isBossModeWindowHidden = true;
+        BossKeyRecoveryButton.Visibility = Visibility.Visible;
 
-        var appWindow = GetAppWindow();
-        if (appWindow != null)
+        if (GetAppWindow()?.Presenter is OverlappedPresenter presenter)
         {
-            appWindow.Changed += AppWindow_BossChanged;
-            appWindow.Hide();
+            presenter.Minimize();
         }
     }
 
     private void ExitBossMode()
     {
-        _isBossModeWindowHidden = false;
         BossKeyRecoveryButton.Visibility = Visibility.Collapsed;
-
-        var appWindow = GetAppWindow();
-        if (appWindow != null)
-        {
-            appWindow.Changed -= AppWindow_BossChanged;
-        }
-    }
-
-    private void AppWindow_BossChanged(AppWindow sender, AppWindowChangedEventArgs args)
-    {
-        if (!_isBossModeWindowHidden)
-        {
-            return;
-        }
-
-        if (args.DidVisibilityChange && sender.IsVisible)
-        {
-            _isBossModeWindowHidden = false;
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                BossKeyRecoveryButton.Visibility = Visibility.Visible;
-            });
-        }
     }
 
     private void BossKeyRecoveryButton_Click(object sender, RoutedEventArgs e)

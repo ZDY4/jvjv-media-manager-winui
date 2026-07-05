@@ -12,21 +12,26 @@ public sealed class LibraryPaneController : IDisposable
 
     private readonly LibraryShellViewModel _viewModel;
     private readonly LibraryPaneView _libraryPane;
+    private readonly JvJvMediaManager.Views.MainPage _page;
 
     public LibraryPaneController(JvJvMediaManager.Views.MainPage page, LibraryShellViewModel viewModel, LibraryPaneView libraryPane)
     {
+        _page = page;
         _viewModel = viewModel;
         _libraryPane = libraryPane;
 
+        _page.LibrarySplitView.SizeChanged += LibrarySplitView_SizeChanged;
         _libraryPane.PaneResizer.DragStarted += LibraryPaneResizer_DragStarted;
         _libraryPane.PaneResizer.DragDelta += LibraryPaneResizer_DragDelta;
         _libraryPane.PaneResizer.DragCompleted += LibraryPaneResizer_DragCompleted;
+        _viewModel.ApplyLibraryPaneHostWidth(_page.LibrarySplitView.ActualWidth);
     }
 
     public bool IsPaneOpen => _viewModel.IsLibraryPaneOpen;
 
     public void Dispose()
     {
+        _page.LibrarySplitView.SizeChanged -= LibrarySplitView_SizeChanged;
         _libraryPane.PaneResizer.DragStarted -= LibraryPaneResizer_DragStarted;
         _libraryPane.PaneResizer.DragDelta -= LibraryPaneResizer_DragDelta;
         _libraryPane.PaneResizer.DragCompleted -= LibraryPaneResizer_DragCompleted;
@@ -101,5 +106,11 @@ public sealed class LibraryPaneController : IDisposable
     private void LibraryPaneResizer_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _viewModel.SetLibraryPaneResizing(false);
+        _viewModel.CommitLibraryPaneLayout();
+    }
+
+    private void LibrarySplitView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        _viewModel.ApplyLibraryPaneHostWidth(e.NewSize.Width);
     }
 }

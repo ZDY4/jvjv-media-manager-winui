@@ -52,8 +52,9 @@ public sealed class ClipEditorController : IClipTimelineEditor
     private readonly IClipEditorHost _host;
     private readonly ClipEditorViewModel _viewModel;
     private readonly VideoClipService _clipService = new();
-    private readonly TimelineThumbnailStripService _timelineThumbnailStripService = new();
     private readonly IClipTimelineWebBridge _webBridge = new ClipTimelineWebBridge();
+    private readonly ClipThumbnailLoader _thumbnailLoader;
+    private readonly ClipTimelineUIController _timelineUi;
     private readonly ClipEditorBarView _clipBarView;
     private readonly Button _clipModeToggleButton;
     private readonly Button _clipModeActionButton;
@@ -69,10 +70,16 @@ public sealed class ClipEditorController : IClipTimelineEditor
     private readonly Func<bool> _isPlaybackPlaying;
     private readonly Action<string?, string?, double?, double?, Func<TimeSpan, TimeSpan>?> _setPlaybackDisplayOverride;
     private readonly Action<bool> _setTransportSuppressed;
-    private readonly Action<IEnumerable<string>> _registerOutputPaths;
+    private readonly Func<IEnumerable<string>, Task> _registerOutputPathsAsync;
     private readonly Action _showControls;
     private readonly Brush? _keepSegmentBrush;
     private readonly Brush? _deleteSegmentBrush;
+    private readonly PointerEventHandler _timelinePointerWheelHandler;
+    private readonly PointerEventHandler _timelinePointerPressedHandler;
+    private readonly PointerEventHandler _timelinePointerMovedHandler;
+    private readonly PointerEventHandler _timelinePointerReleasedHandler;
+    private readonly PointerEventHandler _timelinePointerCaptureLostHandler;
+    private readonly RightTappedEventHandler _timelineRightTappedHandler;
 
     private bool _isClipModeActive;
     private string? _clipMediaId;
@@ -97,10 +104,6 @@ public sealed class ClipEditorController : IClipTimelineEditor
     private double _timelineZoomFactor = TimelineZoomMin;
     private Point _timelinePanStartPoint;
     private double _timelinePanStartHorizontalOffset;
-    private CancellationTokenSource? _timelineThumbnailLoadCts;
-    private string? _timelineThumbnailRequestKey;
-    private string? _timelineThumbnailRenderKey;
-    private readonly List<ImageSource?> _timelineThumbnails = new();
 
     public ClipEditorController(
         IClipEditorHost host,
@@ -112,6 +115,13 @@ public sealed class ClipEditorController : IClipTimelineEditor
         _viewModel = viewModel;
         _clipModeToggleButton = clipModeToggleButton;
         _clipBarView = clipBarView;
+        _thumbnailLoader = new ClipThumbnailLoader(
+            _clipBarView.DispatcherQueue,
+            TimelineThumbnailTileWidth,
+            TimelineThumbnailHeight,
+            TimelineThumbnailMinCount,
+            TimelineThumbnailMaxCount);
+        _timelineUi = new ClipTimelineUIController(_clipBarView, TimelineHandleWidth);
         _clipModeActionButton = clipBarView.ClipModeActionButton;
         _exitClipModeButton = clipBarView.ExitClipModeButton;
         _clipPlayPauseButton = clipBarView.ClipPlayPauseButton;
@@ -125,10 +135,16 @@ public sealed class ClipEditorController : IClipTimelineEditor
         _isPlaybackPlaying = () => _host.IsPlaybackPlaying;
         _setPlaybackDisplayOverride = _host.SetPlaybackDisplayOverride;
         _setTransportSuppressed = _host.SetTransportSuppressed;
-        _registerOutputPaths = _host.RegisterOutputPaths;
+        _registerOutputPathsAsync = _host.RegisterOutputPathsAsync;
         _showControls = _host.ShowControls;
         _keepSegmentBrush = ResolveBrush("AccentBrush");
         _deleteSegmentBrush = ResolveBrush("LibrarySelectionStrongBrush") ?? _keepSegmentBrush;
+        _timelinePointerWheelHandler = TimelineViewport_PointerWheelChanged;
+        _timelinePointerPressedHandler = TimelineContentCanvas_PointerPressed;
+        _timelinePointerMovedHandler = TimelineInteraction_PointerMoved;
+        _timelinePointerReleasedHandler = TimelineInteraction_PointerReleased;
+        _timelinePointerCaptureLostHandler = TimelineInteraction_PointerCaptureLost;
+        _timelineRightTappedHandler = TimelineContentCanvas_RightTapped;
 
         _webBridge.CommandReceived += WebBridge_CommandReceived;
         _webBridge.Attach(_clipBarView.TimelineWebView);
@@ -142,6 +158,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
         DetachTimelineEvents();
         _webBridge.CommandReceived -= WebBridge_CommandReceived;
         _webBridge.Dispose();
+        _thumbnailLoader.Dispose();
         EndTimelineInteraction();
         ClearTimelineThumbnailState(clearCanvas: true);
         _setPlaybackDisplayOverride(null, null, null, null, null);
@@ -424,7 +441,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
             _viewModel.ProgressValue = 100;
 
             await _host.AddOutputFilesAsync(new[] { result.OutputPath });
-            _registerOutputPaths(new[] { result.OutputPath });
+            await _registerOutputPathsAsync(new[] { result.OutputPath });
         }
         catch (Exception ex)
         {
@@ -445,12 +462,12 @@ public sealed class ClipEditorController : IClipTimelineEditor
         _clipPlayPauseButton.Click += ClipPlayPauseButton_Click;
         _splitClipButton.Click += SplitClipButton_Click;
         _clipBarView.TimelineViewport.SizeChanged += TimelineViewport_SizeChanged;
-        _clipBarView.TimelineScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(TimelineViewport_PointerWheelChanged), true);
-        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(TimelineContentCanvas_PointerPressed), true);
-        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(TimelineInteraction_PointerMoved), true);
-        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(TimelineInteraction_PointerReleased), true);
-        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(TimelineInteraction_PointerCaptureLost), true);
-        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.RightTappedEvent, new RightTappedEventHandler(TimelineContentCanvas_RightTapped), true);
+        _clipBarView.TimelineScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, _timelinePointerWheelHandler, true);
+        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerPressedEvent, _timelinePointerPressedHandler, true);
+        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerMovedEvent, _timelinePointerMovedHandler, true);
+        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerReleasedEvent, _timelinePointerReleasedHandler, true);
+        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.PointerCaptureLostEvent, _timelinePointerCaptureLostHandler, true);
+        _clipBarView.TimelineContentCanvas.AddHandler(UIElement.RightTappedEvent, _timelineRightTappedHandler, true);
         _clipBarView.TimelineStartHandleThumb.DragStarted += TimelineStartHandleThumb_DragStarted;
         _clipBarView.TimelineStartHandleThumb.DragDelta += TimelineStartHandleThumb_DragDelta;
         _clipBarView.TimelineStartHandleThumb.DragCompleted += TimelineStartHandleThumb_DragCompleted;
@@ -470,12 +487,12 @@ public sealed class ClipEditorController : IClipTimelineEditor
         _clipPlayPauseButton.Click -= ClipPlayPauseButton_Click;
         _splitClipButton.Click -= SplitClipButton_Click;
         _clipBarView.TimelineViewport.SizeChanged -= TimelineViewport_SizeChanged;
-        _clipBarView.TimelineScrollViewer.RemoveHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(TimelineViewport_PointerWheelChanged));
-        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(TimelineContentCanvas_PointerPressed));
-        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(TimelineInteraction_PointerMoved));
-        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(TimelineInteraction_PointerReleased));
-        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(TimelineInteraction_PointerCaptureLost));
-        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.RightTappedEvent, new RightTappedEventHandler(TimelineContentCanvas_RightTapped));
+        _clipBarView.TimelineScrollViewer.RemoveHandler(UIElement.PointerWheelChangedEvent, _timelinePointerWheelHandler);
+        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerPressedEvent, _timelinePointerPressedHandler);
+        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerMovedEvent, _timelinePointerMovedHandler);
+        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerReleasedEvent, _timelinePointerReleasedHandler);
+        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.PointerCaptureLostEvent, _timelinePointerCaptureLostHandler);
+        _clipBarView.TimelineContentCanvas.RemoveHandler(UIElement.RightTappedEvent, _timelineRightTappedHandler);
         _clipBarView.TimelineStartHandleThumb.DragStarted -= TimelineStartHandleThumb_DragStarted;
         _clipBarView.TimelineStartHandleThumb.DragDelta -= TimelineStartHandleThumb_DragDelta;
         _clipBarView.TimelineStartHandleThumb.DragCompleted -= TimelineStartHandleThumb_DragCompleted;
@@ -546,7 +563,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
             return;
         }
 
-        _timelineThumbnailRenderKey = null;
+        _thumbnailLoader.InvalidateRender();
         UpdateUi();
     }
 
@@ -1159,7 +1176,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
             : TimeSpan.Zero;
 
         _timelineZoomFactor = Math.Clamp(nextZoomFactor, TimelineZoomMin, TimelineZoomMax);
-        _timelineThumbnailRenderKey = null;
+        _thumbnailLoader.InvalidateRender();
         UpdateUi();
         ScrollTimelineToTime(currentPosition, centerInViewport: true);
     }
@@ -1665,7 +1682,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
         RenderTimelineThumbnails(contentWidth);
 
-        _clipBarView.TimelineSegmentsCanvas.Children.Clear();
+        ClearTimelineSegmentsCanvas();
         var canInteract = !_isExportingClip && duration > TimeSpan.Zero;
         var previewSegments = _clipMode == VideoClipMode.Delete
             ? GetPreviewSegments(duration)
@@ -1802,26 +1819,26 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
     private void RenderTimelineThumbnails(double contentWidth)
     {
-        var renderKey = $"{_timelineThumbnailRequestKey}|{_timelineThumbnails.Count}|{Math.Round(contentWidth)}";
-        if (string.Equals(_timelineThumbnailRenderKey, renderKey, StringComparison.Ordinal)
+        var renderKey = $"{_thumbnailLoader.RequestKey}|{_thumbnailLoader.Frames.Count}|{Math.Round(contentWidth)}";
+        if (string.Equals(_thumbnailLoader.RenderKey, renderKey, StringComparison.Ordinal)
             && _clipBarView.TimelineThumbnailCanvas.Children.Count > 0)
         {
             return;
         }
 
-        _timelineThumbnailRenderKey = renderKey;
+        _thumbnailLoader.MarkRendered(renderKey);
         _clipBarView.TimelineThumbnailCanvas.Children.Clear();
-        if (_timelineThumbnails.Count == 0 || contentWidth <= 0)
+        if (_thumbnailLoader.Frames.Count == 0 || contentWidth <= 0)
         {
             return;
         }
 
         var trackLeft = GetTimelineTrackLeft();
         var trackWidth = GetTimelineTrackWidth(contentWidth);
-        var thumbnailWidth = Math.Max(1, trackWidth / _timelineThumbnails.Count);
-        for (var i = 0; i < _timelineThumbnails.Count; i++)
+        var thumbnailWidth = Math.Max(1, trackWidth / _thumbnailLoader.Frames.Count);
+        for (var i = 0; i < _thumbnailLoader.Frames.Count; i++)
         {
-            var source = _timelineThumbnails[i];
+            var source = _thumbnailLoader.Frames[i];
             if (source == null)
             {
                 continue;
@@ -1845,14 +1862,14 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
     private void ResetTimelineVisuals()
     {
-        _timelineThumbnailRenderKey = null;
+        _thumbnailLoader.InvalidateRender();
         _clipBarView.TimelineCursorText.Text = "游标：0:00 / 0:00";
         _clipBarView.TimelineStartLabel.Text = "0:00";
         _clipBarView.TimelineMidLabel.Text = "0:00";
         _clipBarView.TimelineEndLabel.Text = "0:00";
         _clipBarView.TimelineZoomText.Text = $"缩放：{_timelineZoomFactor * 100:0}%";
         _clipBarView.TimelineThumbnailCanvas.Children.Clear();
-        _clipBarView.TimelineSegmentsCanvas.Children.Clear();
+        ClearTimelineSegmentsCanvas();
         _clipBarView.TimelinePlayhead.Height = 0;
     }
 
@@ -1870,100 +1887,22 @@ public sealed class ClipEditorController : IClipTimelineEditor
             return;
         }
 
-        var contentWidth = Math.Max(viewportWidth, viewportWidth * _timelineZoomFactor);
-        var frameCount = Math.Clamp((int)Math.Ceiling(contentWidth / TimelineThumbnailTileWidth), TimelineThumbnailMinCount, TimelineThumbnailMaxCount);
-        var requestKey = $"{media.Id}|{media.Media.ModifiedAt}|{frameCount}|{(int)Math.Round(_timelineZoomFactor * 100)}|{(int)Math.Round(viewportWidth)}";
-        if (string.Equals(_timelineThumbnailRequestKey, requestKey, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        _timelineThumbnailRequestKey = requestKey;
-        _timelineThumbnailRenderKey = null;
-        _timelineThumbnailLoadCts?.Cancel();
-        _timelineThumbnailLoadCts?.Dispose();
-        _timelineThumbnailLoadCts = new CancellationTokenSource();
-        var cancellationToken = _timelineThumbnailLoadCts.Token;
-        var fallbackSource = media.Thumbnail;
-
-        _ = LoadTimelineThumbnailsAsync(new TimelineThumbnailStripRequest
-        {
-            MediaId = media.Id,
-            MediaPath = media.FileSystemPath,
-            CacheToken = media.Media.ModifiedAt.ToString(),
-            Duration = duration,
-            FrameCount = frameCount,
-            FrameWidth = (int)Math.Ceiling(TimelineThumbnailTileWidth),
-            FrameHeight = (int)Math.Ceiling(TimelineThumbnailHeight)
-        }, requestKey, fallbackSource, cancellationToken);
-    }
-
-    private async Task LoadTimelineThumbnailsAsync(
-        TimelineThumbnailStripRequest request,
-        string requestKey,
-        ImageSource? fallbackSource,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var frames = await _timelineThumbnailStripService.GetStripAsync(request, fallbackSource, cancellationToken);
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
-            _clipBarView.DispatcherQueue.TryEnqueue(() =>
-            {
-                if (cancellationToken.IsCancellationRequested
-                    || !string.Equals(_timelineThumbnailRequestKey, requestKey, StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                _timelineThumbnailRenderKey = null;
-                _timelineThumbnails.Clear();
-                _timelineThumbnails.AddRange(frames);
-                RenderTimelineThumbnails(ResolveTimelineContentWidth());
-            });
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch
-        {
-            _clipBarView.DispatcherQueue.TryEnqueue(() =>
-            {
-                if (!string.Equals(_timelineThumbnailRequestKey, requestKey, StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                _timelineThumbnailRenderKey = null;
-                _timelineThumbnails.Clear();
-                if (fallbackSource != null)
-                {
-                    for (var i = 0; i < request.FrameCount; i++)
-                    {
-                        _timelineThumbnails.Add(fallbackSource);
-                    }
-                }
-
-                RenderTimelineThumbnails(ResolveTimelineContentWidth());
-            });
-        }
+        _thumbnailLoader.Ensure(
+            media,
+            duration,
+            viewportWidth,
+            _timelineZoomFactor,
+            RenderTimelineThumbnails,
+            ResolveTimelineContentWidth);
     }
 
     private void ClearTimelineThumbnailState(bool clearCanvas)
     {
-        _timelineThumbnailLoadCts?.Cancel();
-        _timelineThumbnailLoadCts?.Dispose();
-        _timelineThumbnailLoadCts = null;
-        _timelineThumbnailRequestKey = null;
-        _timelineThumbnailRenderKey = null;
-        _timelineThumbnails.Clear();
+        _thumbnailLoader.Clear();
         if (clearCanvas)
         {
             _clipBarView.TimelineThumbnailCanvas.Children.Clear();
+            ClearTimelineSegmentsCanvas();
         }
     }
 
@@ -2441,16 +2380,7 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
     private static int FindSegmentIndexContaining(TimeSpan position, IReadOnlyList<VideoClipSegment> segments)
     {
-        for (var i = 0; i < segments.Count; i++)
-        {
-            var segment = segments[i];
-            if (position >= segment.Start && position <= segment.End)
-            {
-                return i;
-            }
-        }
-
-        return -1;
+        return ClipSegmentEditor.FindSegmentIndexContaining(position, segments);
     }
 
     private static TimeSpan ResolvePreviewSeekTarget(TimeSpan requested, IReadOnlyList<VideoClipSegment> previewSegments)
@@ -2504,152 +2434,39 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
     private static List<VideoClipSegment> NormalizeSegments(IEnumerable<VideoClipSegment> segments, TimeSpan duration)
     {
-        if (duration <= TimeSpan.Zero)
-        {
-            return segments
-                .Where(segment => segment.End > segment.Start)
-                .OrderBy(segment => segment.Start)
-                .ToList();
-        }
-
-        var normalized = segments
-            .Select(segment => new VideoClipSegment
-            {
-                Start = segment.Start < TimeSpan.Zero ? TimeSpan.Zero : segment.Start,
-                End = segment.End > duration ? duration : segment.End
-            })
-            .Where(segment => segment.End > segment.Start)
-            .OrderBy(segment => segment.Start)
-            .ToList();
-        if (normalized.Count == 0)
-        {
-            return normalized;
-        }
-
-        var merged = new List<VideoClipSegment> { normalized[0] };
-        for (var i = 1; i < normalized.Count; i++)
-        {
-            var current = normalized[i];
-            var previous = merged[^1];
-            if (current.Start < previous.End)
-            {
-                merged[^1] = new VideoClipSegment
-                {
-                    Start = previous.Start,
-                    End = current.End > previous.End ? current.End : previous.End
-                };
-                continue;
-            }
-
-            merged.Add(current);
-        }
-
-        return merged;
+        return ClipSegmentEditor.NormalizeSegments(segments, duration);
     }
 
     private static List<VideoClipSegment> InvertSegments(IReadOnlyList<VideoClipSegment> segments, TimeSpan duration)
     {
-        if (duration <= TimeSpan.Zero)
-        {
-            return new List<VideoClipSegment>();
-        }
-
-        var keptSegments = new List<VideoClipSegment>();
-        var current = TimeSpan.Zero;
-
-        foreach (var segment in NormalizeSegments(segments, duration))
-        {
-            if (segment.Start > current)
-            {
-                keptSegments.Add(new VideoClipSegment
-                {
-                    Start = current,
-                    End = segment.Start
-                });
-            }
-
-            if (segment.End > current)
-            {
-                current = segment.End;
-            }
-        }
-
-        if (current < duration)
-        {
-            keptSegments.Add(new VideoClipSegment
-            {
-                Start = current,
-                End = duration
-            });
-        }
-
-        return keptSegments
-            .Where(segment => segment.End > segment.Start)
-            .ToList();
+        return ClipSegmentEditor.InvertSegments(segments, duration);
     }
 
     private static TimeSpan CalculateEffectiveOutputDuration(IReadOnlyList<VideoClipSegment> segments, TimeSpan totalDuration, VideoClipMode mode)
     {
-        if (segments.Count == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        if (mode == VideoClipMode.Keep)
-        {
-            return segments.Aggregate(TimeSpan.Zero, (current, segment) => current + segment.Duration);
-        }
-
-        var removed = segments.Aggregate(TimeSpan.Zero, (current, segment) => current + segment.Duration);
-        var remaining = totalDuration - removed;
-        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        return segments.Count == 0
+            ? TimeSpan.Zero
+            : ClipSegmentEditor.CalculateEffectiveOutputDuration(segments, totalDuration, mode);
     }
 
     private double PositionToTimelineRatio(double x)
     {
-        var width = ResolveTimelineContentWidth();
-        var trackLeft = GetTimelineTrackLeft();
-        var trackWidth = GetTimelineTrackWidth(width);
-        if (trackWidth <= 0)
-        {
-            return 0;
-        }
-
-        return Math.Clamp((x - trackLeft) / trackWidth, 0, 1);
+        return _timelineUi.PositionToRatio(x);
     }
 
     private TimeSpan PositionToTimelineTime(double x, TimeSpan duration)
     {
-        if (duration <= TimeSpan.Zero)
-        {
-            return TimeSpan.Zero;
-        }
-
-        return TimeSpan.FromSeconds(duration.TotalSeconds * PositionToTimelineRatio(x));
+        return _timelineUi.PositionToTime(x, duration);
     }
 
     private double TimeToTimelineX(TimeSpan value, TimeSpan duration, double canvasWidth)
     {
-        var trackLeft = GetTimelineTrackLeft();
-        var trackWidth = GetTimelineTrackWidth(canvasWidth);
-        if (duration <= TimeSpan.Zero || trackWidth <= 0)
-        {
-            return trackLeft;
-        }
-
-        var ratio = Math.Clamp(value.TotalSeconds / duration.TotalSeconds, 0, 1);
-        return trackLeft + (trackWidth * ratio);
+        return _timelineUi.TimeToX(value, duration, canvasWidth);
     }
 
     private double ResolveTimelineContentWidth()
     {
-        var width = _clipBarView.TimelineContentCanvas.Width;
-        if (double.IsNaN(width) || width <= 0)
-        {
-            width = _clipBarView.TimelineContentCanvas.ActualWidth;
-        }
-
-        return width;
+        return _timelineUi.ResolveContentWidth();
     }
 
     private static TimeSpan GetMinimumSelectionGap(TimeSpan duration)
@@ -2679,32 +2496,12 @@ public sealed class ClipEditorController : IClipTimelineEditor
 
     private static TimeSpan ClampToDuration(TimeSpan value, TimeSpan duration)
     {
-        if (value < TimeSpan.Zero)
-        {
-            return TimeSpan.Zero;
-        }
-
-        if (duration > TimeSpan.Zero && value > duration)
-        {
-            return duration;
-        }
-
-        return value;
+        return ClipSegmentEditor.ClampToDuration(value, duration);
     }
 
     private static TimeSpan ClampToRange(TimeSpan value, TimeSpan min, TimeSpan max)
     {
-        if (value < min)
-        {
-            return min;
-        }
-
-        if (value > max)
-        {
-            return max;
-        }
-
-        return value;
+        return ClipSegmentEditor.ClampToRange(value, min, max);
     }
 
     private static string FormatTime(TimeSpan value)
@@ -2745,14 +2542,27 @@ public sealed class ClipEditorController : IClipTimelineEditor
         return left >= right ? left : right;
     }
 
-    private static double GetTimelineTrackLeft()
+    private double GetTimelineTrackLeft()
     {
-        return TimelineHandleWidth / 2;
+        return _timelineUi.TrackLeft;
     }
 
-    private static double GetTimelineTrackWidth(double canvasWidth)
+    private double GetTimelineTrackWidth(double canvasWidth)
     {
-        return Math.Max(1, canvasWidth - TimelineHandleWidth);
+        return _timelineUi.GetTrackWidth(canvasWidth);
+    }
+
+    private void ClearTimelineSegmentsCanvas()
+    {
+        foreach (var child in _clipBarView.TimelineSegmentsCanvas.Children.OfType<FrameworkElement>())
+        {
+            if (child.Tag is SegmentBodyTag)
+            {
+                child.PointerPressed -= SegmentBody_PointerPressed;
+            }
+        }
+
+        _clipBarView.TimelineSegmentsCanvas.Children.Clear();
     }
 
     private void LogClipTrace(string message)

@@ -69,7 +69,6 @@ public sealed class MainPageShellController
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDisposed;
-    private bool _isBossModeWindowHidden;
     private int _selectionSyncQueued;
     private int _playerAvailabilityCheckVersion;
     private int _playerSwitchTraceId;
@@ -211,15 +210,16 @@ public sealed class MainPageShellController
                 if (!_isDisposed)
                 {
                     _videoPlaybackController.Clear();
+                    _imagePreviewController.Clear();
                     _shell.Player.EmptyStateVisibility = Visibility.Visible;
                     _shell.Player.PlayerInfoVisibility = Visibility.Collapsed;
                     _shell.Library.IsBossMode = true;
-                    _isBossModeWindowHidden = true;
+                    _page.ShowBossRecoveryButton();
+                    _independentMediaWindows.HideAllWindows();
 
-                    var appWindow = GetAppWindow();
-                    if (appWindow != null)
+                    if (GetAppWindow()?.Presenter is OverlappedPresenter presenter)
                     {
-                        appWindow.Hide();
+                        presenter.Minimize();
                     }
                 }
             },
@@ -227,7 +227,6 @@ public sealed class MainPageShellController
             {
                 if (!_isDisposed)
                 {
-                    _isBossModeWindowHidden = false;
                     _shell.Library.IsBossMode = false;
                     _page.ExitBossMode();
                 }
@@ -295,12 +294,6 @@ public sealed class MainPageShellController
         _videoPlaybackController.Clear();
         _page.ConfigureBossKey(bossKeyController);
 
-        var appWindow = GetAppWindow();
-        if (appWindow != null)
-        {
-            appWindow.Changed += AppWindow_BossChanged;
-        }
-
         _clipEditorController.Refresh();
     }
 
@@ -333,26 +326,6 @@ public sealed class MainPageShellController
         }, "初始化失败");
     }
 
-    private void AppWindow_BossChanged(AppWindow sender, AppWindowChangedEventArgs args)
-    {
-        if (_isDisposed || !_isBossModeWindowHidden)
-        {
-            return;
-        }
-
-        if (args.DidVisibilityChange && sender.IsVisible)
-        {
-            _isBossModeWindowHidden = false;
-            _page.DispatcherQueue.TryEnqueue(() =>
-            {
-                if (!_isDisposed)
-                {
-                    _page.ShowBossRecoveryButton();
-                }
-            });
-        }
-    }
-
     public void Dispose()
     {
         if (_isDisposed)
@@ -361,11 +334,6 @@ public sealed class MainPageShellController
         }
 
         _isDisposed = true;
-        var appWindow = GetAppWindow();
-        if (appWindow != null)
-        {
-            appWindow.Changed -= AppWindow_BossChanged;
-        }
         Interlocked.Exchange(ref _selectionSyncQueued, 0);
         ResetNavigationHotspotGesture();
         AppTraceLogger.Log("MainPageShell", "Dispose start.");

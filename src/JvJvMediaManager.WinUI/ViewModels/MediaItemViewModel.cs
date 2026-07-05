@@ -12,35 +12,55 @@ public sealed class MediaItemViewModel : ObservableObject
     private bool _isSelected;
     private bool _isNowPlaying;
     private int _thumbnailRequested;
+    private string _fileSystemPath;
+    private string _folderPath;
+    private string _folderDisplayName;
+    private string _sizeText;
+    private string _resolutionText;
+    private string _playerDetailsText;
+    private string _durationText;
+    private string _tagsText;
 
     public MediaItemViewModel(MediaFile media)
     {
         Media = media;
         Tags = new ObservableCollection<string>(media.Tags);
+        _fileSystemPath = PathHelpers.ToNativePath(Media.Path);
+        _folderPath = GetFolderPath(Media.Path);
+        _folderDisplayName = GetFolderDisplayName(_folderPath);
+        _sizeText = FormatHelpers.FormatSize(Media.Size);
+        _resolutionText = FormatResolution(Media);
+        _playerDetailsText = BuildPlayerDetailsText(_resolutionText, _sizeText);
+        _durationText = FormatHelpers.FormatDuration(Media.Duration);
+        _tagsText = BuildTagsText(Tags);
     }
 
     public MediaFile Media { get; }
 
     public string Id => Media.Id;
     public string Path => Media.Path;
-    public string FileSystemPath => PathHelpers.ToNativePath(Media.Path);
-    public string FolderPath => GetFolderPath(Media.Path);
-    public string FolderDisplayName => GetFolderDisplayName(FolderPath);
+    public string FileSystemPath => _fileSystemPath;
+    public string FolderPath => _folderPath;
+    public string FolderDisplayName => _folderDisplayName;
     public string FileName => Media.FileName;
     public MediaType Type => Media.Type;
 
     public long Size => Media.Size;
-    public string SizeText => FormatHelpers.FormatSize(Media.Size);
+    public string SizeText => _sizeText;
 
-    public string ResolutionText => Media.Width.HasValue && Media.Height.HasValue
-        ? $"{Media.Width}x{Media.Height}"
-        : string.Empty;
+    public string ResolutionText => _resolutionText;
 
-    public string DurationText => FormatHelpers.FormatDuration(Media.Duration);
+    public string PlayerDetailsText => _playerDetailsText;
+
+    public string DurationText => _durationText;
+
+    public string? ContentHash => Media.ContentHash;
+
+    public int FingerprintVersion => Media.FingerprintVersion;
 
     public ObservableCollection<string> Tags { get; }
 
-    public string TagsText => Tags.Count == 0 ? string.Empty : string.Join(", ", Tags);
+    public string TagsText => _tagsText;
 
     public ImageSource? Thumbnail
     {
@@ -62,6 +82,24 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public void UpdateFrom(MediaFile media)
     {
+        var pathChanged = !string.Equals(Media.Path, media.Path, StringComparison.Ordinal);
+        var fileNameChanged = !string.Equals(Media.FileName, media.FileName, StringComparison.Ordinal);
+        var typeChanged = Media.Type != media.Type;
+        var sizeChanged = Media.Size != media.Size;
+        var durationChanged = Media.Duration != media.Duration;
+        var resolutionChanged = Media.Width != media.Width || Media.Height != media.Height;
+        var modifiedAtChanged = Media.ModifiedAt != media.ModifiedAt;
+        var contentHashChanged = !string.Equals(Media.ContentHash, media.ContentHash, StringComparison.Ordinal);
+        var fingerprintVersionChanged = Media.FingerprintVersion != media.FingerprintVersion;
+        var thumbnailIdentityChanged = pathChanged
+            || typeChanged
+            || sizeChanged
+            || modifiedAtChanged
+            || resolutionChanged
+            || contentHashChanged;
+        var nextTags = media.Tags.ToList();
+        var tagsChanged = !Tags.SequenceEqual(nextTags, StringComparer.Ordinal);
+
         Media.Path = media.Path;
         Media.FileName = media.FileName;
         Media.Type = media.Type;
@@ -74,28 +112,109 @@ public sealed class MediaItemViewModel : ObservableObject
         Media.ModifiedAt = media.ModifiedAt;
         Media.LastPlayed = media.LastPlayed;
         Media.PlayCount = media.PlayCount;
-        Media.Tags = media.Tags.ToList();
+        Media.ContentHash = media.ContentHash;
+        Media.FingerprintVersion = media.FingerprintVersion;
+        Media.Tags = nextTags;
 
-        UpdateTags(media.Tags);
-        OnPropertyChanged(nameof(Path));
-        OnPropertyChanged(nameof(FileSystemPath));
-        OnPropertyChanged(nameof(FolderPath));
-        OnPropertyChanged(nameof(FolderDisplayName));
-        OnPropertyChanged(nameof(FileName));
-        OnPropertyChanged(nameof(Type));
-        OnPropertyChanged(nameof(Size));
-        OnPropertyChanged(nameof(SizeText));
-        OnPropertyChanged(nameof(ResolutionText));
-        OnPropertyChanged(nameof(DurationText));
+        if (pathChanged)
+        {
+            _fileSystemPath = PathHelpers.ToNativePath(Media.Path);
+            _folderPath = GetFolderPath(Media.Path);
+            _folderDisplayName = GetFolderDisplayName(_folderPath);
+        }
+
+        if (sizeChanged)
+        {
+            _sizeText = FormatHelpers.FormatSize(Media.Size);
+        }
+
+        if (resolutionChanged)
+        {
+            _resolutionText = FormatResolution(Media);
+        }
+
+        if (sizeChanged || resolutionChanged)
+        {
+            _playerDetailsText = BuildPlayerDetailsText(_resolutionText, _sizeText);
+        }
+
+        if (durationChanged)
+        {
+            _durationText = FormatHelpers.FormatDuration(Media.Duration);
+        }
+
+        if (tagsChanged)
+        {
+            UpdateTags(nextTags);
+        }
+
+        if (thumbnailIdentityChanged)
+        {
+            Thumbnail = null;
+            ResetThumbnailLoadState();
+        }
+
+        if (pathChanged)
+        {
+            OnPropertyChanged(nameof(Path));
+            OnPropertyChanged(nameof(FileSystemPath));
+            OnPropertyChanged(nameof(FolderPath));
+            OnPropertyChanged(nameof(FolderDisplayName));
+        }
+
+        if (fileNameChanged)
+        {
+            OnPropertyChanged(nameof(FileName));
+        }
+
+        if (typeChanged)
+        {
+            OnPropertyChanged(nameof(Type));
+        }
+
+        if (sizeChanged)
+        {
+            OnPropertyChanged(nameof(Size));
+            OnPropertyChanged(nameof(SizeText));
+            OnPropertyChanged(nameof(PlayerDetailsText));
+        }
+
+        if (resolutionChanged)
+        {
+            OnPropertyChanged(nameof(ResolutionText));
+            OnPropertyChanged(nameof(PlayerDetailsText));
+        }
+
+        if (durationChanged)
+        {
+            OnPropertyChanged(nameof(DurationText));
+        }
+
+        if (contentHashChanged)
+        {
+            OnPropertyChanged(nameof(ContentHash));
+        }
+
+        if (fingerprintVersionChanged)
+        {
+            OnPropertyChanged(nameof(FingerprintVersion));
+        }
     }
 
     public void UpdateTags(IEnumerable<string> tags)
     {
+        var nextTags = tags.ToList();
+        if (Tags.SequenceEqual(nextTags, StringComparer.Ordinal))
+        {
+            return;
+        }
+
         Tags.Clear();
-        foreach (var tag in tags)
+        foreach (var tag in nextTags)
         {
             Tags.Add(tag);
         }
+        _tagsText = BuildTagsText(Tags);
         OnPropertyChanged(nameof(TagsText));
     }
 
@@ -128,5 +247,29 @@ public sealed class MediaItemViewModel : ObservableObject
         var nativePath = PathHelpers.ToNativePath(folderPath);
         var name = System.IO.Path.GetFileName(nativePath.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
         return string.IsNullOrWhiteSpace(name) ? folderPath : name;
+    }
+
+    private static string FormatResolution(MediaFile media)
+    {
+        return media.Width.HasValue && media.Height.HasValue
+            ? $"{media.Width}x{media.Height}"
+            : string.Empty;
+    }
+
+    private static string BuildPlayerDetailsText(string resolutionText, string sizeText)
+    {
+        if (string.IsNullOrWhiteSpace(resolutionText))
+        {
+            return sizeText;
+        }
+
+        return string.IsNullOrWhiteSpace(sizeText)
+            ? resolutionText
+            : $"{resolutionText} · {sizeText}";
+    }
+
+    private static string BuildTagsText(IEnumerable<string> tags)
+    {
+        return string.Join(", ", tags);
     }
 }

@@ -22,9 +22,14 @@ public sealed class MediaQuery
     public IReadOnlyList<string> SelectedTags { get; init; } = Array.Empty<string>();
     public string? PlaylistId { get; init; }
     public IReadOnlyList<string>? IncludedFolderPaths { get; init; }
+    public IReadOnlyList<string>? ExactFolderPaths { get; init; }
     public IReadOnlyList<string> ExcludedFolderPaths { get; init; } = Array.Empty<string>();
+    public MediaType? TypeFilter { get; init; }
+    public IReadOnlyList<string> ExcludedMediaIds { get; init; } = Array.Empty<string>();
+    public bool RandomOrder { get; init; }
     public MediaSortField SortField { get; init; } = MediaSortField.ModifiedAt;
     public MediaSortOrder SortOrder { get; init; } = MediaSortOrder.Desc;
+    public string? AfterMediaId { get; init; }
     public int Offset { get; init; }
     public int Limit { get; init; }
 }

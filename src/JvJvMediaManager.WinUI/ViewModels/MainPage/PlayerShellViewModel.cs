@@ -34,7 +34,7 @@ public sealed class PlayerShellViewModel : ObservableObject
     private Visibility _playerInfoVisibility = Visibility.Collapsed;
     private string _playerFileName = string.Empty;
     private string _playerResolution = string.Empty;
-    private Visibility _shortcutHintVisibility = Visibility.Collapsed;
+    private Visibility _shortcutHintVisibility = Visibility.Visible;
     private string _shortcutHintEmptyStateText = "未设置数字快捷标签";
 
     public PlayerShellViewModel(SelectionViewModel selection)

@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices.WindowsRuntime;
+using Windows.Media.Editing;
+using Windows.Storage;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services;
@@ -7,6 +10,7 @@ public sealed class VideoHoverPreviewFrameService
 {
     private static readonly TimeSpan FrameGenerationTimeout = TimeSpan.FromSeconds(4);
     private readonly SemaphoreSlim _frameGate = new(1, 1);
+    private readonly ExternalProcessRunner _processRunner = new();
     private readonly string? _ffmpegPath;
 
     public VideoHoverPreviewFrameService(string? ffmpegPath = null)
@@ -14,7 +18,7 @@ public sealed class VideoHoverPreviewFrameService
         _ffmpegPath = ResolveToolPath("ffmpeg.exe", ffmpegPath);
     }
 
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_ffmpegPath);
+    public bool IsAvailable => true;
 
     public async Task<byte[]?> GenerateFrameAsync(
         string mediaPath,
@@ -23,8 +27,7 @@ public sealed class VideoHoverPreviewFrameService
         int frameHeight,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(_ffmpegPath)
-            || string.IsNullOrWhiteSpace(mediaPath)
+        if (string.IsNullOrWhiteSpace(mediaPath)
             || !File.Exists(mediaPath)
             || frameWidth <= 0
             || frameHeight <= 0)
@@ -37,12 +40,13 @@ public sealed class VideoHoverPreviewFrameService
             return null;
         }
 
+        if (string.IsNullOrWhiteSpace(_ffmpegPath))
+        {
+            return await GenerateFrameWithWindowsAsync(mediaPath, timestamp, frameWidth, frameHeight, cancellationToken);
+        }
+
         await _frameGate.WaitAsync(cancellationToken);
-        Process? process = null;
         var startedAt = Stopwatch.GetTimestamp();
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(FrameGenerationTimeout);
-        var frameCancellationToken = timeoutCts.Token;
         try
         {
             var startInfo = new ProcessStartInfo
@@ -74,22 +78,23 @@ public sealed class VideoHoverPreviewFrameService
             startInfo.ArgumentList.Add("mjpeg");
             startInfo.ArgumentList.Add("pipe:1");
 
-            process = new Process { StartInfo = startInfo };
-            process.Start();
-
             await using var output = new MemoryStream();
-            var outputTask = process.StandardOutput.BaseStream.CopyToAsync(output, frameCancellationToken);
-            var errorTask = process.StandardError.ReadToEndAsync(frameCancellationToken);
-            await process.WaitForExitAsync(frameCancellationToken);
-            await outputTask;
-            var error = await errorTask;
+            var result = await _processRunner.RunAsync(
+                startInfo,
+                FrameGenerationTimeout,
+                readStandardOutputAsync: async (reader, token) =>
+                {
+                    await reader.BaseStream.CopyToAsync(output, token);
+                    return string.Empty;
+                },
+                cancellationToken: cancellationToken);
 
-            if (process.ExitCode != 0 || output.Length == 0)
+            if (result.ExitCode != 0 || output.Length == 0)
             {
                 AppTraceLogger.LogSampled(
                     "VideoHoverPreview",
                     "ffmpeg-frame-failed",
-                    $"GenerateFrameAsync failed. ExitCode={process.ExitCode}, Bytes={output.Length}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}, Error='{error}'.",
+                    $"GenerateFrameAsync failed. ExitCode={result.ExitCode}, Bytes={output.Length}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}, Error='{result.StandardError}'.",
                     TimeSpan.FromSeconds(2));
                 return null;
             }
@@ -103,7 +108,6 @@ public sealed class VideoHoverPreviewFrameService
         }
         catch (OperationCanceledException)
         {
-            TryKill(process);
             if (cancellationToken.IsCancellationRequested)
             {
                 throw;
@@ -123,23 +127,71 @@ public sealed class VideoHoverPreviewFrameService
         }
         finally
         {
-            process?.Dispose();
             _frameGate.Release();
         }
     }
 
-    private static void TryKill(Process? process)
+    private async Task<byte[]?> GenerateFrameWithWindowsAsync(
+        string mediaPath,
+        TimeSpan timestamp,
+        int frameWidth,
+        int frameHeight,
+        CancellationToken cancellationToken)
     {
+        await _frameGate.WaitAsync(cancellationToken);
+        var startedAt = Stopwatch.GetTimestamp();
         try
         {
-            if (process != null && !process.HasExited)
+            cancellationToken.ThrowIfCancellationRequested();
+            var file = await StorageFile.GetFileFromPathAsync(mediaPath);
+            var clip = await MediaClip.CreateFromFileAsync(file);
+            var composition = new MediaComposition();
+            composition.Clips.Add(clip);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            using var thumbnail = await composition.GetThumbnailAsync(
+                TimeSpan.FromSeconds(Math.Max(0, timestamp.TotalSeconds)),
+                frameWidth,
+                frameHeight,
+                VideoFramePrecision.NearestFrame);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var input = thumbnail.AsStreamForRead();
+            using var output = new MemoryStream();
+            await input.CopyToAsync(output, cancellationToken);
+            if (output.Length == 0)
             {
-                process.Kill(entireProcessTree: true);
+                AppTraceLogger.LogSampled(
+                    "VideoHoverPreview",
+                    "windows-frame-empty",
+                    $"Windows frame extraction returned no frame. Timestamp={timestamp.TotalSeconds:F3}, Size={frameWidth}x{frameHeight}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}.",
+                    TimeSpan.FromSeconds(2));
+                return null;
             }
+
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "windows-frame-generated",
+                $"Windows frame extraction completed. Timestamp={timestamp.TotalSeconds:F3}, Size={frameWidth}x{frameHeight}, Bytes={output.Length}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}.",
+                TimeSpan.FromSeconds(1));
+            return output.ToArray();
         }
-        catch
+        catch (OperationCanceledException)
         {
-            // Best-effort cancellation cleanup only.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "windows-frame-failed",
+                $"Windows frame extraction failed. Path='{mediaPath}', Timestamp={timestamp.TotalSeconds:F3}. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(2));
+            return null;
+        }
+        finally
+        {
+            _frameGate.Release();
         }
     }
 

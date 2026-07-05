@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <PlatformTarget Condition="'$(PlatformTarget)' == ''">x64</PlatformTarget>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
-    <RuntimeIdentifiers>win-x64;win-x86;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
     <ImplicitUsings>true</ImplicitUsings>
     <UseWinUI>true</UseWinUI>
@@ -12,8 +12,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260317003" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3856.49" />
   </ItemGroup>
 
@@ -21,5 +23,15 @@
     <Content Include="Assets\ClipEditor\**\*.*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <None Include="..\..\tools\ffmpeg\bin\ffmpeg.exe" Link="tools\ffmpeg\bin\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\tools\ffmpeg\bin\ffmpeg.exe')" />
   </ItemGroup>
+
+  <Target Name="CopyWinUIXamlResourcesToPublishDirectory" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <_WinUIXamlPublishResource Include="$(OutputPath)**\*.xbf" />
+      <_WinUIXamlPublishResource Include="$(OutputPath)$(AssemblyName).pri" Condition="Exists('$(OutputPath)$(AssemblyName).pri')" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(_WinUIXamlPublishResource)" DestinationFiles="@(_WinUIXamlPublishResource->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

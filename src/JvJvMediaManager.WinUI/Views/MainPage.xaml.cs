@@ -111,11 +111,6 @@ public sealed partial class MainPage : Page
         _bossKeyController?.ExitBossMode();
     }
 
-    public void EnterBossMode()
-    {
-        BossKeyRecoveryButton.Visibility = Visibility.Collapsed;
-    }
-
     public void ShowBossRecoveryButton()
     {
         BossKeyRecoveryButton.Visibility = Visibility.Visible;

@@ -43,6 +43,9 @@ public sealed class VideoProbeInfo
 
 public sealed class VideoClipService
 {
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
+
+    private readonly ExternalProcessRunner _processRunner = new();
     private readonly string? _ffmpegPath;
     private readonly string? _ffprobePath;
 
@@ -126,19 +129,22 @@ public sealed class VideoClipService
         startInfo.ArgumentList.Add("json");
         startInfo.ArgumentList.Add(inputPath);
 
-        using var process = new Process { StartInfo = startInfo };
-        process.Start();
-
-        var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-
-        if (process.ExitCode != 0)
+        ExternalProcessResult result;
+        try
         {
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "ffprobe 读取媒体信息失败。" : stderr.Trim());
+            result = await _processRunner.RunAsync(startInfo, ProbeTimeout, cancellationToken: cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("ffprobe 读取媒体信息超时。");
         }
 
-        using var document = JsonDocument.Parse(stdout);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.StandardError) ? "ffprobe 读取媒体信息失败。" : result.StandardError.Trim());
+        }
+
+        using var document = JsonDocument.Parse(result.StandardOutput);
         var root = document.RootElement;
 
         var duration = TimeSpan.Zero;
@@ -236,41 +242,37 @@ public sealed class VideoClipService
 
         BuildFfmpegArguments(startInfo.ArgumentList, request.InputPath, outputPath, keptSegments, probe.HasAudio);
 
-        using var process = new Process { StartInfo = startInfo };
         var errorOutput = new StringBuilder();
-
-        process.Start();
-
-        using var cancellationRegistration = cancellationToken.Register(() =>
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(true);
-                }
-            }
-            catch
-            {
-                // Ignore process-kill races during cancellation.
-            }
-        });
-
-        var progressTask = ReadProgressAsync(process.StandardOutput, totalOutputDuration, progress, cancellationToken);
-        var errorTask = ReadErrorsAsync(process.StandardError, errorOutput, cancellationToken);
 
         try
         {
-            await process.WaitForExitAsync(cancellationToken);
-            await Task.WhenAll(progressTask, errorTask);
+            var result = await _processRunner.RunAsync(
+                startInfo,
+                GetExportTimeout(totalOutputDuration),
+                readStandardOutputAsync: async (reader, token) =>
+                {
+                    await ReadProgressAsync(reader, totalOutputDuration, progress, token);
+                    return string.Empty;
+                },
+                readStandardErrorAsync: async (reader, token) =>
+                {
+                    await ReadErrorsAsync(reader, errorOutput, token);
+                    return errorOutput.ToString();
+                },
+                cancellationToken: cancellationToken);
 
-            if (process.ExitCode != 0)
+            if (result.ExitCode != 0)
             {
                 TryDeletePartialOutput(outputPath);
                 throw new InvalidOperationException(errorOutput.Length > 0
                     ? errorOutput.ToString().Trim()
                     : "ffmpeg 导出失败。");
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            TryDeletePartialOutput(outputPath);
+            throw new TimeoutException("ffmpeg 导出超时。");
         }
         catch
         {
@@ -614,4 +616,21 @@ public sealed class VideoClipService
             // Best-effort cleanup only.
         }
     }
+
+    private static TimeSpan GetExportTimeout(TimeSpan outputDuration)
+    {
+        if (outputDuration <= TimeSpan.Zero)
+        {
+            return TimeSpan.FromMinutes(10);
+        }
+
+        var scaled = TimeSpan.FromTicks(outputDuration.Ticks * 20) + TimeSpan.FromMinutes(2);
+        if (scaled < TimeSpan.FromMinutes(10))
+        {
+            return TimeSpan.FromMinutes(10);
+        }
+
+        return scaled > TimeSpan.FromHours(24) ? TimeSpan.FromHours(24) : scaled;
+    }
+
 }

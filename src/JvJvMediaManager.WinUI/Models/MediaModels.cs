@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 
 namespace JvJvMediaManager.Models;
 
@@ -20,11 +21,63 @@ public enum TagUpdateMode
     Append
 }
 
+public enum MediaLibraryScanStatus
+{
+    None,
+    Running,
+    Completed,
+    Canceled,
+    Failed
+}
+
 public sealed class WatchedFolder
 {
     public string Path { get; set; } = string.Empty;
     public bool Locked { get; set; }
     public bool Visible { get; set; } = true;
+}
+
+public sealed class WatchedFolderScanSnapshot
+{
+    public string Path { get; set; } = string.Empty;
+    public bool Exists { get; set; }
+    public int TopLevelMediaCount { get; set; }
+    public long LatestTopLevelMediaModifiedAt { get; set; }
+    public int TopLevelDirectoryCount { get; set; }
+    public long LatestTopLevelDirectoryModifiedAt { get; set; }
+    public long CompletedAt { get; set; }
+    public bool HadErrors { get; set; }
+}
+
+public sealed class MediaLibraryScanState
+{
+    private MediaLibraryScanStatus _state;
+
+    [JsonIgnore]
+    public MediaLibraryScanStatus State
+    {
+        get => _state;
+        set => _state = value;
+    }
+
+    public string Status
+    {
+        get => _state == MediaLibraryScanStatus.None ? string.Empty : _state.ToString();
+        set => _state = ParseStatus(value);
+    }
+
+    public string Operation { get; set; } = string.Empty;
+    public long StartedAt { get; set; }
+    public long? FinishedAt { get; set; }
+    public int? AddedOrUpdated { get; set; }
+    public string? Error { get; set; }
+
+    public static MediaLibraryScanStatus ParseStatus(string? status)
+    {
+        return Enum.TryParse<MediaLibraryScanStatus>(status?.Trim(), ignoreCase: true, out var parsed)
+            ? parsed
+            : MediaLibraryScanStatus.None;
+    }
 }
 
 public sealed class MediaFile
@@ -42,6 +95,8 @@ public sealed class MediaFile
     public long ModifiedAt { get; set; }
     public long? LastPlayed { get; set; }
     public int? PlayCount { get; set; }
+    public string? ContentHash { get; set; }
+    public int FingerprintVersion { get; set; }
     public List<string> Tags { get; set; } = new();
 }
 

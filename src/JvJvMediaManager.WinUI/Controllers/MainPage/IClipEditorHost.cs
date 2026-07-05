@@ -27,7 +27,7 @@ public interface IClipEditorHost
 
     Task AddOutputFilesAsync(IEnumerable<string> paths);
 
-    void RegisterOutputPaths(IEnumerable<string> paths);
+    Task RegisterOutputPathsAsync(IEnumerable<string> paths);
 
     void ShowControls();
 }

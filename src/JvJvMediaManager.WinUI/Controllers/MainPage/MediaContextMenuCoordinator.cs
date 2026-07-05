@@ -24,16 +24,22 @@ public sealed class MediaContextMenuCoordinator
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _applyTagEditorAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _addToPlaylistAsync;
     private readonly Func<IReadOnlyList<MediaItemViewModel>, Task> _deleteSelectionAsync;
+    private readonly Action<IReadOnlyList<MediaItemViewModel>> _openInNewWindows;
     private readonly MenuFlyout _flyout;
+    private readonly MenuFlyoutItem _openInNewWindowItem;
     private readonly MenuFlyoutItem _openFolderItem;
     private readonly MenuFlyoutItem _focusInLibraryItem;
     private readonly MenuFlyoutItem _editTagsItem;
+    private readonly MenuFlyoutItem _showShortcutTagHintItem;
+    private readonly MenuFlyoutSeparator _showShortcutTagHintSeparator;
     private readonly MenuFlyoutSubItem _addToPlaylistItem;
     private readonly MenuFlyoutItem _removeFromPlaylistItem;
     private readonly MenuFlyoutSeparator _deleteSeparator;
     private readonly MenuFlyoutItem _deleteItem;
 
     private IReadOnlyList<MediaItemViewModel> _currentSelection = Array.Empty<MediaItemViewModel>();
+    private Action? _showShortcutTagHintAction;
+    private string? _shortcutTagHintText;
 
     public MediaContextMenuCoordinator(
         LibraryShellViewModel viewModel,
@@ -41,7 +47,8 @@ public sealed class MediaContextMenuCoordinator
         Func<IReadOnlyList<MediaItemViewModel>, Task> focusInMediaLibraryAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> applyTagEditorAsync,
         Func<IReadOnlyList<MediaItemViewModel>, Task> addToPlaylistAsync,
-        Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync)
+        Func<IReadOnlyList<MediaItemViewModel>, Task> deleteSelectionAsync,
+        Action<IReadOnlyList<MediaItemViewModel>> openInNewWindows)
     {
         _viewModel = viewModel;
         _dialogService = dialogService;
@@ -49,16 +56,21 @@ public sealed class MediaContextMenuCoordinator
         _applyTagEditorAsync = applyTagEditorAsync;
         _addToPlaylistAsync = addToPlaylistAsync;
         _deleteSelectionAsync = deleteSelectionAsync;
+        _openInNewWindows = openInNewWindows;
 
         _flyout = new MenuFlyout();
+        _openInNewWindowItem = CreateMenuItem("在新窗口中打开", string.Empty, OpenInNewWindowItem_Click);
         _openFolderItem = CreateMenuItem("打开所在目录", OpenFolderShortcutText, OpenFolderItem_Click);
         _focusInLibraryItem = CreateMenuItem("在媒体库中聚焦当前媒体", FocusInLibraryShortcutText, FocusInLibraryItem_Click);
         _editTagsItem = CreateMenuItem("编辑标签", EditTagsShortcutText, EditTagsItem_Click);
+        _showShortcutTagHintItem = CreateMenuItem("显示快捷加tag", string.Empty, ShowShortcutTagHintItem_Click);
+        _showShortcutTagHintSeparator = new MenuFlyoutSeparator();
         _addToPlaylistItem = new MenuFlyoutSubItem { Text = "加入播放列表" };
         _removeFromPlaylistItem = CreateMenuItem(string.Empty, RemoveFromPlaylistShortcutText, RemoveFromPlaylistItem_Click);
         _deleteSeparator = new MenuFlyoutSeparator();
         _deleteItem = CreateMenuItem("删除文件", DeleteShortcutText, DeleteItem_Click);
 
+        _flyout.Items.Add(_openInNewWindowItem);
         _flyout.Items.Add(_openFolderItem);
         _flyout.Items.Add(_focusInLibraryItem);
         _flyout.Items.Add(_editTagsItem);
@@ -67,7 +79,12 @@ public sealed class MediaContextMenuCoordinator
         _flyout.Items.Add(_deleteItem);
     }
 
-    public void ShowForTarget(FrameworkElement target, Windows.Foundation.Point position, IReadOnlyList<MediaItemViewModel> selected)
+    public async void ShowForTarget(
+        FrameworkElement target,
+        Windows.Foundation.Point position,
+        IReadOnlyList<MediaItemViewModel> selected,
+        Action? shortcutTagHintAction = null,
+        string? shortcutTagHintText = null)
     {
         if (selected.Count == 0)
         {
@@ -75,8 +92,20 @@ public sealed class MediaContextMenuCoordinator
         }
 
         _currentSelection = selected.ToArray();
-        RefreshMenuState();
-        _flyout.ShowAt(target, position);
+        _showShortcutTagHintAction = shortcutTagHintAction;
+        _shortcutTagHintText = shortcutTagHintText;
+        try
+        {
+            await RefreshMenuStateAsync();
+            _flyout.ShowAt(target, position);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException(
+                "MediaContextMenu",
+                $"ShowForTarget failed. SelectionCount={_currentSelection.Count}, Target={target.GetType().Name}.",
+                ex);
+        }
     }
 
     public static void OpenMediaFolder(MediaItemViewModel media)
@@ -106,10 +135,11 @@ public sealed class MediaContextMenuCoordinator
         return item;
     }
 
-    private void RefreshMenuState()
+    private async Task RefreshMenuStateAsync()
     {
         _editTagsItem.Text = _currentSelection.Count == 1 ? "编辑标签" : $"批量编辑标签 ({_currentSelection.Count})";
-        RefreshPlaylistItems();
+        await RefreshPlaylistItemsAsync();
+        RefreshShortcutTagHintItem();
 
         if (_viewModel.SelectedPlaylist != null)
         {
@@ -125,7 +155,29 @@ public sealed class MediaContextMenuCoordinator
         }
     }
 
-    private void RefreshPlaylistItems()
+    private void RefreshShortcutTagHintItem()
+    {
+        if (_showShortcutTagHintAction != null)
+        {
+            _showShortcutTagHintItem.Text = string.IsNullOrWhiteSpace(_shortcutTagHintText)
+                ? "显示快捷加tag"
+                : _shortcutTagHintText;
+
+            if (!_flyout.Items.Contains(_showShortcutTagHintItem))
+            {
+                var insertIndex = _flyout.Items.IndexOf(_addToPlaylistItem);
+                _flyout.Items.Insert(insertIndex, _showShortcutTagHintSeparator);
+                _flyout.Items.Insert(insertIndex + 1, _showShortcutTagHintItem);
+            }
+
+            return;
+        }
+
+        _ = _flyout.Items.Remove(_showShortcutTagHintItem);
+        _ = _flyout.Items.Remove(_showShortcutTagHintSeparator);
+    }
+
+    private async Task RefreshPlaylistItemsAsync()
     {
         _addToPlaylistItem.Items.Clear();
 
@@ -148,7 +200,7 @@ public sealed class MediaContextMenuCoordinator
                 };
                 
                 var allInPlaylist = selectedMediaIds.Count > 0 && 
-                    _viewModel.AreAllMediaInPlaylist(playlist.Id, selectedMediaIds);
+                    await _viewModel.AreAllMediaInPlaylistAsync(playlist.Id, selectedMediaIds);
                 
                 if (allInPlaylist)
                 {
@@ -176,88 +228,127 @@ public sealed class MediaContextMenuCoordinator
         OpenMediaFolder(_currentSelection[0]);
     }
 
-    private async void FocusInLibraryItem_Click(object sender, RoutedEventArgs e)
+    private void OpenInNewWindowItem_Click(object sender, RoutedEventArgs e)
     {
         if (_currentSelection.Count == 0)
         {
             return;
         }
 
-        AppTraceLogger.Log("MediaContextMenu", $"FocusInLibrary requested. SelectionCount={_currentSelection.Count}, MediaId='{_currentSelection[0].Id}'.");
-        await _focusInMediaLibraryAsync(_currentSelection);
+        AppTraceLogger.Log("MediaContextMenu", $"OpenInNewWindow requested. SelectionCount={_currentSelection.Count}.");
+        _openInNewWindows(_currentSelection);
+    }
+
+    private async void FocusInLibraryItem_Click(object sender, RoutedEventArgs e)
+    {
+        await ExecuteMenuActionAsync(async () =>
+        {
+            if (_currentSelection.Count == 0)
+            {
+                return;
+            }
+
+            AppTraceLogger.Log("MediaContextMenu", $"FocusInLibrary requested. SelectionCount={_currentSelection.Count}, MediaId='{_currentSelection[0].Id}'.");
+            await _focusInMediaLibraryAsync(_currentSelection);
+        }, "在媒体库中定位失败");
     }
 
     private async void EditTagsItem_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentSelection.Count == 0)
+        await ExecuteMenuActionAsync(async () =>
         {
-            return;
-        }
+            if (_currentSelection.Count == 0)
+            {
+                return;
+            }
 
-        await _applyTagEditorAsync(_currentSelection);
+            await _applyTagEditorAsync(_currentSelection);
+        }, "编辑标签失败");
+    }
+
+    private void ShowShortcutTagHintItem_Click(object sender, RoutedEventArgs e)
+    {
+        _showShortcutTagHintAction?.Invoke();
     }
 
     private async void CreateNewPlaylistItem_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentSelection.Count == 0)
+        await ExecuteMenuActionAsync(async () =>
         {
-            return;
-        }
+            if (_currentSelection.Count == 0)
+            {
+                return;
+            }
 
-        var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建并添加");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
+            var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建并添加");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
 
-        try
-        {
             AppTraceLogger.Log("MediaContextMenu", $"CreateNewPlaylistAndAdd start. SelectionCount={_currentSelection.Count}, NameLength={name.Length}.");
-            var playlist = _viewModel.CreatePlaylist(name);
+            var playlist = await _viewModel.CreatePlaylistAsync(name);
             await _viewModel.AddMediaToPlaylistAsync(playlist.Id, _currentSelection);
             PlaylistModified?.Invoke(playlist.Id);
             AppTraceLogger.Log("MediaContextMenu", $"CreateNewPlaylistAndAdd completed. PlaylistId='{playlist.Id}', SelectionCount={_currentSelection.Count}.");
-        }
-        catch (Exception ex)
-        {
-            AppTraceLogger.LogException("MediaContextMenu", $"CreateNewPlaylistAndAdd failed. SelectionCount={_currentSelection.Count}.", ex);
-            await _dialogService.ShowInfoAsync("创建失败", ex.Message);
-        }
+        }, "创建失败");
     }
 
     private async void QuickPlaylistItem_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuFlyoutItem item || item.Tag is not string playlistId || _currentSelection.Count == 0)
+        await ExecuteMenuActionAsync(async () =>
         {
-            return;
-        }
+            if (sender is not MenuFlyoutItem item || item.Tag is not string playlistId || _currentSelection.Count == 0)
+            {
+                return;
+            }
 
-        AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd start. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
-        await _viewModel.AddMediaToPlaylistAsync(playlistId, _currentSelection);
-        PlaylistModified?.Invoke(playlistId);
-        AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd completed. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
+            AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd start. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
+            await _viewModel.AddMediaToPlaylistAsync(playlistId, _currentSelection);
+            PlaylistModified?.Invoke(playlistId);
+            AppTraceLogger.Log("MediaContextMenu", $"QuickPlaylistAdd completed. PlaylistId='{playlistId}', SelectionCount={_currentSelection.Count}.");
+        }, "加入播放列表失败");
     }
 
     private async void RemoveFromPlaylistItem_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentSelection.Count == 0 || _viewModel.SelectedPlaylist == null)
+        await ExecuteMenuActionAsync(async () =>
         {
-            return;
-        }
+            if (_currentSelection.Count == 0 || _viewModel.SelectedPlaylist == null)
+            {
+                return;
+            }
 
-        AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist start. PlaylistId='{_viewModel.SelectedPlaylist.Id}', SelectionCount={_currentSelection.Count}.");
-        await _viewModel.RemoveMediaFromSelectedPlaylistAsync(_currentSelection);
-        AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist completed. SelectionCount={_currentSelection.Count}.");
+            AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist start. PlaylistId='{_viewModel.SelectedPlaylist.Id}', SelectionCount={_currentSelection.Count}.");
+            await _viewModel.RemoveMediaFromSelectedPlaylistAsync(_currentSelection);
+            AppTraceLogger.Log("MediaContextMenu", $"RemoveFromPlaylist completed. SelectionCount={_currentSelection.Count}.");
+        }, "移出播放列表失败");
     }
 
     private async void DeleteItem_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentSelection.Count == 0)
+        await ExecuteMenuActionAsync(async () =>
         {
-            return;
-        }
+            if (_currentSelection.Count == 0)
+            {
+                return;
+            }
 
-        AppTraceLogger.Log("MediaContextMenu", $"DeleteSelection requested. SelectionCount={_currentSelection.Count}.");
-        await _deleteSelectionAsync(_currentSelection);
+            AppTraceLogger.Log("MediaContextMenu", $"DeleteSelection requested. SelectionCount={_currentSelection.Count}.");
+            await _deleteSelectionAsync(_currentSelection);
+        }, "删除失败");
+    }
+
+    private async Task ExecuteMenuActionAsync(Func<Task> action, string failureTitle)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaContextMenu", $"Menu action failed. FailureTitle='{failureTitle}', SelectionCount={_currentSelection.Count}.", ex);
+            await _dialogService.ShowInfoAsync(failureTitle, ex.Message);
+        }
     }
 }

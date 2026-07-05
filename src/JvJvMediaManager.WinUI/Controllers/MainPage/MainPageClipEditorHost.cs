@@ -7,18 +7,18 @@ internal sealed class MainPageClipEditorHost : IClipEditorHost
 {
     private readonly LibraryShellViewModel _library;
     private readonly VideoPlaybackController _videoPlaybackController;
-    private readonly Action<IEnumerable<string>> _registerOutputPaths;
+    private readonly Func<IEnumerable<string>, Task> _registerOutputPathsAsync;
     private readonly Action _showControls;
 
     public MainPageClipEditorHost(
         LibraryShellViewModel library,
         VideoPlaybackController videoPlaybackController,
-        Action<IEnumerable<string>> registerOutputPaths,
+        Func<IEnumerable<string>, Task> registerOutputPathsAsync,
         Action showControls)
     {
         _library = library;
         _videoPlaybackController = videoPlaybackController;
-        _registerOutputPaths = registerOutputPaths;
+        _registerOutputPathsAsync = registerOutputPathsAsync;
         _showControls = showControls;
     }
 
@@ -65,9 +65,9 @@ internal sealed class MainPageClipEditorHost : IClipEditorHost
         return _library.AddFilesAsync(paths);
     }
 
-    public void RegisterOutputPaths(IEnumerable<string> paths)
+    public Task RegisterOutputPathsAsync(IEnumerable<string> paths)
     {
-        _registerOutputPaths(paths);
+        return _registerOutputPathsAsync(paths);
     }
 
     public void ShowControls()

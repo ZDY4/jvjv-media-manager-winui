@@ -1,26 +1,5 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
-
 namespace JvJvMediaManager.Utilities;
 
-public abstract class ObservableObject : INotifyPropertyChanged
+public abstract class ObservableObject : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-        {
-            return false;
-        }
-
-        field = value;
-        OnPropertyChanged(propertyName);
-        return true;
-    }
-
-    protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
 }

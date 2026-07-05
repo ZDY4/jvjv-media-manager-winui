@@ -16,6 +16,9 @@ public sealed partial class PlaylistRailView : UserControl
 {
     private readonly Dictionary<string, DispatcherQueueTimer> _highlightTimers = new();
     private readonly DispatcherQueueTimer _playlistTooltipTimer;
+    private readonly PointerEventHandler _pointerEnteredHandler;
+    private readonly PointerEventHandler _pointerMovedHandler;
+    private readonly PointerEventHandler _pointerExitedHandler;
     private Grid? _playlistTooltipOverlayRoot;
     private Canvas? _playlistTooltipHost;
     private Border? _playlistTooltipBorder;
@@ -31,14 +34,18 @@ public sealed partial class PlaylistRailView : UserControl
     {
         InitializeComponent();
         InitializePlaylistTooltipOverlay();
+        _pointerEnteredHandler = PlaylistRailListView_PointerEntered;
+        _pointerMovedHandler = PlaylistRailListView_PointerMoved;
+        _pointerExitedHandler = PlaylistRailListView_PointerExited;
         _playlistTooltipTimer = DispatcherQueue.CreateTimer();
         _playlistTooltipTimer.Interval = TimeSpan.FromMilliseconds(80);
         _playlistTooltipTimer.Tick += PlaylistTooltipTimer_Tick;
         PlaylistRailListView.DragOver += PlaylistRailListView_DragOver;
         PlaylistRailListView.Drop += PlaylistRailListView_Drop;
-        PlaylistRailListView.AddHandler(UIElement.PointerEnteredEvent, new PointerEventHandler(PlaylistRailListView_PointerEntered), true);
-        PlaylistRailListView.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(PlaylistRailListView_PointerMoved), true);
-        PlaylistRailListView.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler(PlaylistRailListView_PointerExited), true);
+        PlaylistRailListView.AddHandler(UIElement.PointerEnteredEvent, _pointerEnteredHandler, true);
+        PlaylistRailListView.AddHandler(UIElement.PointerMovedEvent, _pointerMovedHandler, true);
+        PlaylistRailListView.AddHandler(UIElement.PointerExitedEvent, _pointerExitedHandler, true);
+        Unloaded += PlaylistRailView_Unloaded;
     }
 
     private void InitializePlaylistTooltipOverlay()
@@ -90,6 +97,26 @@ public sealed partial class PlaylistRailView : UserControl
     public void HighlightPlaylist(string playlistId)
     {
         DispatcherQueue.TryEnqueue(() => TryHighlightPlaylist(playlistId, remainingAttempts: 4));
+    }
+
+    private void PlaylistRailView_Unloaded(object sender, RoutedEventArgs e)
+    {
+        Unloaded -= PlaylistRailView_Unloaded;
+        _playlistTooltipTimer.Stop();
+        _playlistTooltipTimer.Tick -= PlaylistTooltipTimer_Tick;
+        PlaylistRailListView.DragOver -= PlaylistRailListView_DragOver;
+        PlaylistRailListView.Drop -= PlaylistRailListView_Drop;
+        PlaylistRailListView.RemoveHandler(UIElement.PointerEnteredEvent, _pointerEnteredHandler);
+        PlaylistRailListView.RemoveHandler(UIElement.PointerMovedEvent, _pointerMovedHandler);
+        PlaylistRailListView.RemoveHandler(UIElement.PointerExitedEvent, _pointerExitedHandler);
+        foreach (var timer in _highlightTimers.Values)
+        {
+            timer.Stop();
+        }
+
+        _highlightTimers.Clear();
+        PlaylistDropRequested = null;
+        HidePlaylistTooltip();
     }
 
     private void TryHighlightPlaylist(string playlistId, int remainingAttempts)
@@ -159,18 +186,25 @@ public sealed partial class PlaylistRailView : UserControl
 
     private async void PlaylistRailListView_Drop(object sender, DragEventArgs e)
     {
-        var playlist = ResolvePlaylistFromEventSource(e.OriginalSource as DependencyObject);
-        if (playlist == null || !TryGetDraggedMediaIds(e.DataView, out var mediaIds))
+        try
         {
-            return;
-        }
+            var playlist = ResolvePlaylistFromEventSource(e.OriginalSource as DependencyObject);
+            if (playlist == null || !TryGetDraggedMediaIds(e.DataView, out var mediaIds))
+            {
+                return;
+            }
 
-        if (PlaylistDropRequested != null)
+            if (PlaylistDropRequested != null)
+            {
+                await PlaylistDropRequested.Invoke(playlist.Id, mediaIds);
+            }
+
+            e.Handled = true;
+        }
+        catch (Exception ex)
         {
-            await PlaylistDropRequested.Invoke(playlist.Id, mediaIds);
+            AppTraceLogger.LogException("PlaylistRail", "PlaylistRailListView_Drop failed.", ex);
         }
-
-        e.Handled = true;
     }
 
     private void PlaylistRailListView_PointerEntered(object sender, PointerRoutedEventArgs e)

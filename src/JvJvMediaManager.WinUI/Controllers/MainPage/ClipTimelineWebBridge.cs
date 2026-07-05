@@ -77,45 +77,59 @@ internal sealed class ClipTimelineWebBridge : IClipTimelineWebBridge
 
     private async void WebView_NavigationCompleted(WebView2 sender, CoreWebView2NavigationCompletedEventArgs args)
     {
-        if (sender.CoreWebView2 != null)
+        try
         {
-            sender.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
-            sender.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            sender.CoreWebView2.Settings.AreDevToolsEnabled = true;
-        }
+            if (sender.CoreWebView2 != null)
+            {
+                sender.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                sender.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                sender.CoreWebView2.Settings.AreDevToolsEnabled = true;
+            }
 
-        if (!args.IsSuccess)
+            if (!args.IsSuccess)
+            {
+                return;
+            }
+
+            await RestoreAndFlushPendingMessagesAsync();
+        }
+        catch (Exception ex)
         {
-            return;
+            AppTraceLogger.LogException("ClipTimelineWebBridge", "WebView_NavigationCompleted failed.", ex);
         }
-
-        await RestoreAndFlushPendingMessagesAsync();
     }
 
     private async void WebView_WebMessageReceived(WebView2 sender, CoreWebView2WebMessageReceivedEventArgs args)
     {
-        using var document = JsonDocument.Parse(args.WebMessageAsJson);
-        var root = document.RootElement;
-        if (!root.TryGetProperty("type", out var typeElement))
+        try
         {
-            return;
-        }
+            using var document = JsonDocument.Parse(args.WebMessageAsJson);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("type", out var typeElement))
+            {
+                return;
+            }
 
-        var type = typeElement.GetString() ?? string.Empty;
-        var payload = root.TryGetProperty("payload", out var payloadElement)
-            ? payloadElement.Clone()
-            : JsonDocument.Parse("{}").RootElement.Clone();
+            var type = typeElement.GetString() ?? string.Empty;
+            var payload = root.TryGetProperty("payload", out var payloadElement)
+                ? payloadElement.Clone()
+                : JsonDocument.Parse("{}").RootElement.Clone();
 
-        if (string.Equals(type, "ready", StringComparison.Ordinal))
-        {
-            IsReady = true;
-            StatusText = string.Empty;
-            await RestoreAndFlushPendingMessagesAsync();
+            if (string.Equals(type, "ready", StringComparison.Ordinal))
+            {
+                IsReady = true;
+                StatusText = string.Empty;
+                await RestoreAndFlushPendingMessagesAsync();
+                CommandReceived?.Invoke(this, new ClipTimelineWebCommand(type, payload));
+                return;
+            }
+
             CommandReceived?.Invoke(this, new ClipTimelineWebCommand(type, payload));
-            return;
         }
-
-        CommandReceived?.Invoke(this, new ClipTimelineWebCommand(type, payload));
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("ClipTimelineWebBridge", "WebView_WebMessageReceived failed.", ex);
+        }
     }
 
     private Task FlushPendingMessagesAsync()

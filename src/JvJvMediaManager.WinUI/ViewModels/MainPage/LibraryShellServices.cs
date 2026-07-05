@@ -1,5 +1,6 @@
 using JvJvMediaManager.Data;
 using JvJvMediaManager.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.ViewModels.MainPage;
 
@@ -29,8 +30,18 @@ public sealed class LibraryShellServices
 
     public TimelineThumbnailStripService TimelineThumbnails { get; }
 
-    public static LibraryShellServices CreateDefault()
+    public static LibraryShellServices CreateDefault(IServiceProvider? serviceProvider = null)
     {
+        if (serviceProvider != null)
+        {
+            return serviceProvider.GetRequiredService<LibraryShellServices>();
+        }
+
+        if (Microsoft.UI.Xaml.Application.Current is App app)
+        {
+            return app.Services.GetRequiredService<LibraryShellServices>();
+        }
+
         var settings = new SettingsService();
         var database = new MediaDb(settings.DataDir);
         database.Initialize();

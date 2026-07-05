@@ -1,4 +1,6 @@
 using Microsoft.UI.Xaml;
+using Microsoft.Extensions.DependencyInjection;
+using JvJvMediaManager.Services;
 using JvJvMediaManager.Services.MainPage;
 using JvJvMediaManager.Utilities;
 
@@ -7,11 +9,15 @@ namespace JvJvMediaManager;
 public partial class App : Application
 {
     public static Window? MainWindow { get; private set; }
-    public MainPageModuleFactory MainPageModules { get; } = new();
+    public ServiceProvider Services { get; }
+    public MainPageModuleFactory MainPageModules { get; }
+    private int _servicesDisposed;
 
     public App()
     {
         Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+        Services = AppServiceRegistration.CreateServiceProvider();
+        MainPageModules = Services.GetRequiredService<MainPageModuleFactory>();
         AppTraceLogger.LogSessionStart();
         UnhandledException += App_UnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
@@ -32,6 +38,23 @@ public partial class App : Application
     private void App_UnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
         WriteExceptionLog("WinUI UnhandledException", e.Exception);
+    }
+
+    internal void DisposeServices()
+    {
+        if (Interlocked.Exchange(ref _servicesDisposed, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            Services.Dispose();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("App", "Service provider dispose failed.", ex);
+        }
     }
 
     private static void CurrentDomain_UnhandledException(object sender, System.UnhandledExceptionEventArgs e)

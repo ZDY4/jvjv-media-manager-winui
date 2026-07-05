@@ -1,50 +1,26 @@
+using ObservablePropertyAttribute = CommunityToolkit.Mvvm.ComponentModel.ObservablePropertyAttribute;
 using Microsoft.UI.Xaml;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.ViewModels.MainPage;
 
-public sealed class VideoPlaybackViewModel : ObservableObject
+public sealed partial class VideoPlaybackViewModel : ObservableObject
 {
-    private Visibility _controlBarVisibility = Visibility.Collapsed;
-    private double _controlBarOpacity;
-    private string _currentTimeText = "0:00";
-    private string _totalTimeText = "0:00";
-    private bool _isFullScreen;
-    private bool _isVolumeFlyoutOpen;
+    [ObservableProperty]
+    public partial Visibility ControlBarVisibility { get; set; } = Visibility.Collapsed;
 
-    public Visibility ControlBarVisibility
-    {
-        get => _controlBarVisibility;
-        set => SetProperty(ref _controlBarVisibility, value);
-    }
+    [ObservableProperty]
+    public partial double ControlBarOpacity { get; set; }
 
-    public double ControlBarOpacity
-    {
-        get => _controlBarOpacity;
-        set => SetProperty(ref _controlBarOpacity, value);
-    }
+    [ObservableProperty]
+    public partial string CurrentTimeText { get; set; } = "0:00";
 
-    public string CurrentTimeText
-    {
-        get => _currentTimeText;
-        set => SetProperty(ref _currentTimeText, value);
-    }
+    [ObservableProperty]
+    public partial string TotalTimeText { get; set; } = "0:00";
 
-    public string TotalTimeText
-    {
-        get => _totalTimeText;
-        set => SetProperty(ref _totalTimeText, value);
-    }
+    [ObservableProperty]
+    public partial bool IsFullScreen { get; set; }
 
-    public bool IsFullScreen
-    {
-        get => _isFullScreen;
-        set => SetProperty(ref _isFullScreen, value);
-    }
-
-    public bool IsVolumeFlyoutOpen
-    {
-        get => _isVolumeFlyoutOpen;
-        set => SetProperty(ref _isVolumeFlyoutOpen, value);
-    }
+    [ObservableProperty]
+    public partial bool IsVolumeFlyoutOpen { get; set; }
 }

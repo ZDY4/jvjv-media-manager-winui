@@ -95,6 +95,16 @@
                       BorderThickness="0"
                       Padding="0"
                       Margin="0,8,0,6">
+            <ToggleButton.ContextFlyout>
+                <MenuFlyout>
+                    <MenuFlyoutItem Text="刷新此文件夹"
+                                    Command="{Binding RefreshFolderCommand}">
+                        <MenuFlyoutItem.Icon>
+                            <FontIcon Glyph="&#xE72C;" />
+                        </MenuFlyoutItem.Icon>
+                    </MenuFlyoutItem>
+                </MenuFlyout>
+            </ToggleButton.ContextFlyout>
             <ToolTipService.ToolTip>
                 <ToolTip Content="{Binding FolderPath}" Style="{StaticResource MediaTooltipStyle}" />
             </ToolTipService.ToolTip>
@@ -103,16 +113,19 @@
                   Padding="2,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <FontIcon Grid.Column="0"
+                <Border Grid.Column="0"
+                        Width="{Binding HeaderIndent}" />
+                <FontIcon Grid.Column="1"
                           Glyph="{Binding CollapseGlyph}"
                           FontSize="12"
                           Foreground="{ThemeResource MutedTextBrush}"
                           VerticalAlignment="Center" />
-                <Grid Grid.Column="1"
+                <Grid Grid.Column="2"
                       VerticalAlignment="Center">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -131,7 +144,7 @@
                                Fill="{ThemeResource SurfaceStrokeBrush}"
                                VerticalAlignment="Center" />
                 </Grid>
-                <TextBlock Grid.Column="2"
+                <TextBlock Grid.Column="3"
                            Text="{Binding CountText}"
                            Foreground="{ThemeResource MutedTextBrush}"
                            FontSize="11"
@@ -142,6 +155,8 @@
 
     <DataTemplate x:Key="ListItemTemplate" x:DataType="viewModels:MediaItemViewModel">
         <Border Padding="6"
+                AutomationProperties.AutomationId="{Binding Id}"
+                AutomationProperties.Name="{Binding FileName}"
                 Background="{ThemeResource MediaCardBrush}"
                 BorderThickness="0"
                 CornerRadius="{ThemeResource RadiusMedium}">
@@ -244,6 +259,8 @@
 
     <DataTemplate x:Key="GridItemTemplate" x:DataType="viewModels:MediaItemViewModel">
         <Grid HorizontalAlignment="Stretch"
+              AutomationProperties.AutomationId="{Binding Id}"
+              AutomationProperties.Name="{Binding FileName}"
               VerticalAlignment="Stretch">
             <ToolTipService.ToolTip>
                 <ToolTip Content="{Binding FileSystemPath}" Style="{StaticResource MediaTooltipStyle}" />

@@ -8,7 +8,10 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/MainPage/MediaLibraryResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
-            <CollectionViewSource x:Key="GroupedMediaItemsSource"
+            <CollectionViewSource x:Key="ListGroupedMediaItemsSource"
+                                  IsSourceGrouped="True"
+                                  ItemsPath="VisibleItems" />
+            <CollectionViewSource x:Key="GridGroupedMediaItemsSource"
                                   IsSourceGrouped="True"
                                   ItemsPath="VisibleItems" />
         </ResourceDictionary>
@@ -18,12 +21,15 @@
           x:FieldModifier="public">
         <ListView x:Name="ListView"
                   x:FieldModifier="public"
-                  ItemsSource="{Binding Source={StaticResource GroupedMediaItemsSource}}"
+                  AutomationProperties.AutomationId="MediaListView"
+                  AutomationProperties.Name="媒体列表"
+                  ItemsSource="{Binding Source={StaticResource ListGroupedMediaItemsSource}}"
                   Visibility="{Binding ListViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
                   ItemTemplate="{StaticResource ListItemTemplate}"
-                  DataFetchSize="1"
+                  DataFetchSize="4"
+                  IncrementalLoadingThreshold="3"
                   SelectionMode="Extended"
                   CanDragItems="True"
                   IsItemClickEnabled="False">
@@ -34,13 +40,16 @@
 
         <GridView x:Name="GridView"
                   x:FieldModifier="public"
-                  ItemsSource="{Binding Source={StaticResource GroupedMediaItemsSource}}"
+                  AutomationProperties.AutomationId="MediaGridView"
+                  AutomationProperties.Name="媒体网格"
+                  ItemsSource="{Binding Source={StaticResource GridGroupedMediaItemsSource}}"
                   Tag="{Binding IconSize}"
                   Visibility="{Binding GridViewVisibility}"
                   Background="Transparent"
                   ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
                   ItemTemplate="{StaticResource GridItemTemplate}"
-                  DataFetchSize="1"
+                  DataFetchSize="5"
+                  IncrementalLoadingThreshold="4"
                   SelectionMode="Extended"
                   CanDragItems="True"
                   IsItemClickEnabled="False">

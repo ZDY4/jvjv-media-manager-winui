@@ -23,6 +23,12 @@ public sealed class ImagePreviewController
     private readonly ImageViewportView _imageViewportView;
     private readonly UIElement _playerOverlay;
     private readonly Action _refreshNavigationHotspots;
+    private readonly PointerEventHandler _pointerPressedHandler;
+    private readonly PointerEventHandler _pointerMovedHandler;
+    private readonly PointerEventHandler _pointerReleasedHandler;
+    private readonly PointerEventHandler _pointerCaptureLostHandler;
+    private readonly PointerEventHandler _pointerWheelChangedHandler;
+    private readonly DoubleTappedEventHandler _doubleTappedHandler;
 
     private int _imageLoadVersion;
     private bool _isImageDragging;
@@ -35,6 +41,7 @@ public sealed class ImagePreviewController
     private double _imageZoomFactor = MinImageZoomFactor;
     private double _imageTranslationX;
     private double _imageTranslationY;
+    private bool _isDisposed;
     private UIElement? _imageDragCaptureOwner;
 
     public ImagePreviewController(
@@ -49,14 +56,20 @@ public sealed class ImagePreviewController
         _imageViewportView = imageViewportView;
         _playerOverlay = playerOverlay;
         _refreshNavigationHotspots = refreshNavigationHotspots;
+        _pointerPressedHandler = ImageScrollViewer_PointerPressed;
+        _pointerMovedHandler = ImageScrollViewer_PointerMoved;
+        _pointerReleasedHandler = ImageScrollViewer_PointerReleased;
+        _pointerCaptureLostHandler = ImageScrollViewer_PointerCaptureLost;
+        _pointerWheelChangedHandler = ImageScrollViewer_PointerWheelChanged;
+        _doubleTappedHandler = ImageScrollViewer_DoubleTapped;
 
         _imageViewportView.ImageScrollViewer.SizeChanged += ImageScrollViewer_SizeChanged;
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(ImageScrollViewer_PointerPressed), true);
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(ImageScrollViewer_PointerMoved), true);
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(ImageScrollViewer_PointerReleased), true);
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler(ImageScrollViewer_PointerCaptureLost), true);
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(ImageScrollViewer_PointerWheelChanged), true);
-        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.DoubleTappedEvent, new DoubleTappedEventHandler(ImageScrollViewer_DoubleTapped), true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerPressedEvent, _pointerPressedHandler, true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerMovedEvent, _pointerMovedHandler, true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerReleasedEvent, _pointerReleasedHandler, true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerCaptureLostEvent, _pointerCaptureLostHandler, true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.PointerWheelChangedEvent, _pointerWheelChangedHandler, true);
+        _imageViewportView.ImageScrollViewer.AddHandler(UIElement.DoubleTappedEvent, _doubleTappedHandler, true);
         _imageViewportView.PreviewImageElement.ImageOpened += PreviewImageElement_ImageOpened;
         _viewModel.ZoomText = "100%";
     }
@@ -72,12 +85,32 @@ public sealed class ImagePreviewController
 
     public void Dispose()
     {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
+        EndImageDrag();
+        Interlocked.Increment(ref _imageLoadVersion);
         _imageViewportView.ImageScrollViewer.SizeChanged -= ImageScrollViewer_SizeChanged;
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.PointerPressedEvent, _pointerPressedHandler);
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.PointerMovedEvent, _pointerMovedHandler);
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.PointerReleasedEvent, _pointerReleasedHandler);
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.PointerCaptureLostEvent, _pointerCaptureLostHandler);
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.PointerWheelChangedEvent, _pointerWheelChangedHandler);
+        _imageViewportView.ImageScrollViewer.RemoveHandler(UIElement.DoubleTappedEvent, _doubleTappedHandler);
         _imageViewportView.PreviewImageElement.ImageOpened -= PreviewImageElement_ImageOpened;
+        _imageViewportView.PreviewImageElement.Source = null;
     }
 
     public void ShowImage(MediaItemViewModel media)
     {
+        if (_isDisposed)
+        {
+            return;
+        }
+
         _imageViewportView.ImageScrollViewer.Visibility = Visibility.Visible;
         SetPreviewImageVisible(false);
         Interlocked.Increment(ref _imageLoadVersion);
@@ -88,6 +121,11 @@ public sealed class ImagePreviewController
 
     public void Clear()
     {
+        if (_isDisposed)
+        {
+            return;
+        }
+
         EndImageDrag();
         Interlocked.Increment(ref _imageLoadVersion);
         _pendingImageFitMediaId = null;

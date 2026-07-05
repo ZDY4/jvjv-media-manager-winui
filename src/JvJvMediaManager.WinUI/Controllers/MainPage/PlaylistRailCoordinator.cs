@@ -95,36 +95,36 @@ public sealed class PlaylistRailCoordinator : IDisposable
 
     private async void CreatePlaylist_Click(object sender, RoutedEventArgs e)
     {
-        var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建");
-        if (string.IsNullOrWhiteSpace(name))
+        await ExecutePlaylistActionAsync(async () =>
         {
-            return;
-        }
+            var name = await _dialogService.ShowTextInputAsync("新建播放列表", "播放列表名称", string.Empty, "创建");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
 
-        try
-        {
             AppTraceLogger.Log("PlaylistRail", $"CreatePlaylist requested from rail. NameLength={name.Length}.");
-            _viewModel.CreatePlaylist(name);
+            await _viewModel.CreatePlaylistAsync(name);
             _libraryPaneController.SetPaneOpen(true);
-        }
-        catch (Exception ex)
-        {
-            AppTraceLogger.LogException("PlaylistRail", "CreatePlaylist failed from rail.", ex);
-            await _showInfoAsync("创建失败", ex.Message);
-        }
+        }, "创建失败");
     }
 
     private async void SelectedPlaylistTitleButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.SelectedPlaylist != null)
+        await ExecutePlaylistActionAsync(async () =>
         {
-            await RenamePlaylistAsync(_viewModel.SelectedPlaylist);
-        }
+            if (_viewModel.SelectedPlaylist != null)
+            {
+                await RenamePlaylistAsync(_viewModel.SelectedPlaylist);
+            }
+        }, "重命名失败");
     }
 
-    private void PlaylistRailListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
+    private async void PlaylistRailListView_DragItemsCompleted(ListViewBase sender, DragItemsCompletedEventArgs args)
     {
-        _viewModel.UpdatePlaylistOrder(_viewModel.Playlists.ToList());
+        await ExecutePlaylistActionAsync(
+            () => _viewModel.UpdatePlaylistOrderAsync(_viewModel.Playlists.ToList()),
+            "排序失败");
     }
 
     private void PlaylistRailListView_RightTapped(object sender, RightTappedRoutedEventArgs e)
@@ -149,13 +149,19 @@ public sealed class PlaylistRailCoordinator : IDisposable
         var flyout = new MenuFlyout();
 
         var renameItem = new MenuFlyoutItem { Text = "重命名" };
-        renameItem.Click += async (_, _) => await RenamePlaylistAsync(playlist);
+        renameItem.Click += async (_, _) => await ExecutePlaylistActionAsync(
+            () => RenamePlaylistAsync(playlist),
+            "重命名失败");
 
         var colorItem = new MenuFlyoutItem { Text = "更改颜色" };
-        colorItem.Click += async (_, _) => await ChangePlaylistColorAsync(playlist);
+        colorItem.Click += async (_, _) => await ExecutePlaylistActionAsync(
+            () => ChangePlaylistColorAsync(playlist),
+            "更改颜色失败");
 
         var deleteItem = new MenuFlyoutItem { Text = "删除" };
-        deleteItem.Click += async (_, _) => await DeletePlaylistAsync(playlist);
+        deleteItem.Click += async (_, _) => await ExecutePlaylistActionAsync(
+            () => DeletePlaylistAsync(playlist),
+            "删除失败");
 
         flyout.Items.Add(renameItem);
         flyout.Items.Add(colorItem);
@@ -174,7 +180,7 @@ public sealed class PlaylistRailCoordinator : IDisposable
         try
         {
             AppTraceLogger.Log("PlaylistRail", $"RenamePlaylist requested from rail. PlaylistId='{playlist.Id}', NameLength={name.Length}.");
-            _viewModel.RenamePlaylist(playlist.Id, name);
+            await _viewModel.RenamePlaylistAsync(playlist.Id, name);
         }
         catch (Exception ex)
         {
@@ -207,12 +213,25 @@ public sealed class PlaylistRailCoordinator : IDisposable
         try
         {
             AppTraceLogger.Log("PlaylistRail", $"ChangePlaylistColor requested. PlaylistId='{playlist.Id}', HasColor={!string.IsNullOrWhiteSpace(colorHex)}.");
-            _viewModel.SetPlaylistColor(playlist.Id, colorHex);
+            await _viewModel.SetPlaylistColorAsync(playlist.Id, colorHex);
         }
         catch (Exception ex)
         {
             AppTraceLogger.LogException("PlaylistRail", $"ChangePlaylistColor failed. PlaylistId='{playlist.Id}'.", ex);
             await _showInfoAsync("更改颜色失败", ex.Message);
+        }
+    }
+
+    private async Task ExecutePlaylistActionAsync(Func<Task> action, string failureTitle)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("PlaylistRail", $"Playlist action failed. FailureTitle='{failureTitle}'.", ex);
+            await _showInfoAsync(failureTitle, ex.Message);
         }
     }
 }

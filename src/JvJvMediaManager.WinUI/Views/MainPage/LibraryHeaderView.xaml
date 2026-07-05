@@ -50,6 +50,12 @@
                         ToolTipService.ToolTip="{Binding MediaFolderGroupToggleToolTip}">
                     <FontIcon Glyph="{Binding MediaFolderGroupToggleGlyph}" />
                 </Button>
+                <Button x:Name="MediaTypeFilterButton"
+                        x:FieldModifier="public"
+                        Style="{StaticResource SecondaryToolbarButtonStyle}"
+                        Content="{Binding MediaTypeFilterButtonText}"
+                        Padding="10,4"
+                        ToolTipService.ToolTip="{Binding MediaTypeFilterButtonToolTip}" />
                 <Button x:Name="SortButton"
                         x:FieldModifier="public"
                         Style="{StaticResource SecondaryToolbarButtonStyle}"
