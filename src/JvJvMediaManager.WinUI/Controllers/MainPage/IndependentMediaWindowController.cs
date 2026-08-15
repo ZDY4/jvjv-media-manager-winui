@@ -37,6 +37,22 @@ internal sealed class IndependentMediaWindowController
         return CurrentMedia;
     }
 
+    public MediaItemViewModel PlayOrSelect(IndependentMediaWindowMedia media)
+    {
+        var existingIndex = _mediaItems.FindIndex(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal));
+        if (existingIndex >= 0)
+        {
+            _currentIndex = existingIndex;
+            return CurrentMedia;
+        }
+
+        var viewModel = new MediaItemViewModel(media.ToMediaFile());
+        var insertIndex = Math.Min(_currentIndex + 1, _mediaItems.Count);
+        _mediaItems.Insert(insertIndex, viewModel);
+        _currentIndex = insertIndex;
+        return CurrentMedia;
+    }
+
     public DeletePlan BuildDeletePlan(string mediaId)
     {
         var removedIndex = _mediaItems.FindIndex(item => string.Equals(item.Id, mediaId, StringComparison.Ordinal));

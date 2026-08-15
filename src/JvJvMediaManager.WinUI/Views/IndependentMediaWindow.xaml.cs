@@ -1,9 +1,11 @@
+using System.Threading;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Windows.Graphics;
 using Windows.System;
+using Windows.ApplicationModel.DataTransfer;
 using JvJvMediaManager.Controllers.MainPage;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Services;
@@ -42,22 +44,27 @@ public sealed partial class IndependentMediaWindow : Window
     private readonly KeyEventHandler _playerPaneKeyDownHandler;
     private readonly PointerEventHandler _playerRootPointerPressedHandler;
     private readonly PointerEventHandler _videoPlayerPointerPressedHandler;
+    private readonly PointerEventHandler _playerNavigationHotspotPointerWheelHandler;
 
     private IntPtr _windowHandle;
-    private bool _isPlaybackControllerReady;
     private bool _isImagePreviewControllerReady;
     private bool _isNavigationHotspotPressed;
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDeletingCurrentMedia;
+    private int _isNavigationHotspotWheelNavigating;
     private BossKeyController? _bossKeyController;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
+    private readonly double _initialPositionSeconds;
+    private readonly bool _initialWasPlaying;
 
     internal IndependentMediaWindow(
         IReadOnlyList<IndependentMediaWindowMedia> mediaItems,
-        int initialIndex)
+        int initialIndex,
+        double initialPositionSeconds = 0,
+        bool initialWasPlaying = true)
     {
         if (mediaItems.Count == 0)
         {
@@ -68,7 +75,10 @@ public sealed partial class IndependentMediaWindow : Window
         _playerPaneKeyDownHandler = PlayerPane_KeyDown;
         _playerRootPointerPressedHandler = PlayerRoot_PointerPressed;
         _videoPlayerPointerPressedHandler = VideoPlayer_PointerPressed;
+        _playerNavigationHotspotPointerWheelHandler = PlayerNavigationHotspot_PointerWheelChanged;
         _controller = new IndependentMediaWindowController(mediaItems, initialIndex);
+        _initialPositionSeconds = initialPositionSeconds;
+        _initialWasPlaying = initialWasPlaying;
         var libraryServices = LibraryShellServices.CreateDefault();
         _settings = libraryServices.Settings;
         _library = new LibraryShellViewModel(
@@ -106,8 +116,8 @@ public sealed partial class IndependentMediaWindow : Window
             FocusPlayer,
             RefreshPlayerNavigationHotspots,
             _ => { },
-            () => { });
-        _isPlaybackControllerReady = true;
+            () => { },
+            libraryServices.PlaybackResources);
         _imagePreviewController = new ImagePreviewController(
             _library,
             _player.ImagePreview,
@@ -133,6 +143,7 @@ public sealed partial class IndependentMediaWindow : Window
             _bossKeyController);
 
         Closed += IndependentMediaWindow_Closed;
+        Activated += IndependentMediaWindow_Activated;
         PlayerPane.ShortcutHintInvoked += PlayerPane_ShortcutHintInvoked;
         PlayerPane.InfoOverlay.TagRemoveRequested += InfoOverlay_TagRemoveRequested;
         PlayerPane.NavigationOverlay.DeleteCurrentMediaButton.Click += DeleteCurrentMediaButton_Click;
@@ -146,21 +157,55 @@ public sealed partial class IndependentMediaWindow : Window
         PlayerPane.NavigationOverlay.PreviousMediaHotspot.PointerMoved += PlayerNavigationHotspot_PointerMoved;
         PlayerPane.NavigationOverlay.PreviousMediaHotspot.PointerReleased += PlayerNavigationHotspot_PointerReleased;
         PlayerPane.NavigationOverlay.PreviousMediaHotspot.PointerCaptureLost += PlayerNavigationHotspot_PointerCaptureLost;
+        PlayerPane.NavigationOverlay.PreviousMediaHotspot.AddHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler, true);
+        PlayerPane.ShortcutHintContainer.PointerEntered += ShortcutHintContainer_PointerEntered;
+        PlayerPane.ShortcutHintContainer.AddHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler, true);
         PlayerPane.NavigationOverlay.NextMediaHotspot.PointerEntered += NextMediaHotspot_PointerEntered;
         PlayerPane.NavigationOverlay.NextMediaHotspot.PointerPressed += PlayerNavigationHotspot_PointerPressed;
         PlayerPane.NavigationOverlay.NextMediaHotspot.PointerMoved += PlayerNavigationHotspot_PointerMoved;
         PlayerPane.NavigationOverlay.NextMediaHotspot.PointerReleased += PlayerNavigationHotspot_PointerReleased;
         PlayerPane.NavigationOverlay.NextMediaHotspot.PointerCaptureLost += PlayerNavigationHotspot_PointerCaptureLost;
+        PlayerPane.NavigationOverlay.NextMediaHotspot.AddHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler, true);
 
         ConfigureInitialWindowBounds();
         InstallKeyboardSubclass();
         OpenCurrentMedia();
+        _ = RestoreInitialPlaybackStateAsync();
+        NotifyPlaybackTargetActivated();
         FocusPlayer();
     }
 
-    internal event EventHandler<IndependentMediaWindowTagsChangedEventArgs>? MediaTagsChanged;
+    internal IndependentMediaWindow(MediaPlayerSessionTransfer session)
+        : this(session.MediaItems, session.CurrentIndex, session.PositionSeconds, session.WasPlaying)
+    {
+    }
 
+    internal event EventHandler? PlaybackTargetActivated;
+    internal event EventHandler<IndependentMediaWindowTagsChangedEventArgs>? MediaTagsChanged;
     internal event EventHandler<IndependentMediaWindowDeletedEventArgs>? MediaDeleted;
+
+    internal void PlayMedia(IndependentMediaWindowMedia media)
+    {
+        var beforeCount = _controller.Count;
+        var played = _controller.PlayOrSelect(media);
+        if (_library.FilteredMediaItems.All(item => !string.Equals(item.Id, played.Id, StringComparison.Ordinal)))
+        {
+            var insertIndex = Math.Min(_controller.CurrentIndex, _library.FilteredMediaItems.Count);
+            _library.FilteredMediaItems.Insert(insertIndex, played);
+        }
+
+        AppTraceLogger.Log(
+            "IndependentMediaWindow",
+            $"PlayMedia. MediaId='{played.Id}', QueueCount={_controller.Count}, Added={_controller.Count > beforeCount}.");
+        OpenCurrentMedia();
+        NotifyPlaybackTargetActivated();
+        FocusPlayer();
+    }
+
+    internal Task<bool> TryHandleShortcutAsync(VirtualKey key)
+    {
+        return _shortcutHandler.HandleKeyAsync(key);
+    }
 
     private Grid PlayerRoot => PlayerPane.PlayerRoot;
 
@@ -186,6 +231,54 @@ public sealed partial class IndependentMediaWindow : Window
         {
             AppTraceLogger.LogException("IndependentMediaWindow", "GetAppWindow failed.", ex);
             return null;
+        }
+    }
+
+    private MediaPlayerSessionTransfer ExportSession()
+    {
+        var items = _controller.MediaItems
+            .Select(item => new IndependentMediaWindowMedia(
+                item.Id,
+                item.FileSystemPath,
+                item.FileName,
+                item.Type,
+                item.ResolutionText,
+                item.ContentHash,
+                item.FingerprintVersion,
+                item.Tags.ToList()))
+            .ToList();
+        return new MediaPlayerSessionTransfer(
+            items,
+            _controller.CurrentIndex,
+            _videoPlaybackController.GetCurrentPlaybackPosition().TotalSeconds,
+            _videoPlaybackController.IsPlaying);
+    }
+
+    private async Task RestoreInitialPlaybackStateAsync()
+    {
+        if (_initialPositionSeconds <= 0 && _initialWasPlaying) return;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(100);
+            if (_library.SelectedMedia?.Type != MediaType.Video) return;
+            if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero) continue;
+            if (_initialPositionSeconds > 0) _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(_initialPositionSeconds));
+            if (!_initialWasPlaying && _videoPlaybackController.IsPlaying) _videoPlaybackController.TogglePlayPause();
+            return;
+        }
+    }
+
+    private void SessionDragHeader_DragStarting(UIElement sender, DragStartingEventArgs args)
+    {
+        args.Data.RequestedOperation = DataPackageOperation.Move;
+        args.Data.SetData(MediaPlayerSessionTransfer.DataFormat, ExportSession().Serialize());
+    }
+
+    private void SessionDragHeader_DropCompleted(UIElement sender, DropCompletedEventArgs args)
+    {
+        if (args.DropResult == DataPackageOperation.Move)
+        {
+            Close();
         }
     }
 
@@ -273,7 +366,7 @@ public sealed partial class IndependentMediaWindow : Window
     {
         var selectedTags = _library.SelectedMedia?.Tags ?? [];
         var items = _library.NumpadTagShortcuts
-            .Select((tag, index) => new { Tag = tag, Digit = index + 1 })
+            .Select((tag, index) => new { Tag = tag, Index = index + 1 })
             .Where(item => !string.IsNullOrWhiteSpace(item.Tag))
             .ToList();
 
@@ -282,7 +375,7 @@ public sealed partial class IndependentMediaWindow : Window
         {
             _player.ShortcutHintItems.Add(new NumpadTagShortcutHintItem
             {
-                Digit = item.Digit,
+                Index = item.Index,
                 Tag = item.Tag,
                 IsApplied = selectedTags.Any(existing => string.Equals(existing, item.Tag, StringComparison.OrdinalIgnoreCase))
             });
@@ -315,6 +408,21 @@ public sealed partial class IndependentMediaWindow : Window
         PlayerPane.Focus(FocusState.Programmatic);
     }
 
+    private void NotifyPlaybackTargetActivated()
+    {
+        PlaybackTargetActivated?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void IndependentMediaWindow_Activated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState == WindowActivationState.Deactivated)
+        {
+            return;
+        }
+
+        NotifyPlaybackTargetActivated();
+    }
+
     private void ShowControls()
     {
         _videoPlaybackController.ShowControls();
@@ -322,26 +430,17 @@ public sealed partial class IndependentMediaWindow : Window
 
     private void PlayerRoot_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        ShowControls();
-        UpdatePlayerNavigationCue(e.GetCurrentPoint(PlayerRoot).Position);
+        var pointerPosition = e.GetCurrentPoint(PlayerRoot).Position;
+        _videoPlaybackController.HandlePlayerPointerMoved(pointerPosition.Y, PlayerRoot.ActualHeight);
+        UpdatePlayerNavigationCue(pointerPosition);
     }
 
     private void PlayerRoot_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
         var pointerPosition = e.GetCurrentPoint(PlayerRoot).Position;
         UpdatePlayerNavigationCue(pointerPosition);
+        NotifyPlaybackTargetActivated();
         var isOverlayInteraction = IsPlayerOverlayInteractionSource(e.OriginalSource as DependencyObject);
-
-        if (_library.SelectedMedia?.Type == MediaType.Video
-            && _videoPlaybackController.AreControlsVisible
-            && !isOverlayInteraction)
-        {
-            _videoPlaybackController.HideControlsImmediately();
-        }
-        else
-        {
-            ShowControls();
-        }
 
         if (!isOverlayInteraction)
         {
@@ -351,6 +450,7 @@ public sealed partial class IndependentMediaWindow : Window
 
     private void VideoPlayer_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
+        NotifyPlaybackTargetActivated();
         FocusPlayer();
     }
 
@@ -361,6 +461,11 @@ public sealed partial class IndependentMediaWindow : Window
     }
 
     private void PreviousMediaHotspot_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        SetPlayerNavigationEdge(PlayerNavigationEdge.Left);
+    }
+
+    private void ShortcutHintContainer_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
         SetPlayerNavigationEdge(PlayerNavigationEdge.Left);
     }
@@ -466,6 +571,43 @@ public sealed partial class IndependentMediaWindow : Window
         _imagePreviewController.EndExternalDrag();
     }
 
+    private async void PlayerNavigationHotspot_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        try
+        {
+            if (!CanShowPlayerNavigationHotspots() || sender is not UIElement hotspot)
+            {
+                return;
+            }
+
+            var point = e.GetCurrentPoint(hotspot);
+            if (point.Properties.MouseWheelDelta == 0)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            if (Interlocked.Exchange(ref _isNavigationHotspotWheelNavigating, 1) == 1)
+            {
+                return;
+            }
+
+            var offset = point.Properties.MouseWheelDelta < 0 ? 1 : -1;
+            var edge = offset < 0 ? PlayerNavigationEdge.Left : PlayerNavigationEdge.Right;
+            await NavigateRelativeAsync(offset);
+            ShowControls();
+            SetPlayerNavigationEdge(edge);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("IndependentMediaWindow", "Player navigation hotspot wheel navigation failed.", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _isNavigationHotspotWheelNavigating, 0);
+        }
+    }
+
     private bool CanShowPlayerNavigationHotspots()
     {
         return _controller.Count > 1
@@ -491,10 +633,11 @@ public sealed partial class IndependentMediaWindow : Window
         UpdatePlayerNavigationHotspotLayout();
 
         var canShow = CanShowPlayerNavigationHotspots();
-        var areControlsVisible = !_isPlaybackControllerReady || _videoPlaybackController.AreControlsVisible;
+        var canShowSideActions = _controller.Count > 0
+            && _player.EmptyStateVisibility != Visibility.Visible;
         PreviousMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
         NextMediaHotspot.Visibility = canShow ? Visibility.Visible : Visibility.Collapsed;
-        PlayerPane.NavigationOverlay.SideActionButtons.Visibility = areControlsVisible
+        PlayerPane.NavigationOverlay.SideActionButtons.Visibility = canShowSideActions
             ? Visibility.Visible
             : Visibility.Collapsed;
 
@@ -545,6 +688,7 @@ public sealed partial class IndependentMediaWindow : Window
     private PlayerNavigationEdge GetNavigationHotspotEdge(object sender)
     {
         return ReferenceEquals(sender, PreviousMediaHotspot)
+            || ReferenceEquals(sender, PlayerPane.ShortcutHintContainer)
             ? PlayerNavigationEdge.Left
             : PlayerNavigationEdge.Right;
     }
@@ -587,17 +731,17 @@ public sealed partial class IndependentMediaWindow : Window
         return false;
     }
 
-    private async void PlayerPane_ShortcutHintInvoked(object? sender, int digit)
+    private async void PlayerPane_ShortcutHintInvoked(object? sender, int index)
     {
         try
         {
-            await TryApplyNumpadTagShortcutAsync(digit);
+            await TryApplyShortcutTagAsync(index);
         }
         catch (Exception ex)
         {
             AppTraceLogger.LogException(
                 "IndependentMediaWindow",
-                $"Apply shortcut tag from hint failed. Digit={digit}, MediaId='{_library.SelectedMedia?.Id ?? "<null>"}'.",
+                $"Apply shortcut tag from hint failed. Index={index}, MediaId='{_library.SelectedMedia?.Id ?? "<null>"}'.",
                 ex);
         }
     }
@@ -691,6 +835,25 @@ public sealed partial class IndependentMediaWindow : Window
             AppTraceLogger.Log(
                 "IndependentMediaWindow",
                 $"Shortcut tag applied. Digit={digit}, MediaId='{currentMedia.Id}', File='{currentMedia.FileName}'.");
+        }
+
+        return applied;
+    }
+
+    private async Task<bool> TryApplyShortcutTagAsync(int index)
+    {
+        var currentMedia = _library.SelectedMedia;
+        if (currentMedia == null)
+        {
+            return false;
+        }
+
+        var applied = await _library.TryApplyTagShortcutAsync(index, new[] { currentMedia });
+        if (applied)
+        {
+            RefreshPlayerTags(currentMedia);
+            RefreshNumpadShortcutHint();
+            RaiseMediaTagsChanged(currentMedia);
         }
 
         return applied;
@@ -799,6 +962,7 @@ public sealed partial class IndependentMediaWindow : Window
     {
         UninstallKeyboardSubclass();
         Closed -= IndependentMediaWindow_Closed;
+        Activated -= IndependentMediaWindow_Activated;
         PlayerPane.ShortcutHintInvoked -= PlayerPane_ShortcutHintInvoked;
         PlayerPane.InfoOverlay.TagRemoveRequested -= InfoOverlay_TagRemoveRequested;
         PlayerPane.NavigationOverlay.DeleteCurrentMediaButton.Click -= DeleteCurrentMediaButton_Click;
@@ -812,11 +976,15 @@ public sealed partial class IndependentMediaWindow : Window
         PreviousMediaHotspot.PointerMoved -= PlayerNavigationHotspot_PointerMoved;
         PreviousMediaHotspot.PointerReleased -= PlayerNavigationHotspot_PointerReleased;
         PreviousMediaHotspot.PointerCaptureLost -= PlayerNavigationHotspot_PointerCaptureLost;
+        PreviousMediaHotspot.RemoveHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler);
+        PlayerPane.ShortcutHintContainer.PointerEntered -= ShortcutHintContainer_PointerEntered;
+        PlayerPane.ShortcutHintContainer.RemoveHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler);
         NextMediaHotspot.PointerEntered -= NextMediaHotspot_PointerEntered;
         NextMediaHotspot.PointerPressed -= PlayerNavigationHotspot_PointerPressed;
         NextMediaHotspot.PointerMoved -= PlayerNavigationHotspot_PointerMoved;
         NextMediaHotspot.PointerReleased -= PlayerNavigationHotspot_PointerReleased;
         NextMediaHotspot.PointerCaptureLost -= PlayerNavigationHotspot_PointerCaptureLost;
+        NextMediaHotspot.RemoveHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler);
         _videoPlaybackController.Dispose();
         _imagePreviewController.Dispose();
         _library.Dispose();

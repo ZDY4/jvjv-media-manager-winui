@@ -38,8 +38,38 @@
             </SplitView.Pane>
 
             <SplitView.Content>
-                <mainPage:PlayerPaneView x:Name="PlayerPaneHost"
-                                         DataContext="{x:Bind Player}" />
+                <Grid x:Name="PlayerDockHost" AllowDrop="True" DragOver="PlayerDockHost_DragOver" DragLeave="PlayerDockHost_DragLeave" Drop="PlayerDockHost_Drop">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition x:Name="DockSplitterColumn" Width="0" />
+                        <ColumnDefinition x:Name="DockedPlayerColumn" Width="0" />
+                    </Grid.ColumnDefinitions>
+                    <mainPage:PlayerPaneView x:Name="PlayerPaneHost"
+                                             DataContext="{x:Bind Player}" />
+                    <Border x:Name="DockSplitter"
+                            Grid.Column="1"
+                            Width="5"
+                            Background="#40FFFFFF"
+                            PointerPressed="DockSplitter_PointerPressed"
+                            PointerMoved="DockSplitter_PointerMoved"
+                            PointerReleased="DockSplitter_PointerReleased"
+                            PointerCaptureLost="DockSplitter_PointerCaptureLost"
+                            Visibility="Collapsed" />
+                    <Border x:Name="DockedPlayerBorder"
+                            Grid.Column="2"
+                            BorderBrush="#FFFF9F1C"
+                            BorderThickness="1,0,0,0"
+                            Visibility="Collapsed">
+                        <mainPage:DockedMediaSessionView x:Name="DockedPlayerHost" />
+                    </Border>
+                    <Border x:Name="DockPreview"
+                            Grid.Column="2"
+                            Background="#33FF9F1C"
+                            BorderBrush="#FFFF9F1C"
+                            BorderThickness="2"
+                            IsHitTestVisible="False"
+                            Visibility="Collapsed" />
+                </Grid>
             </SplitView.Content>
         </SplitView>
         <Button x:Name="BossKeyRecoveryButton"

@@ -1,20 +1,24 @@
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.Views;
+using Windows.System;
 
 namespace JvJvMediaManager.Services;
 
 public sealed class IndependentMediaWindowService : IDisposable
 {
     private readonly List<IndependentMediaWindow> _windows = new();
+    private readonly ActivePlaybackTarget _activePlaybackTarget;
     private readonly Func<string, IReadOnlyList<string>, Task>? _mediaTagsChangedAsync;
     private readonly Func<IReadOnlyList<string>, Task>? _mediaDeletedAsync;
     private bool _isDisposed;
 
-    public IndependentMediaWindowService(
+    internal IndependentMediaWindowService(
+        ActivePlaybackTarget activePlaybackTarget,
         Func<string, IReadOnlyList<string>, Task>? mediaTagsChangedAsync = null,
         Func<IReadOnlyList<string>, Task>? mediaDeletedAsync = null)
     {
+        _activePlaybackTarget = activePlaybackTarget;
         _mediaTagsChangedAsync = mediaTagsChangedAsync;
         _mediaDeletedAsync = mediaDeletedAsync;
     }
@@ -41,6 +45,46 @@ public sealed class IndependentMediaWindowService : IDisposable
         }
     }
 
+    internal void OpenTransferredSession(MediaPlayerSessionTransfer session)
+    {
+        if (_isDisposed || session.MediaItems.Count == 0) return;
+        var window = new IndependentMediaWindow(session);
+        TrackAndActivate(window);
+    }
+
+    internal bool TryPlayInActiveIndependentWindow(IndependentMediaWindowMedia media)
+    {
+        if (_isDisposed || _activePlaybackTarget.Kind != ActivePlaybackTargetKind.Independent)
+        {
+            return false;
+        }
+
+        var window = _activePlaybackTarget.IndependentWindow;
+        if (window == null || !_windows.Contains(window))
+        {
+            return false;
+        }
+
+        window.PlayMedia(media);
+        return true;
+    }
+
+    internal Task<bool> TryHandleActiveIndependentShortcutAsync(VirtualKey key)
+    {
+        if (_isDisposed || _activePlaybackTarget.Kind != ActivePlaybackTargetKind.Independent)
+        {
+            return Task.FromResult(false);
+        }
+
+        var window = _activePlaybackTarget.IndependentWindow;
+        if (window == null || !_windows.Contains(window))
+        {
+            return Task.FromResult(false);
+        }
+
+        return window.TryHandleShortcutAsync(key);
+    }
+
     private void OpenMediaWindow(
         MediaItemViewModel media,
         IReadOnlyList<IndependentMediaWindowMedia> navigationItems)
@@ -57,11 +101,7 @@ public sealed class IndependentMediaWindowService : IDisposable
 
             var initialIndex = FindNavigationIndex(navigationItems, media.Id);
             var window = new IndependentMediaWindow(navigationItems, initialIndex);
-            window.Closed += IndependentMediaWindow_Closed;
-            window.MediaTagsChanged += IndependentMediaWindow_MediaTagsChanged;
-            window.MediaDeleted += IndependentMediaWindow_MediaDeleted;
-            _windows.Add(window);
-            window.Activate();
+            TrackAndActivate(window);
             AppTraceLogger.Log(
                 "IndependentMediaWindow",
                 $"Opened. MediaId='{media.Id}', File='{media.FileName}', Type={media.Type}, InitialIndex={initialIndex}, QueueCount={navigationItems.Count}, ActiveWindowCount={_windows.Count}.");
@@ -75,7 +115,18 @@ public sealed class IndependentMediaWindowService : IDisposable
         }
     }
 
-    private static IReadOnlyList<IndependentMediaWindowMedia> CreateNavigationSnapshots(
+    private void TrackAndActivate(IndependentMediaWindow window)
+    {
+        window.Closed += IndependentMediaWindow_Closed;
+        window.PlaybackTargetActivated += IndependentMediaWindow_PlaybackTargetActivated;
+        window.MediaTagsChanged += IndependentMediaWindow_MediaTagsChanged;
+        window.MediaDeleted += IndependentMediaWindow_MediaDeleted;
+        _windows.Add(window);
+        _activePlaybackTarget.SetIndependent(window);
+        window.Activate();
+    }
+
+    internal static IReadOnlyList<IndependentMediaWindowMedia> CreateNavigationSnapshots(
         IReadOnlyList<MediaItemViewModel> navigationItems,
         IReadOnlyList<MediaItemViewModel> selectedItems)
     {
@@ -95,7 +146,7 @@ public sealed class IndependentMediaWindowService : IDisposable
         return snapshots;
     }
 
-    private static IndependentMediaWindowMedia CreateSnapshot(MediaItemViewModel media)
+    internal static IndependentMediaWindowMedia CreateSnapshot(MediaItemViewModel media)
     {
         return new IndependentMediaWindowMedia(
             media.Id,
@@ -140,6 +191,7 @@ public sealed class IndependentMediaWindowService : IDisposable
         foreach (var window in _windows.ToList())
         {
             window.Closed -= IndependentMediaWindow_Closed;
+            window.PlaybackTargetActivated -= IndependentMediaWindow_PlaybackTargetActivated;
             window.MediaTagsChanged -= IndependentMediaWindow_MediaTagsChanged;
             window.MediaDeleted -= IndependentMediaWindow_MediaDeleted;
             try
@@ -164,10 +216,20 @@ public sealed class IndependentMediaWindowService : IDisposable
         }
 
         window.Closed -= IndependentMediaWindow_Closed;
+        window.PlaybackTargetActivated -= IndependentMediaWindow_PlaybackTargetActivated;
         window.MediaTagsChanged -= IndependentMediaWindow_MediaTagsChanged;
         window.MediaDeleted -= IndependentMediaWindow_MediaDeleted;
         _ = _windows.Remove(window);
+        _activePlaybackTarget.ClearIndependentIfActive(window);
         AppTraceLogger.Log("IndependentMediaWindow", $"Closed. ActiveWindowCount={_windows.Count}.");
+    }
+
+    private void IndependentMediaWindow_PlaybackTargetActivated(object? sender, EventArgs e)
+    {
+        if (sender is IndependentMediaWindow window)
+        {
+            _activePlaybackTarget.SetIndependent(window);
+        }
     }
 
     private void IndependentMediaWindow_MediaTagsChanged(object? sender, IndependentMediaWindowTagsChangedEventArgs e)

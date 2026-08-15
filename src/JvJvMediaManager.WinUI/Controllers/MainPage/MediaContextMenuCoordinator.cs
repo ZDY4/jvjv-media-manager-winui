@@ -59,7 +59,7 @@ public sealed class MediaContextMenuCoordinator
         _openInNewWindows = openInNewWindows;
 
         _flyout = new MenuFlyout();
-        _openInNewWindowItem = CreateMenuItem("在新窗口中打开", string.Empty, OpenInNewWindowItem_Click);
+        _openInNewWindowItem = CreateMenuItem("在分屏中打开", string.Empty, OpenInNewWindowItem_Click);
         _openFolderItem = CreateMenuItem("打开所在目录", OpenFolderShortcutText, OpenFolderItem_Click);
         _focusInLibraryItem = CreateMenuItem("在媒体库中聚焦当前媒体", FocusInLibraryShortcutText, FocusInLibraryItem_Click);
         _editTagsItem = CreateMenuItem("编辑标签", EditTagsShortcutText, EditTagsItem_Click);
@@ -84,7 +84,8 @@ public sealed class MediaContextMenuCoordinator
         Windows.Foundation.Point position,
         IReadOnlyList<MediaItemViewModel> selected,
         Action? shortcutTagHintAction = null,
-        string? shortcutTagHintText = null)
+        string? shortcutTagHintText = null,
+        bool includeOpenInSplit = true)
     {
         if (selected.Count == 0)
         {
@@ -96,7 +97,7 @@ public sealed class MediaContextMenuCoordinator
         _shortcutTagHintText = shortcutTagHintText;
         try
         {
-            await RefreshMenuStateAsync();
+            await RefreshMenuStateAsync(includeOpenInSplit);
             _flyout.ShowAt(target, position);
         }
         catch (Exception ex)
@@ -135,11 +136,12 @@ public sealed class MediaContextMenuCoordinator
         return item;
     }
 
-    private async Task RefreshMenuStateAsync()
+    private async Task RefreshMenuStateAsync(bool includeOpenInSplit = true)
     {
         _editTagsItem.Text = _currentSelection.Count == 1 ? "编辑标签" : $"批量编辑标签 ({_currentSelection.Count})";
         await RefreshPlaylistItemsAsync();
         RefreshShortcutTagHintItem();
+        RefreshOpenInSplitItem(includeOpenInSplit);
 
         if (_viewModel.SelectedPlaylist != null)
         {
@@ -153,6 +155,21 @@ public sealed class MediaContextMenuCoordinator
         {
             _ = _flyout.Items.Remove(_removeFromPlaylistItem);
         }
+    }
+
+    private void RefreshOpenInSplitItem(bool includeOpenInSplit)
+    {
+        if (includeOpenInSplit)
+        {
+            if (!_flyout.Items.Contains(_openInNewWindowItem))
+            {
+                _flyout.Items.Insert(0, _openInNewWindowItem);
+            }
+
+            return;
+        }
+
+        _ = _flyout.Items.Remove(_openInNewWindowItem);
     }
 
     private void RefreshShortcutTagHintItem()
@@ -235,7 +252,7 @@ public sealed class MediaContextMenuCoordinator
             return;
         }
 
-        AppTraceLogger.Log("MediaContextMenu", $"OpenInNewWindow requested. SelectionCount={_currentSelection.Count}.");
+        AppTraceLogger.Log("MediaContextMenu", $"OpenInSplit requested. SelectionCount={_currentSelection.Count}.");
         _openInNewWindows(_currentSelection);
     }
 

@@ -1,0 +1,48 @@
+<UserControl
+    x:Class="JvJvMediaManager.Views.MainPageParts.DockedMediaSessionView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mainPage="using:JvJvMediaManager.Views.MainPageParts">
+    <Grid Background="{ThemeResource PlayerSurfaceBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="36" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border x:Name="DragHeader"
+                Grid.Row="0"
+                Background="#E6242424"
+                CanDrag="True"
+                DragStarting="DragHeader_DragStarting"
+                DropCompleted="DragHeader_DropCompleted">
+            <Grid Padding="10,0,4,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal"
+                            Spacing="8"
+                            VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xE8A7;"
+                              FontSize="12"
+                              Foreground="#FFFF9F1C" />
+                    <TextBlock x:Name="TitleText"
+                               Text="分屏播放器"
+                               MaxLines="1"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Click="CloseButton_Click"
+                        Style="{StaticResource SecondaryToolbarButtonStyle}"
+                        ToolTipService.ToolTip="关闭分屏">
+                    <FontIcon Glyph="&#xE711;"
+                              FontSize="12" />
+                </Button>
+            </Grid>
+        </Border>
+
+        <mainPage:PlayerPaneView x:Name="PlayerPane"
+                                 Grid.Row="1" />
+    </Grid>
+</UserControl>
