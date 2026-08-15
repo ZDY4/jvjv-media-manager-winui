@@ -18,10 +18,13 @@ public static class MediaExtensions
     {
         ".jpg",
         ".jpeg",
+        ".jfif",
         ".png",
         ".gif",
         ".bmp",
-        ".webp"
+        ".webp",
+        ".tif",
+        ".tiff"
     };
 
     public static bool IsSupported(string path)

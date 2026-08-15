@@ -47,6 +47,28 @@
                 Background="Transparent"
                 Visibility="Collapsed" />
 
+        <Grid x:Name="CompactProgressHost"
+              x:FieldModifier="public"
+              Canvas.ZIndex="1"
+              Height="2"
+              HorizontalAlignment="Stretch"
+              VerticalAlignment="Bottom"
+              Background="Transparent"
+              IsHitTestVisible="False"
+              Visibility="Collapsed">
+            <ProgressBar x:Name="CompactProgressBar"
+                         x:FieldModifier="public"
+                         Height="2"
+                         HorizontalAlignment="Stretch"
+                         VerticalAlignment="Stretch"
+                         Minimum="0"
+                         Maximum="{Binding ElementName=ProgressSlider, Path=Maximum}"
+                         Value="{Binding ElementName=ProgressSlider, Path=Value}"
+                         Background="Transparent"
+                         Foreground="#D9FFFFFF"
+                         IsHitTestVisible="False" />
+        </Grid>
+
         <Border x:Name="ControlBar"
                 x:FieldModifier="public"
                 HorizontalAlignment="Stretch"
@@ -62,9 +84,7 @@
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
@@ -80,41 +100,36 @@
                 <TextBlock x:Name="CurrentTimeText"
                            x:FieldModifier="public"
                            Grid.Column="1"
-                           MinWidth="42"
-                           VerticalAlignment="Center"
-                           Text="{Binding CurrentTimeText}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Top"
                            Foreground="{ThemeResource TextBrush}"
-                           FontSize="12"
+                           FontSize="10"
                            FontWeight="SemiBold"
-                           TextAlignment="Center" />
-
-                <Slider x:Name="ProgressSlider"
-                        x:FieldModifier="public"
-                        Grid.Column="2"
-                        Minimum="0"
-                        Maximum="1"
-                        Value="0"
-                        SmallChange="1"
-                        LargeChange="10"
-                        IsTabStop="False"
-                        VerticalAlignment="Center"
-                        Margin="2,0"
-                        Opacity="0.15" />
+                           TextAlignment="Center"
+                           Opacity="0.88"
+                           Visibility="Collapsed">
+                    <Run Text="{Binding CurrentTimeText}" />
+                    <Run Text=" / " />
+                    <Run Text="{Binding TotalTimeText}" />
+                </TextBlock>
 
                 <TextBlock x:Name="TotalTimeText"
                            x:FieldModifier="public"
-                           Grid.Column="3"
-                           MinWidth="42"
-                           VerticalAlignment="Center"
+                           Grid.Column="1"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Top"
                            Text="{Binding TotalTimeText}"
                            Foreground="{ThemeResource MutedTextBrush}"
-                           FontSize="12"
+                           FontSize="10"
                            FontWeight="SemiBold"
-                           TextAlignment="Center" />
+                           TextAlignment="Center"
+                           Opacity="0.88"
+                           Visibility="Collapsed"
+                           IsHitTestVisible="False" />
 
                 <Grid x:Name="VolumeButtonHost"
                       x:FieldModifier="public"
-                      Grid.Column="4"
+                      Grid.Column="2"
                       Width="40"
                       Height="36"
                       HorizontalAlignment="Center"
@@ -161,11 +176,37 @@
 
                 <Button x:Name="ClipModeToggleButton"
                         x:FieldModifier="public"
-                        Grid.Column="5"
+                        Grid.Column="3"
                         Style="{StaticResource PanelIconButtonStyle}"
                         ToolTipService.ToolTip="进入剪辑">
                     <FontIcon Glyph="&#xE7C8;" />
                 </Button>
+
+                <Slider x:Name="ProgressSlider"
+                        x:FieldModifier="public"
+                        Grid.Column="1"
+                        Minimum="0"
+                        Maximum="1"
+                        Value="0"
+                        SmallChange="1"
+                        LargeChange="10"
+                        IsTabStop="False"
+                        VerticalAlignment="Bottom"
+                        Margin="2,10,2,0"
+                        Opacity="1"
+                        Visibility="Collapsed">
+                    <Slider.Resources>
+                        <SolidColorBrush x:Key="SliderTrackFill" Color="#66FFFFFF" />
+                        <SolidColorBrush x:Key="SliderTrackFillPointerOver" Color="#88FFFFFF" />
+                        <SolidColorBrush x:Key="SliderTrackFillPressed" Color="#99FFFFFF" />
+                        <SolidColorBrush x:Key="SliderTrackValueFill" Color="#E6FFFFFF" />
+                        <SolidColorBrush x:Key="SliderTrackValueFillPointerOver" Color="#FFFFFFFF" />
+                        <SolidColorBrush x:Key="SliderTrackValueFillPressed" Color="#FFFFFFFF" />
+                        <SolidColorBrush x:Key="SliderThumbBackground" Color="#FFFFFFFF" />
+                        <SolidColorBrush x:Key="SliderThumbBackgroundPointerOver" Color="#FFFFFFFF" />
+                        <SolidColorBrush x:Key="SliderThumbBackgroundPressed" Color="#FFFFFFFF" />
+                    </Slider.Resources>
+                </Slider>
             </Grid>
         </Border>
     </Grid>

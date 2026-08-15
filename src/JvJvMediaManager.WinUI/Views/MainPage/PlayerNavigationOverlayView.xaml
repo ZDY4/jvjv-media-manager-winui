@@ -9,13 +9,13 @@
                     Canvas.ZIndex="10"
                     HorizontalAlignment="Right"
                     VerticalAlignment="Bottom"
-                    Margin="0,0,16,84"
-                    Spacing="4">
+                    Margin="0,0,10,78"
+                    Spacing="3">
             <Button x:Name="PlaybackModeButton"
                     x:FieldModifier="public"
                     AutomationProperties.AutomationId="PlaybackModeButton"
                     AutomationProperties.Name="播放模式"
-                    Style="{StaticResource PanelIconButtonStyle}"
+                    Style="{StaticResource CompactPanelIconButtonStyle}"
                     ToolTipService.ToolTip="播放模式">
                 <FontIcon Glyph="&#xE8EE;" />
             </Button>
@@ -23,7 +23,7 @@
                     x:FieldModifier="public"
                     AutomationProperties.AutomationId="FullScreenButton"
                     AutomationProperties.Name="全屏"
-                    Style="{StaticResource PanelIconButtonStyle}"
+                    Style="{StaticResource CompactPanelIconButtonStyle}"
                     ToolTipService.ToolTip="全屏">
                 <FontIcon Glyph="&#xE740;" />
             </Button>
@@ -31,7 +31,7 @@
                     x:FieldModifier="public"
                     AutomationProperties.AutomationId="DeleteCurrentMediaButton"
                     AutomationProperties.Name="移到回收站"
-                    Style="{StaticResource PanelIconButtonStyle}"
+                    Style="{StaticResource CompactPanelIconButtonStyle}"
                     ToolTipService.ToolTip="移到回收站">
                 <FontIcon Glyph="&#xE74D;" />
             </Button>

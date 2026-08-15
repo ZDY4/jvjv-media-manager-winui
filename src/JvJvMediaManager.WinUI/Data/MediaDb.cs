@@ -35,7 +35,34 @@ public sealed class MediaDb
         AppTraceLogger.Log("MediaDb", "Initialize start.");
         using var connection = _connections.OpenConnection();
         MediaDbSchema.Initialize(connection);
-        AppTraceLogger.Log("MediaDb", "Initialize completed.");
+        AppTraceLogger.Log("MediaDb", "Initialize completed (schema only).");
+
+        // WP-A: heavy one-time maintenance (duplicate path merge, FTS rebuild,
+        // sort-tuple indexes, orphan audit) runs on a background thread so it
+        // cannot block first paint on large libraries. LibraryShellViewModel
+        // awaits StartupMaintenanceTask before its first media query.
+        StartupMaintenanceTask = Task.Run(RunStartupMaintenanceAsync);
+    }
+
+    /// <summary>
+    /// Completes after the background startup maintenance finishes (or fails).
+    /// Failure is logged and swallowed: the schema itself is already in place,
+    /// so the app remains usable without dedup/FTS/index maintenance.
+    /// </summary>
+    public Task StartupMaintenanceTask { get; private set; } = Task.CompletedTask;
+
+    private async Task RunStartupMaintenanceAsync()
+    {
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync();
+            MediaDbSchema.RunStartupMaintenance(connection);
+            AppTraceLogger.Log("MediaDb", "Startup maintenance completed.");
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaDb", "Startup maintenance failed.", ex);
+        }
     }
 
     public Task AddMediaAsync(MediaFile media, CancellationToken cancellationToken = default)
@@ -143,6 +170,18 @@ public sealed class MediaDb
     {
         await _tags.RemoveTagAsync(mediaId, tag, cancellationToken);
         await _media.RefreshSearchIndexAsync(mediaId, cancellationToken);
+    }
+
+    /// <summary>
+    /// WP-E: replaces each media's tag set in a single transaction with one
+    /// search-index refresh per media id. Use for bulk tagging; per-tag calls
+    /// are only kept for single-item paths.
+    /// </summary>
+    public Task SetTagsForMediaAsync(
+        IReadOnlyList<(string MediaId, IReadOnlyList<string> Tags)> updates,
+        CancellationToken cancellationToken = default)
+    {
+        return _media.SetTagsForMediaAsync(updates, cancellationToken);
     }
 
     public Task<IReadOnlyList<string>> GetTagsAsync(string mediaId, CancellationToken cancellationToken = default)

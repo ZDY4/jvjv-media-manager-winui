@@ -25,7 +25,8 @@ public sealed class VideoHoverPreviewFrameService
         TimeSpan timestamp,
         int frameWidth,
         int frameHeight,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool cropToFill = true)
     {
         if (string.IsNullOrWhiteSpace(mediaPath)
             || !File.Exists(mediaPath)
@@ -69,7 +70,9 @@ public sealed class VideoHoverPreviewFrameService
             startInfo.ArgumentList.Add("-frames:v");
             startInfo.ArgumentList.Add("1");
             startInfo.ArgumentList.Add("-vf");
-            startInfo.ArgumentList.Add($"scale={frameWidth}:{frameHeight}:force_original_aspect_ratio=increase,crop={frameWidth}:{frameHeight}");
+            startInfo.ArgumentList.Add(cropToFill
+                ? $"scale={frameWidth}:{frameHeight}:force_original_aspect_ratio=increase,crop={frameWidth}:{frameHeight}"
+                : $"scale={frameWidth}:{frameHeight}:force_original_aspect_ratio=decrease");
             startInfo.ArgumentList.Add("-q:v");
             startInfo.ArgumentList.Add("4");
             startInfo.ArgumentList.Add("-f");

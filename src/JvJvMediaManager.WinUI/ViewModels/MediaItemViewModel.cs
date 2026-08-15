@@ -12,6 +12,8 @@ public sealed class MediaItemViewModel : ObservableObject
     private bool _isSelected;
     private bool _isNowPlaying;
     private int _thumbnailRequested;
+    private int _thumbnailFailureCount;
+    private long _thumbnailRetryAfterTicks;
     private string _fileSystemPath;
     private string _folderPath;
     private string _folderDisplayName;
@@ -220,11 +222,31 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public bool TryBeginThumbnailLoad()
     {
+        if (DateTime.UtcNow.Ticks < Interlocked.Read(ref _thumbnailRetryAfterTicks))
+        {
+            return false;
+        }
+
         return Interlocked.CompareExchange(ref _thumbnailRequested, 1, 0) == 0;
     }
 
     public void ResetThumbnailLoadState()
     {
+        Interlocked.Exchange(ref _thumbnailRequested, 0);
+        Interlocked.Exchange(ref _thumbnailFailureCount, 0);
+        Interlocked.Exchange(ref _thumbnailRetryAfterTicks, 0);
+    }
+
+    public void CancelThumbnailLoad()
+    {
+        Interlocked.Exchange(ref _thumbnailRequested, 0);
+    }
+
+    public void RecordThumbnailLoadFailure()
+    {
+        var failureCount = Math.Min(Interlocked.Increment(ref _thumbnailFailureCount), 8);
+        var retryDelay = TimeSpan.FromSeconds(Math.Min(300, 2 << (failureCount - 1)));
+        Interlocked.Exchange(ref _thumbnailRetryAfterTicks, DateTime.UtcNow.Add(retryDelay).Ticks);
         Interlocked.Exchange(ref _thumbnailRequested, 0);
     }
 

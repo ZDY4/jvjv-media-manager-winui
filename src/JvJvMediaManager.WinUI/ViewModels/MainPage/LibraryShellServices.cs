@@ -11,13 +11,15 @@ public sealed class LibraryShellServices
         MediaDb database,
         MediaLibraryService library,
         ThumbnailService thumbnails,
-        TimelineThumbnailStripService timelineThumbnails)
+        TimelineThumbnailStripService timelineThumbnails,
+        PlaybackResourceCoordinator playbackResources)
     {
         Settings = settings;
         Database = database;
         Library = library;
         Thumbnails = thumbnails;
         TimelineThumbnails = timelineThumbnails;
+        PlaybackResources = playbackResources;
     }
 
     public SettingsService Settings { get; }
@@ -29,6 +31,8 @@ public sealed class LibraryShellServices
     public ThumbnailService Thumbnails { get; }
 
     public TimelineThumbnailStripService TimelineThumbnails { get; }
+
+    public PlaybackResourceCoordinator PlaybackResources { get; }
 
     public static LibraryShellServices CreateDefault(IServiceProvider? serviceProvider = null)
     {
@@ -46,11 +50,13 @@ public sealed class LibraryShellServices
         var database = new MediaDb(settings.DataDir);
         database.Initialize();
 
+        var playbackResources = new PlaybackResourceCoordinator();
         return new LibraryShellServices(
             settings,
             database,
-            new MediaLibraryService(database),
-            new ThumbnailService(settings.GetThumbnailCacheDir()),
-            new TimelineThumbnailStripService(settings.GetTimelineThumbnailCacheDir()));
+            new MediaLibraryService(database, playbackResources),
+            new ThumbnailService(settings.GetThumbnailCacheDir(), playbackResources),
+            new TimelineThumbnailStripService(settings.GetTimelineThumbnailCacheDir()),
+            playbackResources);
     }
 }

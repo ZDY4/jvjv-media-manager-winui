@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>true</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RootNamespace>JvJvMediaManager.SmokeTests</RootNamespace>
+    <AssemblyName>JvJvMediaManager.SmokeTests</AssemblyName>
+    <IsPublishable>false</IsPublishable>
+    <DefineConstants>$(DefineConstants);JVJVMM_SMOKE_HARNESS</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+  </ItemGroup>
+
+  <!-- Link the WinUI-free production source under test (single source of truth). -->
+  <ItemGroup>
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Models\MediaModels.cs" Link="Linked\Models\MediaModels.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Models\MediaQueryModels.cs" Link="Linked\Models\MediaQueryModels.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Models\MediaLibraryViewState.cs" Link="Linked\Models\MediaLibraryViewState.cs" />
+
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\AppDataPaths.cs" Link="Linked\Utilities\AppDataPaths.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\AppTraceLogger.cs" Link="Linked\Utilities\AppTraceLogger.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\PathHelpers.cs" Link="Linked\Utilities\PathHelpers.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\MediaContentFingerprint.cs" Link="Linked\Utilities\MediaContentFingerprint.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\MediaExtensions.cs" Link="Linked\Utilities\MediaExtensions.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\DiskCacheTrimmer.cs" Link="Linked\Utilities\DiskCacheTrimmer.cs" />
+
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaDb.cs" Link="Linked\Data\MediaDb.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaDbConnectionFactory.cs" Link="Linked\Data\MediaDbConnectionFactory.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaDbSchema.cs" Link="Linked\Data\MediaDbSchema.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaRepository.cs" Link="Linked\Data\MediaRepository.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaRepository.Query.cs" Link="Linked\Data\MediaRepository.Query.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaRepository.SearchIndex.cs" Link="Linked\Data\MediaRepository.SearchIndex.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaRepository.Tags.cs" Link="Linked\Data\MediaRepository.Tags.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaTagRepository.cs" Link="Linked\Data\MediaTagRepository.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\PlaylistRepository.cs" Link="Linked\Data\PlaylistRepository.cs" />
+
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\SettingsService.cs" Link="Linked\Services\SettingsService.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\PlaybackResourceCoordinator.cs" Link="Linked\Services\PlaybackResourceCoordinator.cs" />
+  </ItemGroup>
+
+  <!-- Harness sources. -->
+  <ItemGroup>
+    <Compile Include="Harness\**\*.cs" />
+    <Compile Include="Tests\**\*.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>

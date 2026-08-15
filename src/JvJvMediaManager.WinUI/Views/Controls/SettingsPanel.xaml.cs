@@ -13,7 +13,7 @@ public sealed partial class SettingsPanel : UserControl
     private const string ClearWatchedFoldersButtonDefaultText = "清空";
     private const string ClearWatchedFoldersButtonConfirmText = "再次确认";
     private const string ClearWatchedFoldersConfirmationMessage = "再次点击“再次确认”以清空监控文件夹。";
-    private readonly TextBox[] _numpadTagTextBoxes;
+    private readonly ShortcutTagEditorPanel _shortcutTagEditor;
     private bool _clearWatchedFoldersConfirmationPending;
 
     public event EventHandler? PortableModeCommitted;
@@ -24,6 +24,8 @@ public sealed partial class SettingsPanel : UserControl
 
     public event EventHandler? NumpadTagShortcutsCommitted;
 
+    public event EventHandler? ShortcutTagEditorRequested;
+
     public event EventHandler? WatchedFoldersChanged;
 
     public ObservableCollection<WatchedFolder> WatchedFolders { get; }
@@ -32,28 +34,11 @@ public sealed partial class SettingsPanel : UserControl
     {
         InitializeComponent();
 
-        _numpadTagTextBoxes =
-        [
-            NumpadTag1TextBox,
-            NumpadTag2TextBox,
-            NumpadTag3TextBox,
-            NumpadTag4TextBox,
-            NumpadTag5TextBox,
-            NumpadTag6TextBox,
-            NumpadTag7TextBox,
-            NumpadTag8TextBox,
-            NumpadTag9TextBox
-        ];
+        _shortcutTagEditor = new ShortcutTagEditorPanel(viewModel.NumpadTagShortcuts);
 
         PortableToggle.IsOn = viewModel.PortableMode;
         DataDirTextBox.Text = viewModel.ConfiguredDataDir ?? string.Empty;
         GlobalPasswordBox.Password = viewModel.LockPassword;
-        for (var i = 0; i < _numpadTagTextBoxes.Length; i++)
-        {
-            _numpadTagTextBoxes[i].Text = i < viewModel.NumpadTagShortcuts.Count
-                ? viewModel.NumpadTagShortcuts[i]
-                : string.Empty;
-        }
 
         WatchedFolders = new ObservableCollection<WatchedFolder>(
             viewModel.WatchedFolders.Select(item => new WatchedFolder
@@ -68,10 +53,8 @@ public sealed partial class SettingsPanel : UserControl
         PortableToggle.Toggled += PortableToggle_Toggled;
         DataDirTextBox.LostFocus += DataDirTextBox_LostFocus;
         GlobalPasswordBox.LostFocus += GlobalPasswordBox_LostFocus;
-        foreach (var textBox in _numpadTagTextBoxes)
-        {
-            textBox.LostFocus += NumpadTagTextBox_LostFocus;
-        }
+        _shortcutTagEditor.ShortcutsChanged += ShortcutTagEditor_ShortcutsChanged;
+        EditShortcutTagsButton.Click += EditShortcutTagsButton_Click;
 
         if (WatchedFolders.Count > 0)
         {
@@ -228,9 +211,7 @@ public sealed partial class SettingsPanel : UserControl
 
     public IReadOnlyList<string> GetNumpadTagShortcuts()
     {
-        return _numpadTagTextBoxes
-            .Select(textBox => textBox.Text.Trim())
-            .ToList();
+        return _shortcutTagEditor.GetShortcuts();
     }
 
     private void WatchedFoldersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -254,9 +235,16 @@ public sealed partial class SettingsPanel : UserControl
         GlobalPasswordCommitted?.Invoke(this, EventArgs.Empty);
     }
 
-    private void NumpadTagTextBox_LostFocus(object sender, RoutedEventArgs e)
+    public ShortcutTagEditorPanel ShortcutTagEditor => _shortcutTagEditor;
+
+    private void ShortcutTagEditor_ShortcutsChanged(object? sender, EventArgs e)
     {
         NumpadTagShortcutsCommitted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void EditShortcutTagsButton_Click(object sender, RoutedEventArgs e)
+    {
+        ShortcutTagEditorRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void RemoveWatchedFolderItemButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)

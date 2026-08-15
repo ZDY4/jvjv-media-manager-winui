@@ -141,7 +141,8 @@ public sealed class MainPageModuleFactory
             focusHost,
             refreshNavigationHotspots,
             handleMediaOpened,
-            notifyPlaybackProgressChanged);
+            notifyPlaybackProgressChanged,
+            _services.GetRequiredService<PlaybackResourceCoordinator>());
     }
 
     public IClipTimelineEditor CreateClipEditorController(

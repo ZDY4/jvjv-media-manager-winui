@@ -119,7 +119,7 @@ public sealed partial class MediaBrowserView : UserControl
         AppTraceLogger.LogSampled(
             "MediaBrowserView",
             "grouped-source-groups-changed",
-            $"Media folder groups changed. Action={e.Action}, NewCount={newCount}, OldCount={oldCount}, ObservedGroupCount={_observedGroups.Count}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
+            () => $"Media folder groups changed. Action={e.Action}, NewCount={newCount}, OldCount={oldCount}, ObservedGroupCount={_observedGroups.Count}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
             TimeSpan.FromSeconds(1));
         ScheduleGroupedMediaItemsSourceRefresh("groups-changed");
     }
@@ -130,7 +130,7 @@ public sealed partial class MediaBrowserView : UserControl
         AppTraceLogger.LogSampled(
             "MediaBrowserView",
             "grouped-source-visible-items-changed",
-            $"Media folder visible items changed. Action={e.Action}, NewCount={e.NewItems?.Count ?? 0}, OldCount={e.OldItems?.Count ?? 0}, Folder='{group?.FolderPath ?? "<unknown>"}', GroupVisibleCount={group?.VisibleItems.Count ?? -1}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
+            () => $"Media folder visible items changed. Action={e.Action}, NewCount={e.NewItems?.Count ?? 0}, OldCount={e.OldItems?.Count ?? 0}, Folder='{group?.FolderPath ?? "<unknown>"}', GroupVisibleCount={group?.VisibleItems.Count ?? -1}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
             TimeSpan.FromSeconds(1));
         ScheduleGroupedMediaItemsSourceRefresh($"visible-items-{e.Action}");
     }
@@ -186,7 +186,7 @@ public sealed partial class MediaBrowserView : UserControl
             AppTraceLogger.LogSampled(
                 "MediaBrowserView",
                 "grouped-source-refresh-coalesced",
-                $"Grouped media source refresh coalesced. Reason={reason}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
+                () => $"Grouped media source refresh coalesced. Reason={reason}, {BuildGroupProjectionDiagnostics(_viewModel)}.",
                 TimeSpan.FromSeconds(2));
             return;
         }
@@ -223,7 +223,7 @@ public sealed partial class MediaBrowserView : UserControl
         AppTraceLogger.LogSampled(
             "MediaBrowserView",
             "grouped-source-refresh",
-            $"Grouped media source refreshed. Reason={reason}, ListSource={listSourceRefreshed}, GridSource={gridSourceRefreshed}, ListItems={ListView.Items.Count}, GridItems={GridView.Items.Count}, ObservedGroupCount={_observedGroups.Count}, {BuildGroupProjectionDiagnostics(viewModel)}.",
+            () => $"Grouped media source refreshed. Reason={reason}, ListSource={listSourceRefreshed}, GridSource={gridSourceRefreshed}, ListItems={ListView.Items.Count}, GridItems={GridView.Items.Count}, ObservedGroupCount={_observedGroups.Count}, {BuildGroupProjectionDiagnostics(viewModel)}.",
             TimeSpan.FromSeconds(1));
     }
 

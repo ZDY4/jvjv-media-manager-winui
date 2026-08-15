@@ -22,14 +22,13 @@ public sealed class SettingsDialogCoordinator
     {
         AppTraceLogger.Log("SettingsDialog", $"Opening settings dialog. WatchedFolders={_viewModel.WatchedFolders.Count}, HasPassword={_viewModel.HasLockPassword}.");
         var panel = new SettingsPanel(_viewModel);
-        using var session = new SettingsPanelSession(this, panel);
-
         var dialog = new ContentDialog
         {
             Title = "设置",
             Content = panel,
             CloseButtonText = "关闭",
         };
+        using var session = new SettingsPanelSession(this, panel, dialog);
 
         try
         {
@@ -48,15 +47,19 @@ public sealed class SettingsDialogCoordinator
     {
         private readonly SettingsDialogCoordinator _owner;
         private readonly SettingsPanel _panel;
+        private readonly ContentDialog _dialog;
 
-        public SettingsPanelSession(SettingsDialogCoordinator owner, SettingsPanel panel)
+        public SettingsPanelSession(SettingsDialogCoordinator owner, SettingsPanel panel, ContentDialog dialog)
         {
             _owner = owner;
             _panel = panel;
+            _dialog = dialog;
             _panel.PortableModeCommitted += Panel_PortableModeCommitted;
             _panel.DataDirectoryCommitted += Panel_DataDirectoryCommitted;
             _panel.GlobalPasswordCommitted += Panel_GlobalPasswordCommitted;
             _panel.NumpadTagShortcutsCommitted += Panel_NumpadTagShortcutsCommitted;
+            _panel.ShortcutTagEditorRequested += Panel_ShortcutTagEditorRequested;
+            _panel.ShortcutTagEditor.BackRequested += ShortcutTagEditor_BackRequested;
             _panel.WatchedFoldersChanged += Panel_WatchedFoldersChanged;
             _panel.ChooseDataDirButton.Click += ChooseDataDirButton_Click;
             _panel.AddWatchedFolderButton.Click += AddWatchedFolderButton_Click;
@@ -64,6 +67,7 @@ public sealed class SettingsDialogCoordinator
             _panel.ClearCacheButton.Click += ClearCacheButton_Click;
             _panel.ResetLibraryButton.Click += ResetLibraryButton_Click;
             _panel.ClearAllButton.Click += ClearAllButton_Click;
+            _dialog.Closing += Dialog_Closing;
         }
 
         public void Dispose()
@@ -72,6 +76,8 @@ public sealed class SettingsDialogCoordinator
             _panel.DataDirectoryCommitted -= Panel_DataDirectoryCommitted;
             _panel.GlobalPasswordCommitted -= Panel_GlobalPasswordCommitted;
             _panel.NumpadTagShortcutsCommitted -= Panel_NumpadTagShortcutsCommitted;
+            _panel.ShortcutTagEditorRequested -= Panel_ShortcutTagEditorRequested;
+            _panel.ShortcutTagEditor.BackRequested -= ShortcutTagEditor_BackRequested;
             _panel.WatchedFoldersChanged -= Panel_WatchedFoldersChanged;
             _panel.ChooseDataDirButton.Click -= ChooseDataDirButton_Click;
             _panel.AddWatchedFolderButton.Click -= AddWatchedFolderButton_Click;
@@ -79,6 +85,7 @@ public sealed class SettingsDialogCoordinator
             _panel.ClearCacheButton.Click -= ClearCacheButton_Click;
             _panel.ResetLibraryButton.Click -= ResetLibraryButton_Click;
             _panel.ClearAllButton.Click -= ClearAllButton_Click;
+            _dialog.Closing -= Dialog_Closing;
         }
 
         private void Panel_PortableModeCommitted(object? sender, EventArgs e)
@@ -97,6 +104,23 @@ public sealed class SettingsDialogCoordinator
         }
 
         private void Panel_NumpadTagShortcutsCommitted(object? sender, EventArgs e)
+        {
+            _owner._viewModel.SetNumpadTagShortcuts(_panel.GetNumpadTagShortcuts());
+        }
+
+        private void Panel_ShortcutTagEditorRequested(object? sender, EventArgs e)
+        {
+            _dialog.Title = "快捷菜单";
+            _dialog.Content = _panel.ShortcutTagEditor;
+        }
+
+        private void ShortcutTagEditor_BackRequested(object? sender, EventArgs e)
+        {
+            _dialog.Title = "设置";
+            _dialog.Content = _panel;
+        }
+
+        private void Dialog_Closing(ContentDialog sender, ContentDialogClosingEventArgs args)
         {
             _owner._viewModel.SetNumpadTagShortcuts(_panel.GetNumpadTagShortcuts());
         }

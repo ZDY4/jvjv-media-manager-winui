@@ -112,7 +112,7 @@
                                     <Button Click="ShortcutHintButton_Click"
                                             Style="{StaticResource ShortcutHintButtonStyle}"
                                             Background="{Binding BackgroundBrush}"
-                                            Tag="{Binding Digit}">
+                                            Tag="{Binding Index}">
                                         <TextBlock Text="{Binding DisplayText}"
                                                    Foreground="{ThemeResource TextBrush}"
                                                    FontSize="10"

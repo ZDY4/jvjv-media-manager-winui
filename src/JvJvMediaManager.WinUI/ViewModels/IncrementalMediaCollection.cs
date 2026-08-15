@@ -12,7 +12,7 @@ namespace JvJvMediaManager.ViewModels;
 
 public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemViewModel>, ISupportIncrementalLoading
 {
-    private readonly Func<int, int, int, Task<MediaPageResult>> _pageLoader;
+    private readonly Func<int, int, int, CancellationToken, Task<MediaPageResult>> _pageLoader;
     private readonly Func<IEnumerable<MediaFile>, IReadOnlyList<MediaItemViewModel>> _itemFactory;
     private readonly Action<int>? _generationStarted;
     private readonly SemaphoreSlim _loadLock = new(1, 1);
@@ -21,18 +21,22 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
     private readonly int _pageSize;
     private int _generation;
     private bool _hasMoreItems = true;
+    // WP-A: token tied to the current load generation; canceled when the
+    // generation is invalidated so in-flight DB work stops instead of running
+    // to completion (and dispatching) after a refresh or teardown.
+    private CancellationTokenSource _generationCts = new();
     private IUiThreadDispatcher _dispatcher = new UiThreadDispatcher(null, "IncrementalMediaCollection");
 
     public IncrementalMediaCollection(
         Func<int, int, Task<MediaPageResult>> pageLoader,
         Func<IEnumerable<MediaFile>, IReadOnlyList<MediaItemViewModel>>? itemFactory = null,
         int pageSize = 120)
-        : this((offset, limit, _) => pageLoader(offset, limit), itemFactory, pageSize)
+        : this((offset, limit, _, _) => pageLoader(offset, limit), itemFactory, pageSize)
     {
     }
 
     public IncrementalMediaCollection(
-        Func<int, int, int, Task<MediaPageResult>> pageLoader,
+        Func<int, int, int, CancellationToken, Task<MediaPageResult>> pageLoader,
         Func<IEnumerable<MediaFile>, IReadOnlyList<MediaItemViewModel>>? itemFactory = null,
         int pageSize = 120,
         Action<int>? generationStarted = null)
@@ -55,6 +59,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
     public void InvalidatePendingLoads()
     {
         var generation = Interlocked.Increment(ref _generation);
+        CancelGenerationLoads();
         _hasMoreItems = false;
         AppTraceLogger.LogSampled(
             "IncrementalMediaCollection",
@@ -63,14 +68,25 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
             TimeSpan.FromSeconds(1));
     }
 
+    // Cancels in-flight page loads of the previous generation. The CTS itself
+    // is intentionally not disposed: a command that has not registered yet may
+    // still touch the token, and Cancel() alone is enough to make every holder
+    // observe cancellation.
+    private void CancelGenerationLoads()
+    {
+        _generationCts.Cancel();
+        _generationCts = new CancellationTokenSource();
+    }
+
     public async Task RefreshAsync(Action<int>? generationStarted = null)
     {
         var generation = Interlocked.Increment(ref _generation);
+        CancelGenerationLoads();
         (generationStarted ?? _generationStarted)?.Invoke(generation);
         await _loadLock.WaitAsync();
         try
         {
-            var result = await _pageLoader(0, _pageSize, generation);
+            var result = await _pageLoader(0, _pageSize, generation, _generationCts.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -98,6 +114,10 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 "refresh-diff",
                 $"Applied refresh with diff. Loaded={Count}, HasMore={_hasMoreItems}.",
                 TimeSpan.FromSeconds(1));
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer generation; the refresh is reapplied there.
         }
         finally
         {
@@ -150,7 +170,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         {
             var generation = Volatile.Read(ref _generation);
             var windowSize = Math.Max(Count, _pageSize);
-            var result = await _pageLoader(0, windowSize, generation);
+            var result = await _pageLoader(0, windowSize, generation, _generationCts.Token);
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -174,6 +194,10 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
 
             _hasMoreItems = result.HasMore;
         }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer generation.
+        }
         finally
         {
             _loadLock.Release();
@@ -187,9 +211,20 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
 
     private async Task<LoadMoreItemsResult> LoadMoreItemsCoreAsync(uint count)
     {
-        var generation = Volatile.Read(ref _generation);
-        var loaded = await LoadMoreCoreAsync(count, generation);
-        return new LoadMoreItemsResult { Count = loaded };
+        try
+        {
+            var generation = Volatile.Read(ref _generation);
+            var loaded = await LoadMoreCoreAsync(count, generation);
+            return new LoadMoreItemsResult { Count = loaded };
+        }
+        catch (Exception ex)
+        {
+            // WP-A: the ISupportIncrementalLoading contract must never surface
+            // exceptions to the ListView/GridView; a throwing load would crash
+            // the app. Log and report zero items so the view retries later.
+            AppTraceLogger.LogException("IncrementalMediaCollection", "Incremental load failed; page skipped.", ex);
+            return new LoadMoreItemsResult { Count = 0 };
+        }
     }
 
     private async Task<uint> LoadMoreCoreAsync(uint requestedCount, int generation)
@@ -203,7 +238,7 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
             }
 
             var limit = (int)Math.Max((uint)_pageSize, requestedCount);
-            var result = await _pageLoader(Count, limit, generation);
+            var result = await _pageLoader(Count, limit, generation, _generationCts.Token);
 
             if (generation != Volatile.Read(ref _generation))
             {
@@ -225,8 +260,26 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 return 0;
             }
 
-            _hasMoreItems = result.HasMore && added > 0;
+            // Keep HasMore from the query even when this page added nothing
+            // (duplicate ids already in the window). The page store advances
+            // its keyset cursor from the SQL result so the next load is not
+            // stuck on the same page. Stopping here used to truncate the list.
+            _hasMoreItems = result.HasMore;
+            if (added == 0 && result.HasMore)
+            {
+                AppTraceLogger.LogSampled(
+                    "IncrementalMediaCollection",
+                    "load-more-duplicates-has-more",
+                    $"Load more added no new items but more pages remain. Requested={result.Items.Count}, Total={Count}.",
+                    TimeSpan.FromSeconds(2));
+            }
+
             return (uint)added;
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer generation or teardown.
+            return 0;
         }
         finally
         {

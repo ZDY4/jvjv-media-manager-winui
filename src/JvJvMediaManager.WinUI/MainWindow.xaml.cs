@@ -207,6 +207,8 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        _mainPage?.Shutdown();
+        _mainPage = null;
         RemoveLowLevelKeyboardHook();
         RemoveKeyboardSubclass();
         if (_appWindow != null)

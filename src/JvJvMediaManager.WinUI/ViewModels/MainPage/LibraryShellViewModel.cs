@@ -35,22 +35,24 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private readonly Dictionary<string, IReadOnlyList<MediaItemViewModel>> _folderGroupDirectItemsByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _persistMediaLibraryViewState;
     private readonly bool _enableWatchedFolderMonitoring;
+    private bool _folderWatchersReady;
     private readonly HashSet<string> _sessionUnlockedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _folderCollapseStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _recentUserCollapsedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _folderGroupLoadRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _pendingDeletedMediaIdsSync = new();
     private readonly HashSet<string> _pendingDeletedMediaIds = new(StringComparer.Ordinal);
-    private readonly object _deletedMediaPersistenceCleanupTasksSync = new();
-    private readonly List<Task> _deletedMediaPersistenceCleanupTasks = new();
+    private readonly LibraryPersistenceCoordinator _persistenceCoordinator;
     private IReadOnlyList<MediaFolderSummary> _mediaFolderSummaries = Array.Empty<MediaFolderSummary>();
     private readonly SelectionViewModel _selection;
     private readonly SemaphoreSlim _scanRefreshLock = new(1, 1);
     private readonly SemaphoreSlim _refreshMediaLock = new(1, 1);
-    private static readonly TimeSpan IncrementalScanRefreshInterval = TimeSpan.FromMilliseconds(350);
+    // WP-D: re-querying the loaded window + folder summaries is expensive on
+    // large libraries; once per second is plenty for live scan progress.
+    private static readonly TimeSpan IncrementalScanRefreshInterval = TimeSpan.FromMilliseconds(1000);
     private static readonly TimeSpan MediaLibraryViewStateSaveDelay = TimeSpan.FromMilliseconds(350);
-    private static readonly TimeSpan DeletedMediaPersistenceCleanupDrainTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RecentUserFolderCollapseAutoExpandSuppression = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan WatcherImportStabilityWindow = TimeSpan.FromMilliseconds(1200);
     private const int MaxFolderExpansionLoadPages = 100;
     private const int MaxExpandAllAutoLoadGroups = 3;
     private const int MaxStartupCacheCheckFolders = 8;
@@ -63,6 +65,9 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private int _pendingIncrementalScanRefresh;
     private int _mediaFolderGroupRebuildQueued;
     private int _suppressMediaFolderGroupRebuildSchedule;
+    // WP-D: rebuilds are rate-limited so bursts coalesce; see ScheduleRebuildMediaFolderGroups.
+    private static readonly TimeSpan MediaFolderGroupRebuildMinInterval = TimeSpan.FromMilliseconds(300);
+    private DateTimeOffset _lastMediaFolderGroupRebuildCompletedAt = DateTimeOffset.MinValue;
     private bool _suppressViewStatePersistence = true;
     private bool _isApplyingFolderCollapseState;
     private bool _hasAppliedInitialLibraryPaneRatio;
@@ -74,6 +79,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private DateTimeOffset _lastIncrementalScanRefreshAt = DateTimeOffset.MinValue;
     private CancellationTokenSource? _scanCancellation;
     private CancellationTokenSource? _viewStateSaveCancellation;
+    private readonly Dictionary<string, WatcherFileObservation> _watcherFileObservations = new(StringComparer.OrdinalIgnoreCase);
 
     private string _searchQuery = string.Empty;
     private bool _isLoading;
@@ -142,6 +148,18 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         _library = services.Library;
         _thumbnails = services.Thumbnails;
         _timelineThumbnails = services.TimelineThumbnails;
+        _persistenceCoordinator = new LibraryPersistenceCoordinator(
+            _db,
+            _thumbnails,
+            _timelineThumbnails,
+            RemovePendingDeletedMediaIds);
+        if (persistMediaLibraryViewState)
+        {
+            // WP-06: bound cache growth from previous sessions without blocking
+            // first paint. Only the primary shell triggers this.
+            _thumbnails.ScheduleStartupQuotaCheck();
+            _timelineThumbnails.ScheduleStartupQuotaCheck();
+        }
         var viewState = _settingsAndState.LoadMediaLibraryViewState();
         ViewMode = viewState.ViewMode;
         _sortField = viewState.SortField;
@@ -166,12 +184,6 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         WatchedFolders = new ObservableCollection<WatchedFolder>(_settingsAndState.LoadWatchedFolders());
         Playlists = new ObservableCollection<Playlist>();
         SelectedTags.CollectionChanged += (_, _) => OnPropertyChanged(nameof(SelectedTagsVisibility));
-        if (_enableWatchedFolderMonitoring)
-        {
-            _watchedFolderMonitor.ChangesReady += WatchedFolderMonitor_ChangesReady;
-            UpdateWatchedFolderWatchers();
-        }
-
         _suppressViewStatePersistence = false;
     }
 
@@ -503,9 +515,15 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     {
         AppTraceLogger.Log("LibraryShell", "InitializeAsync start.");
         _isDisposed = false;
-        UpdateWatchedFolderWatchers();
+        // WP-A: wait for background DB startup maintenance (dedup, FTS rebuild,
+        // sort indexes) before querying so results are stable and indexes exist.
+        // Keep the UI synchronization context for the collection updates below.
+        // Folder watchers stay unarmed until this completes so they cannot write
+        // the DB while CREATE INDEX / FTS rebuild / duplicate merge still hold locks.
+        await _db.StartupMaintenanceTask;
         await ReloadPlaylistsAsync();
         await RefreshMediaAsync(false);
+        ArmFolderWatchers();
         ReportInterruptedScanIfNeeded();
         QueueStartupCacheValidation();
         AppTraceLogger.Log("LibraryShell", $"InitializeAsync completed. LoadedCount={FilteredMediaItems.Count}, PlaylistCount={Playlists.Count}.");
@@ -530,6 +548,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             _watchedFolderMonitor.ChangesReady -= WatchedFolderMonitor_ChangesReady;
             _watchedFolderMonitor.Dispose();
         }
+        _folderWatchersReady = false;
     }
 
     public async Task AddFilesAsync(IEnumerable<string> paths)
@@ -695,9 +714,22 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders deleted stale media records and caches. DeletedCount={staleIds.Count}.");
     }
 
+    private void ArmFolderWatchers()
+    {
+        if (_isDisposed || !_enableWatchedFolderMonitoring || _folderWatchersReady)
+        {
+            return;
+        }
+
+        _folderWatchersReady = true;
+        _watchedFolderMonitor.ChangesReady += WatchedFolderMonitor_ChangesReady;
+        UpdateWatchedFolderWatchers();
+        AppTraceLogger.Log("LibraryShell", "Folder watchers armed after startup maintenance.");
+    }
+
     private void UpdateWatchedFolderWatchers()
     {
-        if (_isDisposed || !_enableWatchedFolderMonitoring)
+        if (_isDisposed || !_enableWatchedFolderMonitoring || !_folderWatchersReady)
         {
             return;
         }
@@ -750,8 +782,19 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                 changed = true;
             }
 
-            var importTargets = await ResolveEffectiveWatcherImportPathsAsync(changes.Imports);
-            var effectiveDeletePaths = ResolveEffectiveWatcherDeletePaths(changes.Deletes, importTargets);
+            var (importTargets, deferredImportPaths) = await ResolveEffectiveWatcherImportPathsAsync(changes.Imports);
+            if (deferredImportPaths.Count > 0)
+            {
+                _watchedFolderMonitor.Requeue(new WatchedFolderChangesEventArgs(
+                    changes.BatchId,
+                    deferredImportPaths,
+                    Array.Empty<string>(),
+                    Array.Empty<string>(),
+                    changes.FirstEventAt));
+            }
+            var effectiveDeletePaths = ResolveEffectiveWatcherDeletePaths(
+                changes.Deletes,
+                importTargets.Concat(deferredImportPaths));
             var shadowedDeleteCount = changes.Deletes.Count - effectiveDeletePaths.Count;
             var deletedIds = await ResolveMediaIdsForWatcherPathsAsync(effectiveDeletePaths);
             if (deletedIds.Count > 0)
@@ -764,7 +807,15 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
             if (importTargets.Count > 0)
             {
-                var persisted = await _library.AddFilesAsync(importTargets, new Progress<ScanProgress>(OnBackgroundLibraryProgress));
+                var persisted = await _library.AddFilesAsync(
+                    importTargets,
+                    new Progress<ScanProgress>(progress =>
+                    {
+                        if (progress.IsBackgroundUpdate)
+                        {
+                            OnBackgroundLibraryProgress(progress);
+                        }
+                    }));
                 if (persisted > 0)
                 {
                     changed = true;
@@ -838,12 +889,14 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             .ToList();
     }
 
-    private async Task<IReadOnlyList<string>> ResolveEffectiveWatcherImportPathsAsync(IEnumerable<string> importPaths)
+    private async Task<(IReadOnlyList<string> Targets, IReadOnlyList<string> Deferred)> ResolveEffectiveWatcherImportPathsAsync(IEnumerable<string> importPaths)
     {
         var targets = new List<string>();
+        var deferred = new List<string>();
         var skippedExistingUnchanged = 0;
         var skippedUnsupported = 0;
         var skippedMissing = 0;
+        var skippedUnstable = 0;
 
         foreach (var path in importPaths
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -859,35 +912,69 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
             if (!File.Exists(nativePath))
             {
+                _watcherFileObservations.Remove(path);
                 skippedMissing++;
                 continue;
             }
 
             if (!MediaExtensions.IsSupported(nativePath))
             {
+                _watcherFileObservations.Remove(path);
                 skippedUnsupported++;
+                continue;
+            }
+
+            if (!IsWatcherImportStable(path, nativePath))
+            {
+                deferred.Add(path);
+                skippedUnstable++;
                 continue;
             }
 
             if (await IsWatcherImportExistingUnchangedAsync(path, nativePath))
             {
+                _watcherFileObservations.Remove(path);
                 skippedExistingUnchanged++;
                 continue;
             }
 
+            _watcherFileObservations.Remove(path);
             targets.Add(path);
         }
 
-        if (skippedExistingUnchanged > 0 || skippedUnsupported > 0 || skippedMissing > 0)
+        if (skippedExistingUnchanged > 0 || skippedUnsupported > 0 || skippedMissing > 0 || skippedUnstable > 0)
         {
             AppTraceLogger.LogSampled(
                 "LibraryShell",
                 "folder-watcher-imports-filtered",
-                $"Filtered folder watcher import paths. Targets={targets.Count}, SkippedExistingUnchanged={skippedExistingUnchanged}, SkippedUnsupported={skippedUnsupported}, SkippedMissing={skippedMissing}.",
+                $"Filtered folder watcher import paths. Targets={targets.Count}, DeferredUnstable={skippedUnstable}, SkippedExistingUnchanged={skippedExistingUnchanged}, SkippedUnsupported={skippedUnsupported}, SkippedMissing={skippedMissing}.",
                 TimeSpan.FromSeconds(2));
         }
 
-        return targets;
+        return (targets, deferred);
+    }
+
+    private bool IsWatcherImportStable(string normalizedPath, string nativePath)
+    {
+        try
+        {
+            var info = new FileInfo(nativePath);
+            var now = DateTimeOffset.UtcNow;
+            var observation = new WatcherFileObservation(info.Length, info.LastWriteTimeUtc, now);
+            if (!_watcherFileObservations.TryGetValue(normalizedPath, out var previous)
+                || previous.Length != observation.Length
+                || previous.LastWriteTimeUtc != observation.LastWriteTimeUtc)
+            {
+                _watcherFileObservations[normalizedPath] = observation;
+                return false;
+            }
+
+            return now - previous.FirstObservedAt >= WatcherImportStabilityWindow;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task<bool> IsWatcherImportExistingUnchangedAsync(string normalizedPath, string nativePath)
@@ -1113,22 +1200,24 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             .ToList();
         AppTraceLogger.Log("LibraryShell", $"UpdateTagsAsync start. MediaCount={mediaItems.Count}, Mode={mode}, TagCount={normalized.Count}, SearchActive={!string.IsNullOrWhiteSpace(SearchQuery)}, SelectedTagFilters={SelectedTags.Count}.");
 
+        // WP-E: compute every target tag set first, then persist in one
+        // transaction with one search-index refresh per media. The previous
+        // per-tag loop opened 2xM connections per item and caused lock storms
+        // and multi-second UI freezes on large selections.
+        var tagUpdates = new List<(string MediaId, IReadOnlyList<string> Tags)>(mediaItems.Count);
+        var appliedUpdates = new List<(MediaItemViewModel Media, IReadOnlyList<string> Tags)>(mediaItems.Count);
         foreach (var media in mediaItems)
         {
             var nextTags = mode == TagUpdateMode.Append
                 ? media.Tags.Concat(normalized).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(tag => tag, StringComparer.OrdinalIgnoreCase).ToList()
                 : normalized;
+            tagUpdates.Add((media.Id, nextTags));
+            appliedUpdates.Add((media, nextTags));
+        }
 
-            foreach (var tag in media.Tags.ToList())
-            {
-                await _db.RemoveTagAsync(media.Id, tag);
-            }
-
-            foreach (var tag in nextTags)
-            {
-                await _db.AddTagAsync(media.Id, tag);
-            }
-
+        await _db.SetTagsForMediaAsync(tagUpdates);
+        foreach (var (media, nextTags) in appliedUpdates)
+        {
             media.UpdateTags(nextTags);
         }
 
@@ -1146,7 +1235,17 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             return false;
         }
 
-        var tag = NumpadTagShortcuts[digit - 1];
+        return await TryApplyTagShortcutAsync(digit, items);
+    }
+
+    public async Task<bool> TryApplyTagShortcutAsync(int index, IEnumerable<MediaItemViewModel> items)
+    {
+        if (index < 1 || index > NumpadTagShortcuts.Count)
+        {
+            return false;
+        }
+
+        var tag = NumpadTagShortcuts[index - 1];
         if (string.IsNullOrWhiteSpace(tag))
         {
             return false;
@@ -1163,7 +1262,12 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
 
         var allTagged = mediaItems.All(item => item.Tags.Any(existing => string.Equals(existing, tag, StringComparison.OrdinalIgnoreCase)));
-        AppTraceLogger.Log("LibraryShell", $"TryApplyNumpadTagShortcutAsync start. Digit={digit}, Tag='{tag}', MediaCount={mediaItems.Count}, Removing={allTagged}.");
+        AppTraceLogger.Log("LibraryShell", $"TryApplyTagShortcutAsync start. Index={index}, Tag='{tag}', MediaCount={mediaItems.Count}, Removing={allTagged}.");
+
+        // WP-E: batch persistence like UpdateTagsAsync; one transaction and one
+        // search-index refresh per media instead of 2xM per-item connections.
+        var tagUpdates = new List<(string MediaId, IReadOnlyList<string> Tags)>(mediaItems.Count);
+        var appliedUpdates = new List<(MediaItemViewModel Media, IReadOnlyList<string> Tags)>(mediaItems.Count);
         foreach (var media in mediaItems)
         {
             var nextTags = allTagged
@@ -1176,17 +1280,13 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(existing => existing, StringComparer.OrdinalIgnoreCase)
                     .ToList();
+            tagUpdates.Add((media.Id, nextTags));
+            appliedUpdates.Add((media, nextTags));
+        }
 
-            foreach (var existing in media.Tags.ToList())
-            {
-                await _db.RemoveTagAsync(media.Id, existing);
-            }
-
-            foreach (var nextTag in nextTags)
-            {
-                await _db.AddTagAsync(media.Id, nextTag);
-            }
-
+        await _db.SetTagsForMediaAsync(tagUpdates);
+        foreach (var (media, nextTags) in appliedUpdates)
+        {
             media.UpdateTags(nextTags);
         }
 
@@ -1202,7 +1302,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             : mediaItems.Count == 1
                 ? $"已为当前媒体追加标签：{tag}"
                 : $"已为 {mediaItems.Count} 个媒体追加标签：{tag}";
-        AppTraceLogger.Log("LibraryShell", $"TryApplyNumpadTagShortcutAsync completed. Digit={digit}, Tag='{tag}', MediaCount={mediaItems.Count}, Removed={allTagged}.");
+        AppTraceLogger.Log("LibraryShell", $"TryApplyTagShortcutAsync completed. Index={index}, Tag='{tag}', MediaCount={mediaItems.Count}, Removed={allTagged}.");
         return true;
     }
 
@@ -1318,89 +1418,23 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
     private void QueueDeletedMediaPersistenceCleanup(IReadOnlyList<string> mediaIds)
     {
-        if (mediaIds.Count == 0)
-        {
-            return;
-        }
+        _persistenceCoordinator.QueueDeletedMediaCleanup(mediaIds);
+    }
 
-        var ids = mediaIds
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (ids.Count == 0)
+    private void RemovePendingDeletedMediaIds(IReadOnlyList<string> ids)
+    {
+        lock (_pendingDeletedMediaIdsSync)
         {
-            return;
+            foreach (var id in ids)
+            {
+                _pendingDeletedMediaIds.Remove(id);
+            }
         }
-
-        var cleanupTask = Task.Run(async () =>
-        {
-            try
-            {
-                await _db.DeleteMediaAsync(ids);
-                _thumbnails.ClearCacheForMediaIds(ids);
-                _timelineThumbnails.ClearCacheForMediaIds(ids);
-                AppTraceLogger.Log("LibraryShell", $"Deleted media persistence cleanup completed. Count={ids.Count}.");
-            }
-            catch (Exception ex)
-            {
-                AppTraceLogger.LogException("LibraryShell", $"Deleted media persistence cleanup failed. Count={ids.Count}.", ex);
-            }
-            finally
-            {
-                lock (_pendingDeletedMediaIdsSync)
-                {
-                    foreach (var id in ids)
-                    {
-                        _pendingDeletedMediaIds.Remove(id);
-                    }
-                }
-            }
-        });
-        lock (_deletedMediaPersistenceCleanupTasksSync)
-        {
-            _deletedMediaPersistenceCleanupTasks.Add(cleanupTask);
-        }
-
-        _ = cleanupTask.ContinueWith(
-            task =>
-            {
-                lock (_deletedMediaPersistenceCleanupTasksSync)
-                {
-                    _deletedMediaPersistenceCleanupTasks.Remove(task);
-                }
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
     }
 
     private void DrainDeletedMediaPersistenceCleanupTasks()
     {
-        Task[] pendingTasks;
-        lock (_deletedMediaPersistenceCleanupTasksSync)
-        {
-            pendingTasks = _deletedMediaPersistenceCleanupTasks
-                .Where(task => !task.IsCompleted)
-                .ToArray();
-        }
-
-        if (pendingTasks.Length == 0)
-        {
-            return;
-        }
-
-        AppTraceLogger.Log("LibraryShell", $"Draining deleted media persistence cleanup tasks. Count={pendingTasks.Length}.");
-        try
-        {
-            if (!Task.WaitAll(pendingTasks, DeletedMediaPersistenceCleanupDrainTimeout))
-            {
-                AppTraceLogger.Log("LibraryShell", $"Deleted media persistence cleanup drain timed out. Pending={pendingTasks.Count(task => !task.IsCompleted)}.");
-            }
-        }
-        catch (Exception ex)
-        {
-            AppTraceLogger.LogException("LibraryShell", "DrainDeletedMediaPersistenceCleanupTasks failed.", ex);
-        }
+        _persistenceCoordinator.Drain();
     }
 
     public async Task RefreshMediaAsync(bool preserveSelection, bool updateLoadingState = true)
@@ -1579,6 +1613,21 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         return media == null
             ? null
             : await RunOnUiThreadAsync(() => _mediaItemStore.GetOrUpdate(media));
+    }
+
+    public bool IsMediaInCollapsedOrUnloadedGroup(MediaItemViewModel media)
+    {
+        if (string.IsNullOrWhiteSpace(media.FolderPath))
+        {
+            return false;
+        }
+
+        if (!_mediaFolderGroupsByPath.TryGetValue(PathHelpers.NormalizeFolderPath(media.FolderPath), out var group))
+        {
+            return true;
+        }
+
+        return group.IsCollapsed || !group.HasLoadedItems;
     }
 
     public void EnsureMediaFolderExpanded(MediaItemViewModel media)
@@ -1779,21 +1828,29 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             TimeSpan.FromSeconds(1));
     }
 
-    public async Task EnsureThumbnailAsync(MediaItemViewModel item)
+    public async Task EnsureThumbnailAsync(MediaItemViewModel item, CancellationToken cancellationToken = default)
     {
         if (!item.TryBeginThumbnailLoad())
         {
             return;
         }
 
-        var source = await _thumbnails.GetThumbnailAsync(item.Media);
-        if (source != null)
+        try
         {
-            SetThumbnailSafe(item, source);
-            return;
-        }
+            var source = await _thumbnails.GetThumbnailAsync(item.Media, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (source != null)
+            {
+                SetThumbnailSafe(item, source);
+                return;
+            }
 
-        item.ResetThumbnailLoadState();
+            item.RecordThumbnailLoadFailure();
+        }
+        catch (OperationCanceledException)
+        {
+            item.CancelThumbnailLoad();
+        }
     }
 
     public async Task<Playlist> CreatePlaylistAsync(string name)
@@ -2455,6 +2512,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             "media-folder-groups-rebuild",
             $"Rebuilt media folder groups. SummaryCount={_mediaFolderSummaries.Count}, LoadedFolderCount={loadedGroups.Count}, DirectFolderCount={directCounts.Count}, OutputGroupCount={nextGroups.Count}, ExistingGroupCount={existingGroups.Count}, DetachedGroupCount={removedGroups.Count}, VisibleItemCount={visibleItemCount}, LoadedVisibleGroupCount={loadedVisibleGroupCount}, HiddenLoadedFolderCount={hiddenLoadedFolderCount}, RecoveryAllowed={allowLoadedMediaVisibilityRecovery}, RecoveredCollapseStates={recoveredCollapseStateCount}, ElapsedMs={stopwatch.ElapsedMilliseconds}.",
             TimeSpan.FromSeconds(1));
+        _lastMediaFolderGroupRebuildCompletedAt = DateTimeOffset.UtcNow;
     }
 
     private int CountCollapsedLoadedMediaFolders(IEnumerable<string> loadedFolderPaths)
@@ -2514,8 +2572,50 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             return;
         }
 
+        // WP-D: rate-limit scheduled rebuilds so page-load bursts and watcher
+        // batches coalesce into one O(n) rebuild instead of several back-to-back
+        // ones. The queued flag guarantees the latest state is always rebuilt.
+        var wait = _lastMediaFolderGroupRebuildCompletedAt + MediaFolderGroupRebuildMinInterval - DateTimeOffset.UtcNow;
+        if (wait > TimeSpan.Zero)
+        {
+            _ = EnqueueMediaFolderGroupRebuildAfterDelayAsync(wait);
+            return;
+        }
+
+        EnqueueMediaFolderGroupRebuild();
+    }
+
+    private async Task EnqueueMediaFolderGroupRebuildAfterDelayAsync(TimeSpan delay)
+    {
+        try
+        {
+            await Task.Delay(delay);
+            if (_isDisposed || Volatile.Read(ref _mediaFolderGroupRebuildQueued) == 0)
+            {
+                return;
+            }
+
+            EnqueueMediaFolderGroupRebuild();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("LibraryShell", "Deferred media folder group rebuild failed.", ex);
+        }
+    }
+
+    private void EnqueueMediaFolderGroupRebuild()
+    {
         if (!_dispatcher.Enqueue(
-            () => RebuildMediaFolderGroups(),
+            () =>
+            {
+                if (_isDisposed)
+                {
+                    Interlocked.Exchange(ref _mediaFolderGroupRebuildQueued, 0);
+                    return;
+                }
+
+                RebuildMediaFolderGroups();
+            },
             DispatcherQueuePriority.Low,
             "ScheduleRebuildMediaFolderGroups failed."))
         {
@@ -2785,6 +2885,11 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     {
         _refreshOrchestrator.Request(kind, source, preserveSelection, updateLoadingState);
     }
+
+    private readonly record struct WatcherFileObservation(
+        long Length,
+        DateTime LastWriteTimeUtc,
+        DateTimeOffset FirstObservedAt);
 
     private Task QueueRefreshMediaAsync(
         bool preserveSelection,

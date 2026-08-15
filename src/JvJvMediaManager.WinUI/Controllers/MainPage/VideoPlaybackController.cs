@@ -20,6 +20,8 @@ namespace JvJvMediaManager.Controllers.MainPage;
 
 public sealed class VideoPlaybackController
 {
+    private const double TransportPointerZoneHeight = 112;
+
     private enum PlaybackMode
     {
         ListLoop,
@@ -42,9 +44,13 @@ public sealed class VideoPlaybackController
     private readonly Action _refreshNavigationHotspots;
     private readonly Action<TimeSpan> _handleMediaOpened;
     private readonly Action _notifyPlaybackProgressChanged;
+    private readonly PlaybackResourceCoordinator _playbackResources;
+    private readonly IPlaybackActivityLease _playbackLease;
+    private static int _playbackOwnerSequence;
     private readonly Random _random = new();
     private readonly DispatcherTimer _playbackTimer = new();
     private readonly DispatcherTimer _controlsHideTimer = new();
+    private readonly DispatcherTimer _uiHeartbeatTimer = new();
     private readonly MenuFlyout _playbackModeFlyout;
     private readonly RadioMenuFlyoutItem _listLoopModeItem;
     private readonly RadioMenuFlyoutItem _singleLoopModeItem;
@@ -61,6 +67,8 @@ public sealed class VideoPlaybackController
     private bool _isSeeking;
     private bool _areControlsVisible = true;
     private bool _isTransportSuppressed;
+    private bool _isPointerOverProgressInteraction;
+    private bool _isPointerInTransportZone;
     private bool _progressSliderHandlersAttached;
     private double _lastNonZeroVolume = 0.8;
     private bool _autoAdvanceEnabled;
@@ -68,6 +76,11 @@ public sealed class VideoPlaybackController
     private PlaybackMode _playbackMode = PlaybackMode.ListLoop;
     private TimeSpan _lastPlaybackPosition;
     private TimeSpan _lastPlaybackDuration;
+    private long _lastUiHeartbeatTimestamp;
+    private long _lastSeekTimestamp;
+    private TimeSpan _lastSeekTarget;
+    private int _pendingSeekVersion;
+    private int _completedSeekVersion;
     private string? _currentTimeTextOverride;
     private string? _totalTimeTextOverride;
     private double? _progressValueOverrideSeconds;
@@ -86,14 +99,10 @@ public sealed class VideoPlaybackController
     };
     private int _mediaSourceVersion;
     private string? _pendingInternalShuffleSelectionId;
-    private long _sourceLoadStartTimestamp;
-    private int _sourceLoadStartVersion;
-    private long _sourceAssignedTimestamp;
-    private long _switchSelectionChangedTimestamp;
-    private long _firstPlayingTimestamp;
-    private int _switchTraceId;
-    private int _switchTraceSourceVersion;
-    private bool _firstPlayingLoggedForSource;
+    private readonly PlaybackSessionTelemetry _telemetry;
+    private int _failedMediaSourceVersion;
+    private int _handledMediaFailedSourceVersion;
+    private int _pendingPlayerDisposalCount;
     private int _isDisposed;
 
     public VideoPlaybackController(
@@ -111,7 +120,8 @@ public sealed class VideoPlaybackController
         Action focusHost,
         Action refreshNavigationHotspots,
         Action<TimeSpan> handleMediaOpened,
-        Action notifyPlaybackProgressChanged)
+        Action notifyPlaybackProgressChanged,
+        PlaybackResourceCoordinator playbackResources)
     {
         _settings = settings;
         _libraryViewModel = libraryViewModel;
@@ -128,6 +138,8 @@ public sealed class VideoPlaybackController
         _refreshNavigationHotspots = refreshNavigationHotspots;
         _handleMediaOpened = handleMediaOpened;
         _notifyPlaybackProgressChanged = notifyPlaybackProgressChanged;
+        _playbackResources = playbackResources;
+        _playbackLease = playbackResources.Acquire($"video-controller-{Interlocked.Increment(ref _playbackOwnerSequence)}");
         _playbackMode = ParsePlaybackMode(_settings.PlaybackMode);
         _autoAdvanceEnabled = _settings.PlaybackAutoAdvanceEnabled;
         _shuffleVideoOnly = _settings.ShuffleVideoOnly;
@@ -146,12 +158,13 @@ public sealed class VideoPlaybackController
             IsChecked = _autoAdvanceEnabled
         };
         _watchdog = new PlaybackWatchdogController(
-            sourceVersion => sourceVersion == Volatile.Read(ref _mediaSourceVersion),
+            IsCurrentMediaSourceActive,
             IsDisposed,
             VerifyPlaybackStartedOnUiThread,
             TryRevealVideoSurfaceOnUiThreadAsync,
             LogPlaybackTrace);
         _shuffle = new ShufflePlaybackController(() => _shuffleVideoOnly, LogPlaybackTrace);
+        _telemetry = new PlaybackSessionTelemetry(() => _libraryViewModel.SelectedMedia);
         _progressPreview = new ProgressPreviewController(
             _libraryViewModel,
             _transportBarView,
@@ -188,6 +201,10 @@ public sealed class VideoPlaybackController
         _playbackTimer.Tick += PlaybackTimer_Tick;
         _controlsHideTimer.Interval = TimeSpan.FromSeconds(2.5);
         _controlsHideTimer.Tick += ControlsHideTimer_Tick;
+        _uiHeartbeatTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _uiHeartbeatTimer.Tick += UiHeartbeatTimer_Tick;
+        _lastUiHeartbeatTimestamp = Stopwatch.GetTimestamp();
+        _uiHeartbeatTimer.Start();
         _shuffleVideoOnlyMenuItem.Click += ShuffleVideoOnlyMenuItem_Click;
         _autoAdvanceMenuItem.Click += AutoAdvanceMenuItem_Click;
 
@@ -231,6 +248,17 @@ public sealed class VideoPlaybackController
         ClearShuffleHistory("external-selection");
     }
 
+    private static PlaybackActivityState MapPlaybackState(MediaPlaybackState state)
+    {
+        return state switch
+        {
+            MediaPlaybackState.Opening => PlaybackActivityState.Opening,
+            MediaPlaybackState.Buffering => PlaybackActivityState.Buffering,
+            MediaPlaybackState.Playing => PlaybackActivityState.Playing,
+            _ => PlaybackActivityState.Inactive
+        };
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _isDisposed, 1) == 1)
@@ -240,6 +268,7 @@ public sealed class VideoPlaybackController
 
         Interlocked.Increment(ref _mediaSourceVersion);
         LogPlaybackTrace("Dispose start.");
+        _playbackLease.SetState(PlaybackActivityState.Inactive);
         _transportBarView.ProgressSlider.Loaded -= ProgressSlider_Loaded;
         _transportBarView.ProgressSlider.KeyDown -= ProgressSlider_KeyDown;
         _transportBarView.ProgressSlider.ValueChanged -= ProgressSlider_ValueChanged;
@@ -274,6 +303,8 @@ public sealed class VideoPlaybackController
         _autoAdvanceMenuItem.Click -= AutoAdvanceMenuItem_Click;
         _playbackTimer.Stop();
         _controlsHideTimer.Stop();
+        _uiHeartbeatTimer.Stop();
+        _uiHeartbeatTimer.Tick -= UiHeartbeatTimer_Tick;
         _progressPreview.Dispose();
 
         var player = Interlocked.Exchange(ref _player, null);
@@ -283,6 +314,7 @@ public sealed class VideoPlaybackController
             player.Dispose();
         }
 
+        _playbackLease.Dispose();
         LogPlaybackTrace("Dispose completed.");
     }
 
@@ -294,21 +326,17 @@ public sealed class VideoPlaybackController
         }
 
         var mediaSourceVersion = Interlocked.Increment(ref _mediaSourceVersion);
+        _playbackLease.SetState(PlaybackActivityState.Opening);
         var player = ReplaceMediaPlayerForNewSource();
         var showVideoStartTimestamp = Stopwatch.GetTimestamp();
-        _sourceLoadStartTimestamp = showVideoStartTimestamp;
-        _sourceLoadStartVersion = mediaSourceVersion;
-        _sourceAssignedTimestamp = 0;
-        _firstPlayingTimestamp = 0;
-        _switchSelectionChangedTimestamp = selectionChangedTimestamp;
-        _switchTraceId = switchTraceId;
-        _switchTraceSourceVersion = mediaSourceVersion;
-        _firstPlayingLoggedForSource = false;
+        _telemetry.BeginSwitch(showVideoStartTimestamp, mediaSourceVersion, selectionChangedTimestamp, switchTraceId);
+        Interlocked.Exchange(ref _failedMediaSourceVersion, 0);
+        Interlocked.Exchange(ref _handledMediaFailedSourceVersion, 0);
         LogPlaybackTrace($"ShowVideo file={media.FileName} path={media.FileSystemPath} sourceVersion={mediaSourceVersion} {DescribeMediaPlaybackDiagnostics(media)}");
-        LogPlaybackSwitchTrace(
+        _telemetry.LogSwitchTrace(
             mediaSourceVersion,
             "ShowVideoStart",
-            $"SelectedToShowVideoMs={FormatElapsedMilliseconds(selectionChangedTimestamp)}.");
+            $"SelectedToShowVideoMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(selectionChangedTimestamp)}, PendingPlayerDisposal={Volatile.Read(ref _pendingPlayerDisposalCount)}, ReusePlayer={FeatureFlags.ReusePlayerEnabled}.");
         _progressPreview.ResetForMedia(media.Id);
         ShowVideoLoadingPreview(media, mediaSourceVersion);
         _videoPlayer.Visibility = Visibility.Visible;
@@ -318,14 +346,14 @@ public sealed class VideoPlaybackController
         LogPlaybackTrace($"Assigning MediaPlayer source. SourceVersion={mediaSourceVersion}, UriScheme='{new Uri(media.FileSystemPath).Scheme}', PathExists={File.Exists(media.FileSystemPath)}.");
         var sourceAssignStartTimestamp = Stopwatch.GetTimestamp();
         player.Source = MediaSource.CreateFromUri(new Uri(media.FileSystemPath));
-        _sourceAssignedTimestamp = Stopwatch.GetTimestamp();
-        LogPlaybackSwitchTrace(
+        _telemetry.MarkSourceAssigned();
+        _telemetry.LogSwitchTrace(
             mediaSourceVersion,
             "SourceAssigned",
-            $"SelectedToSourceAssignedMs={FormatElapsedMilliseconds(selectionChangedTimestamp)}, ShowVideoToSourceAssignedMs={Stopwatch.GetElapsedTime(showVideoStartTimestamp).TotalMilliseconds:0.###}, SourceAssignSyncMs={Stopwatch.GetElapsedTime(sourceAssignStartTimestamp).TotalMilliseconds:0.###}.");
+            $"SelectedToSourceAssignedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(selectionChangedTimestamp)}, ShowVideoToSourceAssignedMs={Stopwatch.GetElapsedTime(showVideoStartTimestamp).TotalMilliseconds:0.###}, SourceAssignSyncMs={Stopwatch.GetElapsedTime(sourceAssignStartTimestamp).TotalMilliseconds:0.###}.");
         RequestPlaybackStart(mediaSourceVersion, "ShowVideo");
         SetVideoState();
-        ShowControls();
+        ShowMediaSwitchControls();
         _focusHost();
     }
 
@@ -333,6 +361,7 @@ public sealed class VideoPlaybackController
     {
         Interlocked.Increment(ref _mediaSourceVersion);
         LogPlaybackTrace("PauseAndClearSource invoked.");
+        _playbackLease.SetState(PlaybackActivityState.Inactive);
         if (IsDisposed())
         {
             return;
@@ -413,8 +442,70 @@ public sealed class VideoPlaybackController
         _viewModel.ControlBarOpacity = 1;
         _transportBarView.ControlBar.IsHitTestVisible = true;
         _areControlsVisible = true;
+        SetProgressInteractionExpanded(_isPointerInTransportZone || _isPointerOverProgressInteraction);
         _refreshNavigationHotspots();
-        RestartControlsHideTimer();
+        if (_isPointerInTransportZone)
+        {
+            _controlsHideTimer.Stop();
+        }
+        else
+        {
+            RestartControlsHideTimer();
+        }
+    }
+
+    public void HandlePlayerPointerMoved(double pointerY, double playerHeight)
+    {
+        if (IsDisposed() || playerHeight <= 0)
+        {
+            return;
+        }
+
+        var isInTransportZone = pointerY >= Math.Max(0, playerHeight - TransportPointerZoneHeight);
+        if (_isPointerInTransportZone == isInTransportZone)
+        {
+            if (isInTransportZone)
+            {
+                _controlsHideTimer.Stop();
+            }
+            else if (_areControlsVisible && !_isSeeking && !_viewModel.IsVolumeFlyoutOpen)
+            {
+                ShowCompactProgressOnly();
+            }
+
+            return;
+        }
+
+        _isPointerInTransportZone = isInTransportZone;
+        if (isInTransportZone)
+        {
+            ShowControls();
+            SetProgressInteractionExpanded(true);
+            _controlsHideTimer.Stop();
+            return;
+        }
+
+        if (!_isSeeking && !_viewModel.IsVolumeFlyoutOpen)
+        {
+            ShowCompactProgressOnly();
+        }
+    }
+
+    public void ShowMediaSwitchControls()
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        if (_isPointerInTransportZone || _isPointerOverProgressInteraction)
+        {
+            ShowControls();
+            SetProgressInteractionExpanded(true);
+            return;
+        }
+
+        ShowCompactProgressOnly();
     }
 
     public void HandlePointerExited()
@@ -424,7 +515,11 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        RestartControlsHideTimer();
+        _isPointerInTransportZone = false;
+        if (!_isSeeking && !_viewModel.IsVolumeFlyoutOpen)
+        {
+            ShowCompactProgressOnly();
+        }
     }
 
     public void HideControlsImmediately()
@@ -447,12 +542,13 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        _progressPreview.Hide();
-        _progressPreview.CancelFrameRequest();
         CloseVolumeFlyout();
         _viewModel.ControlBarOpacity = 0;
         _transportBarView.ControlBar.IsHitTestVisible = false;
         _areControlsVisible = false;
+        _progressPreview.Hide();
+        _progressPreview.CancelFrameRequest();
+        SetProgressInteractionExpanded(false);
         _refreshNavigationHotspots();
         _controlsHideTimer.Stop();
     }
@@ -473,10 +569,12 @@ public sealed class VideoPlaybackController
         if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
         {
             player.Pause();
+            _playbackLease.SetState(PlaybackActivityState.Inactive);
         }
         else
         {
             player.Play();
+            _playbackLease.SetState(PlaybackActivityState.Playing);
         }
 
         ShowControls();
@@ -575,7 +673,15 @@ public sealed class VideoPlaybackController
         }
 
         player.PlaybackSession.Position = position;
+        _lastSeekTimestamp = Stopwatch.GetTimestamp();
+        _lastSeekTarget = position;
+        var seekVersion = Interlocked.Increment(ref _pendingSeekVersion);
         LogPlaybackTraceSampled("seek-to", $"SeekTo requested={requested.TotalSeconds:F3}s applied={position.TotalSeconds:F3}s duration={duration.TotalSeconds:F3}s", TimeSpan.FromSeconds(2));
+        AppTraceLogger.LogSampled(
+            "VideoPlayback",
+            "seek-request",
+            $"mediaId={_libraryViewModel.SelectedMedia?.Id ?? "<null>"} Seek requested. SeekVersion={seekVersion}, Requested={requested.TotalSeconds:F3}s, Applied={position.TotalSeconds:F3}s, Duration={duration.TotalSeconds:F3}s, PlaybackState={player.PlaybackSession.PlaybackState}.",
+            TimeSpan.FromMilliseconds(500));
         _lastPlaybackPosition = position;
         _lastPlaybackDuration = duration;
         UpdateTimeDisplay();
@@ -619,6 +725,7 @@ public sealed class VideoPlaybackController
             _viewModel.ControlBarVisibility = Visibility.Collapsed;
             _viewModel.ControlBarOpacity = 0;
             _transportBarView.ControlBar.IsHitTestVisible = false;
+            SetProgressInteractionExpanded(false);
             _areControlsVisible = true;
             _refreshNavigationHotspots();
             _controlsHideTimer.Stop();
@@ -628,9 +735,14 @@ public sealed class VideoPlaybackController
         _viewModel.ControlBarVisibility = Visibility.Visible;
         _viewModel.ControlBarOpacity = 1;
         _transportBarView.ControlBar.IsHitTestVisible = true;
+        SetProgressInteractionExpanded(false);
         _areControlsVisible = true;
         _refreshNavigationHotspots();
-        RestartControlsHideTimer();
+        _isPointerInTransportZone = false;
+        if (!_isSeeking && !_viewModel.IsVolumeFlyoutOpen)
+        {
+            ShowCompactProgressOnly();
+        }
     }
 
     private void SetPassiveState(bool showImageNavigation)
@@ -646,6 +758,7 @@ public sealed class VideoPlaybackController
         _viewModel.ControlBarVisibility = Visibility.Collapsed;
         _viewModel.ControlBarOpacity = 0;
         _transportBarView.ControlBar.IsHitTestVisible = false;
+        SetProgressInteractionExpanded(false);
         _areControlsVisible = showImageNavigation;
         _refreshNavigationHotspots();
         _controlsHideTimer.Stop();
@@ -655,6 +768,7 @@ public sealed class VideoPlaybackController
     {
         return !_isTransportSuppressed
             && _viewModel.ControlBarVisibility == Visibility.Visible
+            && !_isPointerInTransportZone
             && !_isSeeking
             && !_viewModel.IsVolumeFlyoutOpen
             && _canAutoHideControls();
@@ -700,11 +814,39 @@ public sealed class VideoPlaybackController
     {
         ObjectDisposedException.ThrowIf(IsDisposed(), this);
 
+        // WP-07 Step B: controlled player reuse behind a feature flag. Reuses the
+        // same MediaPlayer and only swaps the source, avoiding native decoder /
+        // GPU resource churn. Off by default; the replace-per-source strategy
+        // below remains the verified default.
+        if (FeatureFlags.ReusePlayerEnabled && _player != null)
+        {
+            var reused = _player;
+            try
+            {
+                reused.Pause();
+                reused.Source = null;
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("VideoPlayback", "Failed to reset reused MediaPlayer source.", ex);
+            }
+
+            AppTraceLogger.LogSampled(
+                "VideoPlayback",
+                "player-reused",
+                "Reused existing MediaPlayer for new source (ReusePlayer strategy).",
+                TimeSpan.FromSeconds(2));
+            return reused;
+        }
+
         var oldPlayer = _player;
         if (oldPlayer != null)
         {
             try
             {
+                // Synchronously stop the outgoing player before scheduling its
+                // disposal so its decoder/session releases promptly and stale
+                // events stop arriving.
                 oldPlayer.Pause();
                 oldPlayer.Source = null;
             }
@@ -729,20 +871,36 @@ public sealed class VideoPlaybackController
 
         if (oldPlayer != null)
         {
+            var pending = Interlocked.Increment(ref _pendingPlayerDisposalCount);
+            if (pending > 1)
+            {
+                AppTraceLogger.LogSampled(
+                    "VideoPlayback",
+                    "pending-player-disposal-backlog",
+                    $"Pending MediaPlayer disposal backlog detected. PendingDisposalCount={pending}.",
+                    TimeSpan.FromSeconds(2));
+            }
+
+            var playerToDispose = oldPlayer;
             _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
             {
-                if (ReferenceEquals(oldPlayer, Volatile.Read(ref _player)))
+                if (ReferenceEquals(playerToDispose, Volatile.Read(ref _player)))
                 {
+                    Interlocked.Decrement(ref _pendingPlayerDisposalCount);
                     return;
                 }
 
                 try
                 {
-                    oldPlayer.Dispose();
+                    playerToDispose.Dispose();
                 }
                 catch (Exception ex)
                 {
                     AppTraceLogger.LogException("VideoPlayback", "Failed to dispose old MediaPlayer after source replacement.", ex);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _pendingPlayerDisposalCount);
                 }
             });
         }
@@ -979,7 +1137,9 @@ public sealed class VideoPlaybackController
 
     private void ProgressSlider_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
-        _transportBarView.ProgressSlider.Opacity = 1;
+        _isPointerOverProgressInteraction = true;
+        ShowControls();
+        SetProgressInteractionExpanded(true);
         _progressPreview.UpdateFromPointer(e);
     }
 
@@ -990,16 +1150,85 @@ public sealed class VideoPlaybackController
 
     private void ProgressSlider_PointerExited(object sender, PointerRoutedEventArgs e)
     {
-        _transportBarView.ProgressSlider.Opacity = 0.15;
+        _isPointerOverProgressInteraction = false;
         _progressPreview.Hide();
         _progressPreview.CancelFrameRequest();
     }
 
     private void ProgressSlider_PointerCanceled(object sender, PointerRoutedEventArgs e)
     {
-        _transportBarView.ProgressSlider.Opacity = 0.15;
+        _isPointerOverProgressInteraction = false;
         _progressPreview.Hide();
         _progressPreview.CancelFrameRequest();
+    }
+
+    private void SetProgressInteractionExpanded(bool expanded)
+    {
+        var canShowProgress = _viewModel.ControlBarVisibility == Visibility.Visible
+            && !_isTransportSuppressed
+            && _libraryViewModel.SelectedMedia?.Type == MediaType.Video;
+        var compactVisibility = canShowProgress && !expanded
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        var sliderVisibility = canShowProgress && expanded ? Visibility.Visible : Visibility.Collapsed;
+        var fullVisibility = canShowProgress && expanded ? Visibility.Visible : Visibility.Collapsed;
+        _transportBarView.CompactProgressHost.Visibility = compactVisibility;
+        _transportBarView.CurrentTimeText.Visibility = fullVisibility;
+        _transportBarView.ProgressSlider.Visibility = sliderVisibility;
+        _transportBarView.ProgressSlider.Opacity = expanded ? 1 : 0.15;
+        _transportBarView.TotalTimeText.Visibility = Visibility.Collapsed;
+        if (expanded)
+        {
+            _transportBarView.ProgressSlider.UpdateLayout();
+        }
+    }
+
+    private void KeepControlsVisible()
+    {
+        if (_isTransportSuppressed)
+        {
+            _areControlsVisible = true;
+            _refreshNavigationHotspots();
+            _controlsHideTimer.Stop();
+            return;
+        }
+
+        if (_viewModel.ControlBarVisibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _viewModel.ControlBarOpacity = 1;
+        _transportBarView.ControlBar.IsHitTestVisible = true;
+        _areControlsVisible = true;
+        _refreshNavigationHotspots();
+        RestartControlsHideTimer();
+    }
+
+    private void ShowCompactProgressOnly()
+    {
+        if (_isTransportSuppressed)
+        {
+            _areControlsVisible = true;
+            _refreshNavigationHotspots();
+            _controlsHideTimer.Stop();
+            return;
+        }
+
+        if (_viewModel.ControlBarVisibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        CloseVolumeFlyout();
+        _viewModel.ControlBarOpacity = 0;
+        _transportBarView.ControlBar.IsHitTestVisible = false;
+        _areControlsVisible = false;
+        SetProgressInteractionExpanded(false);
+        _progressPreview.Hide();
+        _progressPreview.CancelFrameRequest();
+        _refreshNavigationHotspots();
+        _controlsHideTimer.Stop();
     }
 
     private void VolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -1162,7 +1391,7 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        ShowControls();
+        KeepControlsVisible();
     }
 
     private void ControlBar_PointerPressed(object sender, PointerRoutedEventArgs e)
@@ -1216,6 +1445,34 @@ public sealed class VideoPlaybackController
         HideControls();
     }
 
+    private void UiHeartbeatTimer_Tick(object? sender, object e)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        var previous = _lastUiHeartbeatTimestamp;
+        _lastUiHeartbeatTimestamp = now;
+        if (previous == 0)
+        {
+            return;
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(previous, now);
+        if (elapsed <= TimeSpan.FromMilliseconds(900))
+        {
+            return;
+        }
+
+        AppTraceLogger.LogSampled(
+            "UiPerf",
+            "dispatcher-heartbeat-lag",
+            $"Dispatcher heartbeat lag detected. ElapsedMs={elapsed.TotalMilliseconds:0}, SelectedMediaId='{_libraryViewModel.SelectedMedia?.Id ?? "<null>"}', PlayerState={_player?.PlaybackSession.PlaybackState.ToString() ?? "<null>"}, PlaybackActive={_playbackResources.IsPlaybackActive}.",
+            TimeSpan.FromSeconds(2));
+    }
+
     private void PlaybackTimer_Tick(object? sender, object e)
     {
         if (IsDisposed())
@@ -1237,9 +1494,37 @@ public sealed class VideoPlaybackController
 
         _lastPlaybackPosition = player.PlaybackSession.Position;
         _lastPlaybackDuration = duration;
+        TryLogSeekRecovered(player.PlaybackSession.Position, duration, player.PlaybackSession.PlaybackState);
 
         UpdateTimeDisplay();
         _notifyPlaybackProgressChanged();
+    }
+
+    private void TryLogSeekRecovered(TimeSpan position, TimeSpan duration, MediaPlaybackState playbackState)
+    {
+        var seekVersion = Volatile.Read(ref _pendingSeekVersion);
+        if (seekVersion == 0
+            || seekVersion == Volatile.Read(ref _completedSeekVersion)
+            || _lastSeekTimestamp == 0)
+        {
+            return;
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(_lastSeekTimestamp);
+        var distanceFromTarget = Math.Abs((position - _lastSeekTarget).TotalSeconds);
+        var recovered = playbackState == MediaPlaybackState.Playing
+            && (distanceFromTarget <= 1.0 || position >= _lastSeekTarget);
+        if (!recovered && elapsed < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _completedSeekVersion, seekVersion);
+        AppTraceLogger.LogSampled(
+            "VideoPlayback",
+            "seek-recovered",
+            $"mediaId={_libraryViewModel.SelectedMedia?.Id ?? "<null>"} Seek recovered. SeekVersion={seekVersion}, ElapsedMs={elapsed.TotalMilliseconds:0}, Target={_lastSeekTarget.TotalSeconds:F3}s, Position={position.TotalSeconds:F3}s, Duration={duration.TotalSeconds:F3}s, State={playbackState}, Recovered={recovered}.",
+            TimeSpan.FromMilliseconds(500));
     }
 
     private void Player_MediaOpened(MediaPlayer sender, object args)
@@ -1253,17 +1538,17 @@ public sealed class VideoPlaybackController
         var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
         _dispatcherQueue.TryEnqueue(() =>
         {
-            if (IsDisposed() || !ReferenceEquals(sender, _player) || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+            if (IsDisposed() || !ReferenceEquals(sender, _player) || !IsCurrentMediaSourceActive(mediaSourceVersion))
             {
                 return;
             }
 
             LogPlaybackTrace(
-                $"MediaOpened duration={duration.TotalSeconds:F3}s sourceVersion={mediaSourceVersion} OpenElapsedMs={GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} NaturalSize={sender.PlaybackSession.NaturalVideoWidth}x{sender.PlaybackSession.NaturalVideoHeight} SelectedId='{_libraryViewModel.SelectedMedia?.Id ?? "<null>"}'.");
-            LogPlaybackSwitchTrace(
+                $"MediaOpened duration={duration.TotalSeconds:F3}s sourceVersion={mediaSourceVersion} OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} NaturalSize={sender.PlaybackSession.NaturalVideoWidth}x{sender.PlaybackSession.NaturalVideoHeight} SelectedId='{_libraryViewModel.SelectedMedia?.Id ?? "<null>"}'.");
+            _telemetry.LogSwitchTrace(
                 mediaSourceVersion,
                 "MediaOpened",
-                $"SelectedToMediaOpenedMs={FormatElapsedMilliseconds(_switchSelectionChangedTimestamp)}, SourceAssignedToMediaOpenedMs={FormatElapsedMilliseconds(_sourceAssignedTimestamp)}, OpenElapsedMs={GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0.###}, NaturalSize={sender.PlaybackSession.NaturalVideoWidth}x{sender.PlaybackSession.NaturalVideoHeight}.");
+                $"SelectedToMediaOpenedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToMediaOpenedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0.###}, NaturalSize={sender.PlaybackSession.NaturalVideoWidth}x{sender.PlaybackSession.NaturalVideoHeight}.");
             _lastPlaybackPosition = TimeSpan.Zero;
             _lastPlaybackDuration = duration;
             UpdateTimeDisplay();
@@ -1282,6 +1567,12 @@ public sealed class VideoPlaybackController
         }
 
         var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
+        if (Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, mediaSourceVersion, 0) != 0)
+        {
+            LogPlaybackTrace($"Duplicate MediaFailed ignored. SourceVersion={mediaSourceVersion}, Error={args.Error}, ExtendedError=0x{args.ExtendedErrorCode.HResult:X8}.");
+            return;
+        }
+
         _dispatcherQueue.TryEnqueue(() =>
         {
             if (IsDisposed() || !ReferenceEquals(sender, _player) || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
@@ -1289,9 +1580,12 @@ public sealed class VideoPlaybackController
                 return;
             }
 
+            Interlocked.Exchange(ref _failedMediaSourceVersion, mediaSourceVersion);
             var selected = _libraryViewModel.SelectedMedia;
             LogPlaybackTrace(
-                $"MediaFailed error={args.Error} extendedError=0x{args.ExtendedErrorCode.HResult:X8} message={args.ErrorMessage} file='{selected?.FileName ?? "<none>"}' path='{selected?.FileSystemPath ?? "<none>"}' SourceVersion={mediaSourceVersion} OpenElapsedMs={GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} {DescribeMediaPlaybackDiagnostics(selected)} CompatibilityHint='{GetPlaybackCompatibilityHint(selected, args)}'.");
+                $"MediaFailed error={args.Error} extendedError=0x{args.ExtendedErrorCode.HResult:X8} message={args.ErrorMessage} file='{selected?.FileName ?? "<none>"}' path='{selected?.FileSystemPath ?? "<none>"}' SourceVersion={mediaSourceVersion} OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} {DescribeMediaPlaybackDiagnostics(selected)} CompatibilityHint='{GetPlaybackCompatibilityHint(selected, args)}'.");
+            _playbackLease.SetState(PlaybackActivityState.Inactive);
+            TryStopFailedPlaybackSource(sender, mediaSourceVersion);
             _videoPlayer.Visibility = Visibility.Visible;
             _videoPlayer.Opacity = 1;
             HideVideoLoadingPreview();
@@ -1358,7 +1652,7 @@ public sealed class VideoPlaybackController
         var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
         _dispatcherQueue.TryEnqueue(() =>
         {
-            if (IsDisposed() || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+            if (IsDisposed() || !IsCurrentMediaSourceActive(mediaSourceVersion))
             {
                 return;
             }
@@ -1370,17 +1664,17 @@ public sealed class VideoPlaybackController
             }
 
             LogPlaybackTrace($"PlaybackStateChanged state={sender.PlaybackState} position={sender.Position.TotalSeconds:F3}s duration={sender.NaturalDuration.TotalSeconds:F3}s");
-            if (sender.PlaybackState == MediaPlaybackState.Playing && !_firstPlayingLoggedForSource)
+            _playbackLease.SetState(MapPlaybackState(sender.PlaybackState));
+            TryLogSeekRecovered(sender.Position, sender.NaturalDuration, sender.PlaybackState);
+            if (sender.PlaybackState == MediaPlaybackState.Playing && _telemetry.TryMarkFirstPlaying())
             {
-                _firstPlayingLoggedForSource = true;
-                _firstPlayingTimestamp = Stopwatch.GetTimestamp();
                 var sourceVersion = mediaSourceVersion;
                 LogPlaybackTrace(
-                    $"Playback first playing. SourceVersion={sourceVersion}, FirstPlayingElapsedMs={GetSourceLoadElapsedMilliseconds(sourceVersion):0}, Position={sender.Position.TotalSeconds:F3}s, Duration={sender.NaturalDuration.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
-                LogPlaybackSwitchTrace(
+                    $"Playback first playing. SourceVersion={sourceVersion}, FirstPlayingElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(sourceVersion):0}, Position={sender.Position.TotalSeconds:F3}s, Duration={sender.NaturalDuration.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
+                _telemetry.LogSwitchTrace(
                     sourceVersion,
                     "FirstPlaying",
-                    $"SelectedToFirstPlayingMs={FormatElapsedMilliseconds(_switchSelectionChangedTimestamp)}, SourceAssignedToFirstPlayingMs={FormatElapsedMilliseconds(_sourceAssignedTimestamp)}, FirstPlayingElapsedMs={GetSourceLoadElapsedMilliseconds(sourceVersion):0.###}, Position={sender.Position.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
+                    $"SelectedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, FirstPlayingElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(sourceVersion):0.###}, Position={sender.Position.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
                 _watchdog.ScheduleVideoSurfaceReveal(sourceVersion, "PlaybackStateChanged");
             }
 
@@ -1511,16 +1805,6 @@ public sealed class VideoPlaybackController
     {
         return !string.Equals(item.Id, current.Id, StringComparison.Ordinal)
             && _shuffle.IsHistoryEligible(item);
-    }
-
-    private double GetSourceLoadElapsedMilliseconds(int sourceVersion)
-    {
-        if (_sourceLoadStartTimestamp <= 0 || _sourceLoadStartVersion != sourceVersion)
-        {
-            return -1;
-        }
-
-        return Stopwatch.GetElapsedTime(_sourceLoadStartTimestamp).TotalMilliseconds;
     }
 
     private static string DescribeMediaPlaybackDiagnostics(MediaItemViewModel? media)
@@ -1761,29 +2045,34 @@ public sealed class VideoPlaybackController
         AppTraceLogger.LogSampled("VideoPlayback", $"{sampleKey}:{mediaId}", $"mediaId={mediaId} {message}", minimumInterval);
     }
 
-    private void LogPlaybackSwitchTrace(int mediaSourceVersion, string stage, string details)
+    private bool IsDisposed()
     {
-        if (mediaSourceVersion != _switchTraceSourceVersion)
+        return Volatile.Read(ref _isDisposed) == 1;
+    }
+
+    private bool IsCurrentMediaSourceActive(int mediaSourceVersion)
+    {
+        return mediaSourceVersion == Volatile.Read(ref _mediaSourceVersion)
+            && mediaSourceVersion != Volatile.Read(ref _failedMediaSourceVersion);
+    }
+
+    private void TryStopFailedPlaybackSource(MediaPlayer player, int mediaSourceVersion)
+    {
+        if (!ReferenceEquals(player, _player) || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
         {
             return;
         }
 
-        var media = _libraryViewModel.SelectedMedia;
-        AppTraceLogger.Log(
-            "PlayerSwitch",
-            $"TraceId={_switchTraceId} SourceVersion={mediaSourceVersion} Stage={stage} MediaId='{media?.Id ?? "<null>"}', Type='{media?.Type.ToString() ?? "<null>"}', File='{media?.FileName ?? "<null>"}'. {details}");
-    }
-
-    private static string FormatElapsedMilliseconds(long startTimestamp)
-    {
-        return startTimestamp <= 0
-            ? "<none>"
-            : Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds.ToString("0.###");
-    }
-
-    private bool IsDisposed()
-    {
-        return Volatile.Read(ref _isDisposed) == 1;
+        try
+        {
+            player.Pause();
+            player.Source = null;
+            LogPlaybackTrace($"Failed media source stopped. SourceVersion={mediaSourceVersion}.");
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", $"Failed to stop failed media source. SourceVersion={mediaSourceVersion}.", ex);
+        }
     }
 
     private void EnqueueSafeAsync(Func<Task> action, string failureMessage)
@@ -1815,7 +2104,7 @@ public sealed class VideoPlaybackController
 
     private void RequestPlaybackStart(int mediaSourceVersion, string reason)
     {
-        if (mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+        if (!IsCurrentMediaSourceActive(mediaSourceVersion))
         {
             return;
         }
@@ -1842,7 +2131,7 @@ public sealed class VideoPlaybackController
     {
         var queued = _dispatcherQueue.TryEnqueue(() =>
         {
-            if (IsDisposed() || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+            if (IsDisposed() || !IsCurrentMediaSourceActive(mediaSourceVersion))
             {
                 return;
             }
@@ -1884,7 +2173,7 @@ public sealed class VideoPlaybackController
         var completion = new TaskCompletionSource<bool>();
         var queued = _dispatcherQueue.TryEnqueue(() =>
         {
-            if (mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+            if (!IsCurrentMediaSourceActive(mediaSourceVersion))
             {
                 completion.TrySetResult(true);
                 return;
@@ -1915,10 +2204,10 @@ public sealed class VideoPlaybackController
             _videoViewportView.UpdateLayout();
             _videoPlayer.Opacity = 1;
             HideVideoLoadingPreview();
-            LogPlaybackSwitchTrace(
+            _telemetry.LogSwitchTrace(
                 mediaSourceVersion,
                 "SurfaceRevealed",
-                $"SelectedToSurfaceRevealedMs={FormatElapsedMilliseconds(_switchSelectionChangedTimestamp)}, SourceAssignedToSurfaceRevealedMs={FormatElapsedMilliseconds(_sourceAssignedTimestamp)}, FirstPlayingToSurfaceRevealedMs={FormatElapsedMilliseconds(_firstPlayingTimestamp)}, Attempt={attempt}, Ready={isReady}, State={playbackState}, NaturalSize={videoWidth}x{videoHeight}.");
+                $"SelectedToSurfaceRevealedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToSurfaceRevealedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, FirstPlayingToSurfaceRevealedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.FirstPlayingTimestamp)}, Attempt={attempt}, Ready={isReady}, State={playbackState}, NaturalSize={videoWidth}x{videoHeight}.");
             LogPlaybackTrace($"RevealVideoSurface sourceVersion={mediaSourceVersion} attempt={attempt} ready={isReady} state={playbackState} width={videoWidth} height={videoHeight}");
             completion.TrySetResult(true);
         });

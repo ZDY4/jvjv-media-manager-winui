@@ -1,4 +1,5 @@
 using Microsoft.UI.Dispatching;
+using JvJvMediaManager.Data;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Services;
 using JvJvMediaManager.Utilities;
@@ -11,6 +12,10 @@ internal sealed class MediaPageStore
     private readonly IncrementalMediaCollection _items;
     private readonly object _queryStateSync = new();
     private readonly Dictionary<int, MediaLibraryQueryState> _queryStatesByGeneration = new();
+    // WP-08: latest forward keyset cursor per generation. Continuation pages
+    // always use this (or a cursor rebuilt from the last loaded row) instead of
+    // mixing OFFSET after a keyset prefix.
+    private readonly Dictionary<int, MediaPageCursor> _latestCursorByGeneration = new();
     private MediaLibraryQueryState? _queryState;
 
     public MediaPageStore(
@@ -44,6 +49,7 @@ internal sealed class MediaPageStore
         lock (_queryStateSync)
         {
             _queryStatesByGeneration.Clear();
+            _latestCursorByGeneration.Clear();
         }
     }
 
@@ -200,12 +206,14 @@ internal sealed class MediaPageStore
     {
         lock (_queryStateSync)
         {
-            if (_queryStatesByGeneration.Count <= 2)
+            if (_queryStatesByGeneration.Count <= 2 && _latestCursorByGeneration.Count <= 2)
             {
                 return;
             }
 
             var newestGenerations = _queryStatesByGeneration.Keys
+                .Concat(_latestCursorByGeneration.Keys)
+                .Distinct()
                 .OrderByDescending(generation => generation)
                 .Take(2)
                 .ToHashSet();
@@ -216,17 +224,123 @@ internal sealed class MediaPageStore
                     _queryStatesByGeneration.Remove(generation);
                 }
             }
+
+            foreach (var generation in _latestCursorByGeneration.Keys.ToList())
+            {
+                if (!newestGenerations.Contains(generation))
+                {
+                    _latestCursorByGeneration.Remove(generation);
+                }
+            }
         }
     }
 
-    private Task<MediaPageResult> LoadPageAsync(int offset, int limit, int generation)
+    private async Task<MediaPageResult> LoadPageAsync(int offset, int limit, int generation, CancellationToken cancellationToken)
     {
         var queryState = ResolveQueryState(generation);
+        var query = queryState.ToMediaQuery(offset, limit);
+        var useKeyset = FeatureFlags.KeysetPaginationEnabled
+            && !query.RandomOrder
+            && MediaRepository.IsKeysetSupported(query.SortField);
+
+        if (useKeyset)
+        {
+            if (offset <= 0)
+            {
+                ClearLatestCursor(generation);
+            }
+            else
+            {
+                var cursor = TryGetLatestCursor(generation) ?? TryRebuildCursorFromLoadedWindow(query);
+                if (cursor != null)
+                {
+                    query = CloneQueryWithCursor(query, cursor);
+                }
+                else
+                {
+                    AppTraceLogger.LogSampled(
+                        "MediaPageStore",
+                        "keyset-cursor-missing",
+                        $"Keyset continuation had no cursor; restarting from the first page instead of OFFSET. Generation={generation}, Offset={offset}.",
+                        TimeSpan.FromSeconds(2));
+                    query = CloneQueryWithCursor(queryState.ToMediaQuery(0, limit), cursor: null);
+                }
+            }
+        }
+
         AppTraceLogger.LogSampled(
             "MediaPageStore",
             "load-page",
-            $"Load page requested. Generation={generation}, Offset={offset}, Limit={limit}, VisibleFolders={queryState.VisibleFolderPaths.Count}, PlaylistId='{queryState.SelectedPlaylistId ?? "<null>"}'.",
+            $"Load page requested. Generation={generation}, Offset={offset}, Limit={limit}, Keyset={useKeyset}, HasCursor={query.Cursor != null}, VisibleFolders={queryState.VisibleFolderPaths.Count}, PlaylistId='{queryState.SelectedPlaylistId ?? "<null>"}'.",
             TimeSpan.FromSeconds(1));
-        return _library.QueryPageAsync(queryState.ToMediaQuery(offset, limit));
+
+        // WP-A: cancellation flows from IncrementalMediaCollection's generation
+        // token; MediaLibraryService hops to the thread pool internally.
+        var result = await _library.QueryPageAsync(query, cancellationToken);
+
+        if (useKeyset && result.NextCursor != null)
+        {
+            RecordLatestCursor(generation, result.NextCursor);
+        }
+
+        return result;
+    }
+
+    private MediaPageCursor? TryRebuildCursorFromLoadedWindow(MediaQuery query)
+    {
+        if (_items.Count == 0)
+        {
+            return null;
+        }
+
+        return MediaRepository.TryCreateCursor(query, _items[^1].Media);
+    }
+
+    private static MediaQuery CloneQueryWithCursor(MediaQuery query, MediaPageCursor? cursor)
+    {
+        return new MediaQuery
+        {
+            SearchText = query.SearchText,
+            SelectedTags = query.SelectedTags,
+            PlaylistId = query.PlaylistId,
+            IncludedFolderPaths = query.IncludedFolderPaths,
+            ExactFolderPaths = query.ExactFolderPaths,
+            ExcludedFolderPaths = query.ExcludedFolderPaths,
+            TypeFilter = query.TypeFilter,
+            ExcludedMediaIds = query.ExcludedMediaIds,
+            RandomOrder = query.RandomOrder,
+            SortField = query.SortField,
+            SortOrder = query.SortOrder,
+            AfterMediaId = query.AfterMediaId,
+            Cursor = cursor,
+            Offset = 0,
+            Limit = query.Limit
+        };
+    }
+
+    private MediaPageCursor? TryGetLatestCursor(int generation)
+    {
+        lock (_queryStateSync)
+        {
+            return _latestCursorByGeneration.TryGetValue(generation, out var cursor)
+                ? cursor
+                : null;
+        }
+    }
+
+    private void RecordLatestCursor(int generation, MediaPageCursor cursor)
+    {
+        lock (_queryStateSync)
+        {
+            _latestCursorByGeneration[generation] = cursor;
+        }
+    }
+
+    private void ClearLatestCursor(int generation)
+    {
+        lock (_queryStateSync)
+        {
+            _latestCursorByGeneration.Remove(generation);
+        }
     }
 }

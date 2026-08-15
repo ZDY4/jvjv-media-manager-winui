@@ -12,13 +12,13 @@ public sealed class NumpadTagShortcutHintItem
     private static readonly Brush DefaultBackgroundBrush = new SolidColorBrush(ColorHelper.FromArgb(0, 0, 0, 0));
     private static readonly Brush AppliedBackgroundBrush = new SolidColorBrush(ColorHelper.FromArgb(64, 255, 255, 255));
 
-    public required int Digit { get; init; }
+    public required int Index { get; init; }
 
     public required string Tag { get; init; }
 
     public required bool IsApplied { get; init; }
 
-    public string DisplayText => $"{Digit}  {Tag}";
+    public string DisplayText => Index <= 9 ? $"{Index}  {Tag}" : Tag;
 
     public Brush BackgroundBrush => IsApplied ? AppliedBackgroundBrush : DefaultBackgroundBrush;
 }

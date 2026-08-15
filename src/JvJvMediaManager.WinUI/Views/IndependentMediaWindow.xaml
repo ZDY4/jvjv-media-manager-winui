@@ -6,12 +6,27 @@
     Title="媒体播放器">
 
     <Grid>
-        <mainPage:PlayerPaneView x:Name="PlayerPane" />
+        <Grid.RowDefinitions>
+            <RowDefinition Height="36" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Border x:Name="SessionDragHeader"
+                Background="#E6242424"
+                CanDrag="True"
+                DragStarting="SessionDragHeader_DragStarting"
+                DropCompleted="SessionDragHeader_DropCompleted">
+            <StackPanel Orientation="Horizontal" Spacing="8" Padding="12,0" VerticalAlignment="Center">
+                <FontIcon Glyph="&#xE8A7;" FontSize="12" Foreground="#FFFF9F1C" />
+                <TextBlock Text="拖动到主窗口右侧以停靠为分屏" FontSize="12" Foreground="{ThemeResource MutedTextBrush}" />
+            </StackPanel>
+        </Border>
+        <mainPage:PlayerPaneView x:Name="PlayerPane" Grid.Row="1" />
 
         <Button x:Name="BossKeyRecoveryButton"
                 Width="24"
                 Height="24"
                 HorizontalAlignment="Right"
+                Grid.Row="1"
                 VerticalAlignment="Bottom"
                 Margin="0,0,8,8"
                 Background="#10FFFFFF"

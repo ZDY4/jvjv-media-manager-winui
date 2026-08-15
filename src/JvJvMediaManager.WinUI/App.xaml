@@ -346,11 +346,25 @@
       </Style>
 
       <Style x:Key="TitleBarIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PanelIconButtonStyle}">
-        <Setter Property="Width" Value="32" />
-        <Setter Property="Height" Value="30" />
-        <Setter Property="MinWidth" Value="32" />
-        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="Width" Value="28" />
+        <Setter Property="Height" Value="26" />
+        <Setter Property="MinWidth" Value="28" />
+        <Setter Property="MinHeight" Value="26" />
+        <Setter Property="FontSize" Value="13" />
+      </Style>
+
+      <Style x:Key="CompactPanelIconButtonStyle" TargetType="Button" BasedOn="{StaticResource PanelIconButtonStyle}">
+        <Setter Property="Width" Value="30" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="MinWidth" Value="30" />
+        <Setter Property="MinHeight" Value="28" />
         <Setter Property="FontSize" Value="14" />
+      </Style>
+
+      <Style x:Key="CompactToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">
+        <Setter Property="Padding" Value="8,3" />
+        <Setter Property="MinHeight" Value="28" />
+        <Setter Property="FontSize" Value="12" />
       </Style>
 
       <Style x:Key="TabStripButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryToolbarButtonStyle}">

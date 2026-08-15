@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS playlist_media (
     public static void Initialize(SqliteConnection connection)
     {
         AppTraceLogger.Log("MediaDbSchema", "Initialize start.");
-        ApplyConnectionPragmas(connection);
+        InitializeWalJournalMode(connection);
 
         var previousVersion = GetUserVersion(connection);
         using (var tx = connection.BeginTransaction())
@@ -88,16 +88,87 @@ CREATE TABLE IF NOT EXISTS playlist_media (
             tx.Commit();
         }
 
-        var mergedDuplicatePaths = MergeDuplicateMediaPaths(connection);
-        EnsureMediaSearchIndex(connection, forceRebuild: mergedDuplicatePaths);
-        AppTraceLogger.Log("MediaDbSchema", $"Initialize completed. PreviousVersion={previousVersion}, CurrentVersion={CurrentSchemaVersion}.");
+        AppTraceLogger.Log("MediaDbSchema", $"Initialize completed (schema only). PreviousVersion={previousVersion}, CurrentVersion={CurrentSchemaVersion}. Heavy maintenance runs on a background thread (RunStartupMaintenance).");
     }
 
-    private static void ApplyConnectionPragmas(SqliteConnection connection)
+    /// <summary>
+    /// WP-A: heavy one-time startup work (duplicate path merge, FTS rebuild,
+    /// sort-tuple indexes, orphan audit). Runs on a background thread after the
+    /// schema DDL so first paint is not blocked on large libraries. Safe to run
+    /// on any connection; the schema DDL above must have completed first.
+    /// </summary>
+    public static void RunStartupMaintenance(SqliteConnection connection)
     {
-        using var pragma = connection.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
-        pragma.ExecuteNonQuery();
+        AppTraceLogger.Log("MediaDbSchema", "Startup maintenance start.");
+        var mergedDuplicatePaths = MergeDuplicateMediaPaths(connection);
+        EnsureMediaSearchIndex(connection, forceRebuild: mergedDuplicatePaths);
+        EnsureMediaSortIndexes(connection);
+        AuditOrphanRows(connection);
+        AppTraceLogger.Log("MediaDbSchema", "Startup maintenance completed.");
+    }
+
+    private static void AuditOrphanRows(SqliteConnection connection)
+    {
+        // WP-02 step 1: enable FK enforcement (done per-connection) and audit
+        // orphan data before declaring real foreign keys with ON DELETE CASCADE
+        // in a future table-rebuild migration. This audit is diagnostic only.
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+SELECT
+  (SELECT COUNT(*) FROM tags t WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.id = t.mediaId)),
+  (SELECT COUNT(*) FROM playlist_media pm WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.id = pm.mediaId)),
+  (SELECT COUNT(*) FROM playlist_media pm WHERE NOT EXISTS (SELECT 1 FROM playlists p WHERE p.id = pm.playlistId));
+";
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read())
+            {
+                return;
+            }
+
+            var orphanTags = reader.GetInt64(0);
+            var orphanPlaylistMediaByMedia = reader.GetInt64(1);
+            var orphanPlaylistMediaByPlaylist = reader.GetInt64(2);
+            if (orphanTags > 0 || orphanPlaylistMediaByMedia > 0 || orphanPlaylistMediaByPlaylist > 0)
+            {
+                AppTraceLogger.Log(
+                    "MediaDbSchema",
+                    $"Orphan row audit found dangling references. OrphanTags={orphanTags}, OrphanPlaylistMediaByMedia={orphanPlaylistMediaByMedia}, OrphanPlaylistMediaByPlaylist={orphanPlaylistMediaByPlaylist}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaDbSchema", "Orphan row audit failed.", ex);
+        }
+    }
+
+    private static void InitializeWalJournalMode(SqliteConnection connection)
+    {
+        // WAL is a persistent, database-level journal mode. It only needs to be
+        // set once during initialization/migration; per-connection PRAGMAs
+        // (busy_timeout, foreign_keys, synchronous) are applied by the
+        // connection factory. Verify the actual result and log any downgrade.
+        try
+        {
+            using var pragma = connection.CreateCommand();
+            pragma.CommandText = "PRAGMA journal_mode=WAL;";
+            var appliedMode = pragma.ExecuteScalar() as string ?? "<unknown>";
+            if (!string.Equals(appliedMode, "wal", StringComparison.OrdinalIgnoreCase))
+            {
+                AppTraceLogger.Log(
+                    "MediaDbSchema",
+                    $"WAL journal mode was not enabled; continuing in degraded mode. AppliedMode='{appliedMode}'.");
+            }
+            else
+            {
+                AppTraceLogger.Log("MediaDbSchema", "WAL journal mode enabled.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MediaDbSchema", "Failed to configure WAL journal mode; continuing with default journaling.", ex);
+        }
     }
 
     private static void EnsureMediaCoreColumns(SqliteConnection connection, SqliteTransaction transaction)
@@ -155,6 +226,26 @@ WHERE folderPath IS NULL OR folderPath = '';
         {
             AppTraceLogger.Log("MediaDbSchema", $"Backfilled media folderPath column. Updated={updated}.");
         }
+    }
+
+    /// <summary>
+    /// WP-C: composite indexes matching the page ORDER BY tuple
+    /// (folderPath COLLATE NOCASE ASC, &lt;sortField&gt;, id ASC) so page queries do
+    /// not re-sort the whole result set per page. Created during startup
+    /// maintenance (background) because index builds on large libraries are slow.
+    /// </summary>
+    private static void EnsureMediaSortIndexes(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+CREATE INDEX IF NOT EXISTS idx_media_folder_filename_id ON media(folderPath COLLATE NOCASE, filename COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_media_folder_modifiedAt_id ON media(folderPath COLLATE NOCASE, modifiedAt, id);
+CREATE INDEX IF NOT EXISTS idx_media_folder_type_id ON media(folderPath COLLATE NOCASE, type COLLATE NOCASE, id);
+CREATE INDEX IF NOT EXISTS idx_media_folder_size_id ON media(folderPath COLLATE NOCASE, size, id);
+CREATE INDEX IF NOT EXISTS idx_media_folder_duration_id ON media(folderPath COLLATE NOCASE, COALESCE(duration, 0), id);
+";
+        cmd.ExecuteNonQuery();
+        AppTraceLogger.Log("MediaDbSchema", "Ensured media sort-tuple indexes.");
     }
 
     private static void EnsurePlaylistColorColumn(SqliteConnection connection, SqliteTransaction transaction)

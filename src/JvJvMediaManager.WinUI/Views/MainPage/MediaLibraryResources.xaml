@@ -11,6 +11,8 @@
         <GradientStop Color="{ThemeResource ThumbOverlayMiddleColor}" Offset="0.65" />
         <GradientStop Color="{ThemeResource ThumbOverlayEndColor}" Offset="1" />
     </LinearGradientBrush>
+    <SolidColorBrush x:Key="NowPlayingOrangeBrush" Color="#FFFF9F1C" />
+    <SolidColorBrush x:Key="NowPlayingOrangeForegroundBrush" Color="#FF241300" />
 
     <utilities:PlaylistBackgroundBrushConverter x:Key="PlaylistBackgroundBrushConverter" />
     <utilities:PlaylistForegroundBrushConverter x:Key="PlaylistForegroundBrushConverter" />
@@ -175,18 +177,10 @@
                         Opacity="1"
                         Grid.ColumnSpan="2"
                         Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
-                <Border x:Name="ListNowPlayingTint"
-                        Grid.ColumnSpan="2"
-                        Background="{ThemeResource AccentFillColorDefaultBrush}"
-                        CornerRadius="{ThemeResource RadiusMedium}"
-                        Opacity="0.18"
-                        Canvas.ZIndex="9"
-                        IsHitTestVisible="False"
-                        Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
                 <Border x:Name="ListNowPlayingFrame"
                         Grid.ColumnSpan="2"
-                        BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
-                        BorderThickness="4"
+                        BorderBrush="{StaticResource NowPlayingOrangeBrush}"
+                        BorderThickness="2"
                         CornerRadius="{ThemeResource RadiusMedium}"
                         Canvas.ZIndex="10"
                         IsHitTestVisible="False"
@@ -197,17 +191,17 @@
                         VerticalAlignment="Top"
                         Margin="8"
                         Padding="8,4"
-                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                        Background="{StaticResource NowPlayingOrangeBrush}"
                         CornerRadius="{ThemeResource RadiusSmall}"
                         Canvas.ZIndex="11"
                         IsHitTestVisible="False"
                         Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}">
                     <StackPanel Orientation="Horizontal" Spacing="4">
                         <FontIcon Glyph="&#xE768;"
-                                  Foreground="White"
+                                  Foreground="{StaticResource NowPlayingOrangeForegroundBrush}"
                                   FontSize="11" />
                         <TextBlock Text="播放中"
-                                   Foreground="White"
+                                   Foreground="{StaticResource NowPlayingOrangeForegroundBrush}"
                                    FontSize="11"
                                    FontWeight="SemiBold" />
                     </StackPanel>
@@ -216,9 +210,13 @@
                 <Border x:Name="ListThumbnailHost"
                         Width="72"
                         Height="72"
-                        Background="{ThemeResource MediaCardPlaceholderBrush}"
+                        Background="Transparent"
                         CornerRadius="{ThemeResource RadiusSmall}">
-                    <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" Margin="2" />
+                    <Image Source="{Binding Thumbnail}"
+                           Stretch="Uniform"
+                           Margin="2"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch" />
                 </Border>
 
                 <StackPanel Grid.Column="1"
@@ -277,16 +275,9 @@
                             CornerRadius="{ThemeResource RadiusLarge}"
                             Opacity="1"
                             Visibility="{Binding IsSelected, Converter={StaticResource BooleanVisibilityConverter}}" />
-                    <Border x:Name="GridNowPlayingTint"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}"
-                            CornerRadius="{ThemeResource RadiusLarge}"
-                            Opacity="0.16"
-                            Canvas.ZIndex="9"
-                            IsHitTestVisible="False"
-                            Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}" />
                     <Border x:Name="GridNowPlayingFrame"
-                            BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
-                            BorderThickness="5"
+                            BorderBrush="{StaticResource NowPlayingOrangeBrush}"
+                            BorderThickness="2"
                             CornerRadius="{ThemeResource RadiusLarge}"
                             Canvas.ZIndex="10"
                             IsHitTestVisible="False"
@@ -296,25 +287,29 @@
                             VerticalAlignment="Top"
                             Margin="8"
                             Padding="8,4"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                            Background="{StaticResource NowPlayingOrangeBrush}"
                             CornerRadius="{ThemeResource RadiusSmall}"
                             Canvas.ZIndex="11"
                             IsHitTestVisible="False"
                             Visibility="{Binding IsNowPlaying, Converter={StaticResource BooleanVisibilityConverter}}">
                         <StackPanel Orientation="Horizontal" Spacing="4">
                             <FontIcon Glyph="&#xE768;"
-                                      Foreground="White"
+                                      Foreground="{StaticResource NowPlayingOrangeForegroundBrush}"
                                       FontSize="11" />
                             <TextBlock Text="播放中"
-                                       Foreground="White"
+                                       Foreground="{StaticResource NowPlayingOrangeForegroundBrush}"
                                        FontSize="11"
                                        FontWeight="SemiBold" />
                         </StackPanel>
                     </Border>
                     <Border Margin="5"
-                            Background="{ThemeResource MediaCardPlaceholderBrush}"
+                            Background="Transparent"
                             CornerRadius="{ThemeResource RadiusMedium}">
-                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" Margin="2" />
+                        <Image Source="{Binding Thumbnail}"
+                               Stretch="Uniform"
+                               Margin="2"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch" />
                     </Border>
 
                     <Border Margin="4"

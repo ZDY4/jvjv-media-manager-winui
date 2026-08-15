@@ -24,9 +24,11 @@ internal sealed class ProgressPreviewController : IDisposable
     private const double TimeBucketSeconds = 0.5;
     private const double BubbleWidth = 188;
     private const double BubbleHeight = 132;
+    private const long HeavyMediaSizeThresholdBytes = 256L * 1024 * 1024;
 
     private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan FailureCooldown = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan HeavyMediaDurationThreshold = TimeSpan.FromMinutes(10);
 
     private readonly LibraryShellViewModel _libraryViewModel;
     private readonly TransportControlBarView _transportBarView;
@@ -104,6 +106,17 @@ internal sealed class ProgressPreviewController : IDisposable
 
         var fallbackSource = _lastSource ?? media.Thumbnail;
         Show(playbackTime, sliderX, fallbackSource);
+
+        if (ShouldSkipFrameGeneration(media, _getDuration()))
+        {
+            CancelFrameRequest();
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "preview-frame-skipped-heavy-media",
+                $"Progress preview frame generation skipped for heavy media. MediaId='{media.Id}', Size={media.Size}, DurationSeconds={media.Media.Duration?.ToString("F3") ?? "<null>"}.",
+                TimeSpan.FromSeconds(2));
+            return;
+        }
 
         var bucketedTime = GetBucket(playbackTime, _getDuration());
         var cacheKey = BuildCacheKey(media, bucketedTime);
@@ -394,6 +407,20 @@ internal sealed class ProgressPreviewController : IDisposable
     {
         return string.Equals(_pendingRequest?.CacheKey, cacheKey, StringComparison.Ordinal)
             || string.Equals(_inFlightCacheKey, cacheKey, StringComparison.Ordinal);
+    }
+
+    private static bool ShouldSkipFrameGeneration(MediaItemViewModel media, TimeSpan currentDuration)
+    {
+        if (media.Size >= HeavyMediaSizeThresholdBytes)
+        {
+            return true;
+        }
+
+        var indexedDuration = media.Media.Duration is > 0
+            ? TimeSpan.FromSeconds(media.Media.Duration.Value)
+            : TimeSpan.Zero;
+        var duration = currentDuration > TimeSpan.Zero ? currentDuration : indexedDuration;
+        return duration >= HeavyMediaDurationThreshold;
     }
 
     private bool IsRequestCurrent(ProgressPreviewRequest request)

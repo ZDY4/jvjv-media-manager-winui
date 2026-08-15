@@ -4,15 +4,20 @@ using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services;
 
-public sealed class SettingsService
+public sealed class SettingsService : IAsyncDisposable, IDisposable
 {
     private const int NumpadShortcutCount = 9;
     private static readonly TimeSpan SaveDebounceDelay = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan FlushTimeout = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private readonly object _settingsSync = new();
     private readonly string _settingsPath;
     private CancellationTokenSource? _saveDebounceCancellation;
     private SettingsModel _settings;
+    private long _saveGeneration;
+    private long _persistedGeneration;
+    private string? _pendingJson;
+    private bool _disposed;
 
     public SettingsService()
     {
@@ -335,14 +340,6 @@ public sealed class SettingsService
         }
     }
 
-    private void Save()
-    {
-        lock (_settingsSync)
-        {
-            SaveLocked();
-        }
-    }
-
     private T ReadSettings<T>(Func<SettingsModel, T> read)
     {
         ArgumentNullException.ThrowIfNull(read);
@@ -359,6 +356,16 @@ public sealed class SettingsService
 
         lock (_settingsSync)
         {
+            if (_disposed)
+            {
+                AppTraceLogger.LogSampled(
+                    "SettingsService",
+                    "update-after-dispose",
+                    "Ignored settings update after dispose.",
+                    TimeSpan.FromSeconds(5));
+                return;
+            }
+
             var previousJson = SerializeSettings(_settings);
             update(_settings);
             var nextJson = SerializeSettings(_settings);
@@ -372,11 +379,58 @@ public sealed class SettingsService
                 return;
             }
 
-            ScheduleSaveLocked(nextJson);
+            _pendingJson = nextJson;
+            _saveGeneration++;
+            ScheduleSaveLocked(nextJson, _saveGeneration);
         }
     }
 
-    private void ScheduleSaveLocked(string json)
+    /// <summary>
+    /// Cancels any pending debounce and immediately persists the latest settings
+    /// snapshot. Safe to call during shutdown; bounded by <see cref="FlushTimeout"/>.
+    /// </summary>
+    public Task FlushAsync(CancellationToken cancellationToken = default)
+    {
+        string? json;
+        long generation;
+        lock (_settingsSync)
+        {
+            _saveDebounceCancellation?.Cancel();
+            _saveDebounceCancellation?.Dispose();
+            _saveDebounceCancellation = null;
+
+            if (_pendingJson == null || _persistedGeneration >= _saveGeneration)
+            {
+                return Task.CompletedTask;
+            }
+
+            json = _pendingJson;
+            generation = _saveGeneration;
+        }
+
+        return Task.Run(() =>
+        {
+            try
+            {
+                lock (_settingsSync)
+                {
+                    if (_persistedGeneration >= generation)
+                    {
+                        return;
+                    }
+
+                    SaveLocked(json);
+                    _persistedGeneration = generation;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("SettingsService", "Settings flush failed.", ex);
+            }
+        }, cancellationToken).WaitAsync(FlushTimeout, cancellationToken);
+    }
+
+    private void ScheduleSaveLocked(string json, long generation)
     {
         _saveDebounceCancellation?.Cancel();
         _saveDebounceCancellation?.Dispose();
@@ -395,7 +449,12 @@ public sealed class SettingsService
                         return;
                     }
 
-                    SaveLocked();
+                    if (_persistedGeneration < generation)
+                    {
+                        SaveLocked(json);
+                        _persistedGeneration = generation;
+                    }
+
                     _saveDebounceCancellation = null;
                 }
 
@@ -452,6 +511,40 @@ public sealed class SettingsService
         }
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        lock (_settingsSync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
+        try
+        {
+            await FlushAsync();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("SettingsService", "Settings dispose flush failed.", ex);
+        }
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("SettingsService", "Settings synchronous dispose failed.", ex);
+        }
+    }
+
     private static string SerializeSettings(SettingsModel settings)
     {
         return JsonSerializer.Serialize(settings, JsonOptions);
@@ -459,8 +552,8 @@ public sealed class SettingsService
 
     private static List<string> NormalizeNumpadTagShortcuts(IReadOnlyList<string>? shortcuts)
     {
-        var normalized = new List<string>(NumpadShortcutCount);
-        for (var i = 0; i < NumpadShortcutCount; i++)
+        var normalized = new List<string>(Math.Max(NumpadShortcutCount, shortcuts?.Count ?? 0));
+        for (var i = 0; i < Math.Max(NumpadShortcutCount, shortcuts?.Count ?? 0); i++)
         {
             var value = shortcuts != null && i < shortcuts.Count
                 ? shortcuts[i]?.Trim()

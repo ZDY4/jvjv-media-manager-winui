@@ -4,7 +4,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Graphics.Imaging;
 using Windows.Storage;
+using Windows.Storage.Streams;
 using JvJvMediaManager.Models;
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
@@ -191,10 +193,22 @@ public sealed class ImagePreviewController
     {
         try
         {
+            // WP-F: bail out before starting a decode if the selection has
+            // already moved on. Previously stale loads decoded the full
+            // resolution first and only then discarded it, stacking transient
+            // memory spikes during rapid selection changes.
+            if (loadVersion != Volatile.Read(ref _imageLoadVersion)
+                || !string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
             var file = await StorageFile.GetFileFromPathAsync(media.FileSystemPath);
             using var stream = await file.OpenReadAsync();
-            var bitmap = new BitmapImage();
-            await bitmap.SetSourceAsync(stream);
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            var sourceWidth = (int)decoder.PixelWidth;
+            var sourceHeight = (int)decoder.PixelHeight;
+            var bitmap = await DecodePreviewBitmapAsync(decoder, stream);
 
             if (loadVersion != Volatile.Read(ref _imageLoadVersion))
             {
@@ -207,7 +221,7 @@ public sealed class ImagePreviewController
             }
 
             _imageViewportView.PreviewImageElement.Source = bitmap;
-            UpdatePreviewImageSourceSize(bitmap.PixelWidth, bitmap.PixelHeight);
+            UpdatePreviewImageSourceSize(sourceWidth, sourceHeight);
             _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
         }
@@ -232,6 +246,50 @@ public sealed class ImagePreviewController
             _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
         }
+    }
+
+    // WP-F: decodes at most this long edge. Larger sources are scaled down
+    // before decoding so a 50MP photo cannot spike memory by hundreds of MB.
+    private const int MaxPreviewDecodeLongEdge = 4096;
+
+    private static async Task<BitmapImage> DecodePreviewBitmapAsync(BitmapDecoder decoder, IRandomAccessStream sourceStream)
+    {
+        var longEdge = Math.Max((int)decoder.PixelWidth, (int)decoder.PixelHeight);
+        if (longEdge <= MaxPreviewDecodeLongEdge)
+        {
+            sourceStream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(sourceStream);
+            return bitmap;
+        }
+
+        var scale = (double)MaxPreviewDecodeLongEdge / longEdge;
+        var scaledWidth = (uint)Math.Max(1, Math.Round(decoder.PixelWidth * scale));
+        var scaledHeight = (uint)Math.Max(1, Math.Round(decoder.PixelHeight * scale));
+        using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
+            decoder.BitmapPixelFormat,
+            decoder.BitmapAlphaMode,
+            new BitmapTransform
+            {
+                ScaledWidth = scaledWidth,
+                ScaledHeight = scaledHeight,
+                InterpolationMode = BitmapInterpolationMode.Fant
+            },
+            ExifOrientationMode.RespectExifOrientation,
+            ColorManagementMode.DoNotColorManage);
+
+        using var memoryStream = new InMemoryRandomAccessStream();
+        var encoderId = decoder.BitmapAlphaMode == BitmapAlphaMode.Straight
+            || decoder.BitmapAlphaMode == BitmapAlphaMode.Premultiplied
+                ? BitmapEncoder.PngEncoderId
+                : BitmapEncoder.JpegEncoderId;
+        var encoder = await BitmapEncoder.CreateAsync(encoderId, memoryStream);
+        encoder.SetSoftwareBitmap(softwareBitmap);
+        await encoder.FlushAsync();
+
+        var scaledBitmap = new BitmapImage();
+        await scaledBitmap.SetSourceAsync(memoryStream);
+        return scaledBitmap;
     }
 
     private void UpdatePreviewImageSourceSize(int? width, int? height)

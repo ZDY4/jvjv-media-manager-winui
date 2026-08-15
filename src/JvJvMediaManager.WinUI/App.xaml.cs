@@ -49,6 +49,18 @@ public partial class App : Application
 
         try
         {
+            // WP-03: guarantee the latest settings change is persisted before
+            // the process tears down, even if the debounce window is still open.
+            var settings = Services.GetService<SettingsService>();
+            settings?.FlushAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("App", "Settings flush during shutdown failed.", ex);
+        }
+
+        try
+        {
             Services.Dispose();
         }
         catch (Exception ex)

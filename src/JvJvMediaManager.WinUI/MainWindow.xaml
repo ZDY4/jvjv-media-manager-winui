@@ -23,7 +23,7 @@
 
         <Grid RowDefinitions="Auto,*">
             <Grid x:Name="AppTitleBar"
-                  Height="44"
+                  Height="40"
                   VerticalAlignment="Top">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition x:Name="LeftInsetColumn" Width="0" />
@@ -32,7 +32,7 @@
                 </Grid.ColumnDefinitions>
 
                 <Grid Grid.Column="1"
-                      Margin="3,2,3,0"
+                      Margin="3,1,3,0"
                       Padding="0"
                       Background="{ThemeResource ShellTopBarBrush}">
                     <Grid.ColumnDefinitions>
@@ -41,9 +41,9 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="20" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="5" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="5" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>

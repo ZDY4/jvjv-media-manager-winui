@@ -11,6 +11,7 @@ public static class AppServiceRegistration
     {
         var services = new ServiceCollection();
         services.AddSingleton<SettingsService>();
+        services.AddSingleton<PlaybackResourceCoordinator>();
         services.AddSingleton(provider =>
         {
             var settings = provider.GetRequiredService<SettingsService>();
@@ -22,7 +23,8 @@ public static class AppServiceRegistration
         services.AddSingleton(provider =>
         {
             var settings = provider.GetRequiredService<SettingsService>();
-            return new ThumbnailService(settings.GetThumbnailCacheDir());
+            var playbackResources = provider.GetRequiredService<PlaybackResourceCoordinator>();
+            return new ThumbnailService(settings.GetThumbnailCacheDir(), playbackResources);
         });
         services.AddSingleton(provider =>
         {

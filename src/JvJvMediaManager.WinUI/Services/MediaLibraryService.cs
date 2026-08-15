@@ -15,6 +15,7 @@ public sealed class MediaLibraryService : IDisposable
     }
 
     private readonly MediaDb _db;
+    private readonly PlaybackResourceCoordinator _playbackResources;
     private readonly SemaphoreSlim _fingerprintBackfillGate = new(1, 1);
     private readonly object _backfillTasksSync = new();
     private readonly HashSet<Task> _backfillTasks = new();
@@ -26,9 +27,10 @@ public sealed class MediaLibraryService : IDisposable
     private static readonly int ScanDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 2, 2, 6);
     private bool _isDisposed;
 
-    public MediaLibraryService(MediaDb db)
+    public MediaLibraryService(MediaDb db, PlaybackResourceCoordinator playbackResources)
     {
         _db = db;
+        _playbackResources = playbackResources;
     }
 
     public void Dispose()
@@ -68,12 +70,18 @@ public sealed class MediaLibraryService : IDisposable
 
     public Task<MediaPageResult> QueryPageAsync(MediaQuery query, CancellationToken cancellationToken = default)
     {
-        return _db.QueryMediaPageAsync(query, cancellationToken);
+        // WP-A: Microsoft.Data.Sqlite executes its *Async APIs synchronously on
+        // the calling thread. Page loads are triggered from the UI thread (list
+        // virtualization / scroll preload), so hop to the thread pool here; all
+        // callers of this choke point benefit.
+        return Task.Run(() => _db.QueryMediaPageAsync(query, cancellationToken), cancellationToken);
     }
 
     public Task<IReadOnlyList<MediaFolderSummary>> QueryFolderSummariesAsync(MediaQuery query, CancellationToken cancellationToken = default)
     {
-        return _db.QueryMediaFolderSummariesAsync(query, cancellationToken);
+        // WP-A: folder summaries aggregate the whole filtered table on every
+        // refresh; keep that GROUP BY off the UI thread.
+        return Task.Run(() => _db.QueryMediaFolderSummariesAsync(query, cancellationToken), cancellationToken);
     }
 
     public Task<MediaFile?> GetMediaByIdAsync(string id, CancellationToken cancellationToken = default)
@@ -325,7 +333,8 @@ public sealed class MediaLibraryService : IDisposable
         var lastReportedCount = 0;
         var sawAnyFile = false;
 
-        AppTraceLogger.Log("MediaLibrary", $"ProcessFilesAsync started. Operation={operationName}, Parallelism={ScanDegreeOfParallelism}.");
+        var scanDegreeOfParallelism = _playbackResources.GetScanDegreeOfParallelism(ScanDegreeOfParallelism);
+        AppTraceLogger.Log("MediaLibrary", $"ProcessFilesAsync started. Operation={operationName}, Parallelism={scanDegreeOfParallelism}, PlaybackActive={_playbackResources.IsPlaybackActive}.");
 
         void ReportProgressSafe(int processedCount, string currentPath, bool isComplete, bool isIndeterminate, bool shouldRefreshLibrary = false)
         {
@@ -355,7 +364,10 @@ public sealed class MediaLibraryService : IDisposable
                     TimeSpan.FromSeconds(1));
             }
 
+            var writeWaitStartedAt = Stopwatch.GetTimestamp();
             await writeSemaphore.WaitAsync(cancellationToken);
+            var writeWaitElapsed = Stopwatch.GetElapsedTime(writeWaitStartedAt);
+            var upsertStartedAt = Stopwatch.GetTimestamp();
             try
             {
                 await _db.UpsertMediaBatchAsync(items, cancellationToken);
@@ -368,6 +380,15 @@ public sealed class MediaLibraryService : IDisposable
             {
                 writeSemaphore.Release();
             }
+            var upsertElapsed = Stopwatch.GetElapsedTime(upsertStartedAt);
+            if (writeWaitElapsed.TotalMilliseconds >= 100 || upsertElapsed.TotalMilliseconds >= 100)
+            {
+                AppTraceLogger.LogSampled(
+                    "MediaLibrary",
+                    $"{operationName}-batch-write-perf",
+                    $"ProcessFilesAsync batch write perf. Operation={operationName}, BatchSize={items.Count}, WriteWaitMs={writeWaitElapsed.TotalMilliseconds:0}, UpsertMs={upsertElapsed.TotalMilliseconds:0}, Final={isFinalBatch}, PlaybackActive={_playbackResources.IsPlaybackActive}.",
+                    TimeSpan.FromSeconds(2));
+            }
 
             Interlocked.Add(ref persisted, items.Count);
             ReportProgressSafe(processedCount, currentPath, isComplete: false, isIndeterminate: true, shouldRefreshLibrary: true);
@@ -378,11 +399,12 @@ public sealed class MediaLibraryService : IDisposable
             new ParallelOptions
             {
                 CancellationToken = cancellationToken,
-                MaxDegreeOfParallelism = ScanDegreeOfParallelism
+                MaxDegreeOfParallelism = scanDegreeOfParallelism
             },
             async (file, token) =>
             {
                 token.ThrowIfCancellationRequested();
+                using var backgroundIo = await _playbackResources.EnterBackgroundIoAsync($"scan:{operationName}", token);
                 Volatile.Write(ref sawAnyFile, true);
                 var currentProcessed = Interlocked.Increment(ref processed);
 
@@ -566,7 +588,7 @@ public sealed class MediaLibraryService : IDisposable
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                contentHash = MediaContentFingerprint.Compute(filePath, initialLength);
+                contentHash = await MediaContentFingerprint.ComputeAsync(filePath, initialLength, cancellationToken);
                 fingerprintVersion = MediaContentFingerprint.Version;
             }
             catch (OperationCanceledException)
@@ -695,7 +717,7 @@ public sealed class MediaLibraryService : IDisposable
         await _fingerprintBackfillGate.WaitAsync(cancellationToken);
         var stopwatch = Stopwatch.StartNew();
         var updated = 0;
-        var refreshedSinceLastSignal = 0;
+        var metadataUpdatesSinceLastSignal = 0;
         try
         {
             AppTraceLogger.LogSampled(
@@ -710,6 +732,7 @@ public sealed class MediaLibraryService : IDisposable
                 var nativePath = PathHelpers.ToNativePath(media.Path);
                 try
                 {
+                    using var backgroundIo = await _playbackResources.EnterBackgroundIoAsync($"backfill:{operationName}", cancellationToken);
                     var info = new FileInfo(nativePath);
                     if (!info.Exists
                         || info.Length != media.Size
@@ -721,7 +744,18 @@ public sealed class MediaLibraryService : IDisposable
                     var metadataUpdated = false;
                     if (NeedsMetadataBackfill(media))
                     {
-                        var metadata = await ReadMediaMetadataAsync(nativePath, media.Type);
+                        var metadataStartedAt = Stopwatch.GetTimestamp();
+                        var metadata = await ReadMediaMetadataAsync(nativePath, media.Type, cancellationToken);
+                        var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
+                        if (metadataElapsed.TotalMilliseconds >= 250)
+                        {
+                            AppTraceLogger.LogSampled(
+                                "MediaLibrary",
+                                "metadata-backfill-slow-read",
+                                $"Media metadata backfill read was slow. Path='{media.Path}', MediaId='{media.Id}', ElapsedMs={metadataElapsed.TotalMilliseconds:0}, Type={media.Type}, PlaybackActive={_playbackResources.IsPlaybackActive}.",
+                                TimeSpan.FromSeconds(2));
+                        }
+
                         if (metadata.Width.HasValue || metadata.Height.HasValue || metadata.Duration.HasValue)
                         {
                             await _db.UpdateMediaMetadataByPathAsync(media.Path, media.Size, media.ModifiedAt, metadata.Width, metadata.Height, metadata.Duration, cancellationToken);
@@ -732,7 +766,18 @@ public sealed class MediaLibraryService : IDisposable
                     var fingerprintUpdated = false;
                     if (string.IsNullOrWhiteSpace(media.ContentHash) || media.FingerprintVersion != MediaContentFingerprint.Version)
                     {
-                        var contentHash = MediaContentFingerprint.Compute(nativePath, media.Size);
+                        var fingerprintStartedAt = Stopwatch.GetTimestamp();
+                        var contentHash = await MediaContentFingerprint.ComputeAsync(nativePath, media.Size, cancellationToken);
+                        var fingerprintElapsed = Stopwatch.GetElapsedTime(fingerprintStartedAt);
+                        if (fingerprintElapsed.TotalMilliseconds >= 250)
+                        {
+                            AppTraceLogger.LogSampled(
+                                "MediaLibrary",
+                                "fingerprint-backfill-slow-read",
+                                $"Media fingerprint backfill read was slow. Path='{media.Path}', MediaId='{media.Id}', Size={media.Size}, ElapsedMs={fingerprintElapsed.TotalMilliseconds:0}, PlaybackActive={_playbackResources.IsPlaybackActive}.",
+                                TimeSpan.FromSeconds(2));
+                        }
+
                         await _db.UpdateMediaFingerprintByPathAsync(media.Path, media.Size, media.ModifiedAt, contentHash, MediaContentFingerprint.Version, cancellationToken);
                         fingerprintUpdated = true;
                     }
@@ -740,13 +785,20 @@ public sealed class MediaLibraryService : IDisposable
                     if (metadataUpdated || fingerprintUpdated)
                     {
                         updated++;
-                        refreshedSinceLastSignal++;
-                        if (refreshedSinceLastSignal >= BatchSize)
+                        if (metadataUpdated)
                         {
-                            progress?.Report(new ScanProgress(0, 0, string.Empty, true, ShouldRefreshLibrary: true, IsBackgroundUpdate: true));
-                            refreshedSinceLastSignal = 0;
+                            metadataUpdatesSinceLastSignal++;
+                            if (metadataUpdatesSinceLastSignal >= BatchSize)
+                            {
+                                progress?.Report(new ScanProgress(0, 0, string.Empty, true, ShouldRefreshLibrary: true, IsBackgroundUpdate: true));
+                                metadataUpdatesSinceLastSignal = 0;
+                            }
                         }
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -758,7 +810,7 @@ public sealed class MediaLibraryService : IDisposable
                 }
             }
 
-            if (refreshedSinceLastSignal > 0)
+            if (metadataUpdatesSinceLastSignal > 0)
             {
                 progress?.Report(new ScanProgress(0, 0, string.Empty, true, ShouldRefreshLibrary: true, IsBackgroundUpdate: true));
             }
@@ -782,26 +834,30 @@ public sealed class MediaLibraryService : IDisposable
             : !media.Width.HasValue || !media.Height.HasValue || !media.Duration.HasValue;
     }
 
-    private static async Task<(int? Width, int? Height, double? Duration)> ReadMediaMetadataAsync(string path, MediaType type)
+    private static async Task<(int? Width, int? Height, double? Duration)> ReadMediaMetadataAsync(string path, MediaType type, CancellationToken cancellationToken)
     {
-        var storage = await StorageFile.GetFileFromPathAsync(path);
+        cancellationToken.ThrowIfCancellationRequested();
+        var storage = await StorageFile.GetFileFromPathAsync(path).AsTask(cancellationToken);
         if (type == MediaType.Image)
         {
-            var properties = await storage.Properties.GetImagePropertiesAsync();
+            var properties = await storage.Properties.GetImagePropertiesAsync().AsTask(cancellationToken);
             int? width = properties.Width > 0 ? (int)properties.Width : null;
             int? height = properties.Height > 0 ? (int)properties.Height : null;
             if (!width.HasValue || !height.HasValue)
             {
-                using var stream = await storage.OpenReadAsync();
-                var decoder = await BitmapDecoder.CreateAsync(stream);
+                cancellationToken.ThrowIfCancellationRequested();
+                using var stream = await storage.OpenReadAsync().AsTask(cancellationToken);
+                var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken);
                 width = (int)decoder.PixelWidth;
                 height = (int)decoder.PixelHeight;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             return (width, height, null);
         }
 
-        var videoProperties = await storage.Properties.GetVideoPropertiesAsync();
+        var videoProperties = await storage.Properties.GetVideoPropertiesAsync().AsTask(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         return (
             videoProperties.Width > 0 ? (int)videoProperties.Width : null,
             videoProperties.Height > 0 ? (int)videoProperties.Height : null,

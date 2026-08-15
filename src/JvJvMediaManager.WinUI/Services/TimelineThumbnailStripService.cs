@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Services;
 
@@ -22,10 +23,22 @@ public sealed class TimelineThumbnailStripService
 {
     private static readonly TimeSpan FrameGenerationTimeout = TimeSpan.FromSeconds(8);
 
+    // WP-06: timeline frame disk cache quota. Configurable defaults.
+    private static readonly CacheQuota DiskQuota = new(
+        MaxBytes: 4L * 1024 * 1024 * 1024,
+        MaxFiles: 100_000,
+        MaxAge: TimeSpan.FromDays(90),
+        TargetBytesAfterTrim: 3L * 1024 * 1024 * 1024);
+    private const int TrimTriggerFileInterval = 500;
+
     private readonly SemaphoreSlim _frameGate = new(2, 2);
     private readonly ExternalProcessRunner _processRunner = new();
     private readonly string _cacheDir;
     private readonly string? _ffmpegPath;
+    private readonly DiskCacheTrimmer _diskTrimmer;
+    private int _writesSinceTrim;
+    private int _trimScheduled;
+    private int _startupTrimDone;
 
     public TimelineThumbnailStripService(string? cacheDir = null, string? ffmpegPath = null)
     {
@@ -34,6 +47,58 @@ public sealed class TimelineThumbnailStripService
             : cacheDir;
         _ffmpegPath = ResolveToolPath("ffmpeg.exe", ffmpegPath);
         Directory.CreateDirectory(_cacheDir);
+        _diskTrimmer = new DiskCacheTrimmer(_cacheDir, "timeline");
+    }
+
+    public void ScheduleStartupQuotaCheck()
+    {
+        if (Interlocked.Exchange(ref _startupTrimDone, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(6));
+                _diskTrimmer.Trim(DiskQuota, "*.jpg");
+            }
+            catch
+            {
+                // Best-effort startup trim only.
+            }
+        });
+    }
+
+    private void NotifyDiskCacheWrite()
+    {
+        if (Interlocked.Increment(ref _writesSinceTrim) < TrimTriggerFileInterval)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _writesSinceTrim, 0);
+        if (Interlocked.Exchange(ref _trimScheduled, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _diskTrimmer.Trim(DiskQuota, "*.jpg");
+            }
+            catch
+            {
+                // Best-effort incremental trim only.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _trimScheduled, 0);
+            }
+        });
     }
 
     public async Task<IReadOnlyList<ImageSource?>> GetStripAsync(
@@ -138,6 +203,10 @@ public sealed class TimelineThumbnailStripService
 
             Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
 
+            // WP-06: render to a temp file then rename so cancelled/failed ffmpeg
+            // runs never leave a half-written frame that reads as a valid image.
+            var tempPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
+
             var startInfo = new ProcessStartInfo
             {
                 FileName = _ffmpegPath,
@@ -162,7 +231,7 @@ public sealed class TimelineThumbnailStripService
             startInfo.ArgumentList.Add("-q:v");
             startInfo.ArgumentList.Add("4");
             startInfo.ArgumentList.Add("-y");
-            startInfo.ArgumentList.Add(cachePath);
+            startInfo.ArgumentList.Add(tempPath);
 
             try
             {
@@ -178,12 +247,24 @@ public sealed class TimelineThumbnailStripService
 
                 if (result.ExitCode != 0)
                 {
-                    TryDelete(cachePath);
+                    TryDelete(tempPath);
+                    return;
+                }
+
+                try
+                {
+                    File.Move(tempPath, cachePath, overwrite: true);
+                    NotifyDiskCacheWrite();
+                }
+                catch
+                {
+                    TryDelete(tempPath);
+                    throw;
                 }
             }
             catch
             {
-                TryDelete(cachePath);
+                TryDelete(tempPath);
                 throw;
             }
         }

@@ -25,10 +25,13 @@ public static class PickerHelpers
         picker.FileTypeFilter.Add(".m4v");
         picker.FileTypeFilter.Add(".jpg");
         picker.FileTypeFilter.Add(".jpeg");
+        picker.FileTypeFilter.Add(".jfif");
         picker.FileTypeFilter.Add(".png");
         picker.FileTypeFilter.Add(".gif");
         picker.FileTypeFilter.Add(".bmp");
         picker.FileTypeFilter.Add(".webp");
+        picker.FileTypeFilter.Add(".tif");
+        picker.FileTypeFilter.Add(".tiff");
 
         InitializeWithWindow(picker, window);
         var files = await picker.PickMultipleFilesAsync();

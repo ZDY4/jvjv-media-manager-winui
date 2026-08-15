@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
 using Windows.Storage;
@@ -31,6 +32,7 @@ public sealed class MediaBrowserController : IDisposable
     private static readonly TimeSpan ViewModelSelectionSettleWindow = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan VisibleThumbnailLoadDelay = TimeSpan.FromMilliseconds(140);
     private static readonly TimeSpan ContextMenuDuplicateSuppression = TimeSpan.FromMilliseconds(600);
+    private static readonly TimeSpan ProgrammaticScrollIncrementalLoadSuppression = TimeSpan.FromMilliseconds(800);
     private const int MaxMediaScrollAttempts = 3;
     private readonly KeyboardAccelerator _listContextMenuAccelerator = CreateContextMenuKeyboardAccelerator();
     private readonly KeyboardAccelerator _listShiftF10ContextMenuAccelerator = CreateShiftF10ContextMenuKeyboardAccelerator();
@@ -53,16 +55,22 @@ public sealed class MediaBrowserController : IDisposable
     private readonly MediaSelectionSyncController _selectionSync = new();
     private readonly DispatcherTimer _dragSelectionAutoScrollTimer = new();
     private readonly DispatcherTimer _visibleThumbnailLoadTimer = new();
+    private readonly Dictionary<string, CancellationTokenSource> _thumbnailLoadCancellations = new(StringComparer.Ordinal);
     private int _itemsChangedVisibilityVersion;
     private int _itemsChangedVisibilityVerificationScheduled;
     private int _isLoadingMoreMedia;
+    private long _incrementalLoadSuppressedUntilTick;
     private bool _isMediaViewScrolling;
 
     private bool _isSyncingSelection;
+    private string? _nowPlayingMediaId;
     private ScrollViewer? _listViewScrollViewer;
     private ScrollViewer? _gridViewScrollViewer;
     private readonly MediaSelectionCoordinator _selectionCoordinator;
     private readonly MediaScrollController _mediaScroll = new();
+    private double _revealPreservedScrollOffset;
+    private int _revealPreservedRequestId;
+    private bool _hasRevealPreservedScrollOffset;
     private readonly DragSelectionController _dragSelectionController = new(
         DragSelectionActivationThreshold,
         DragSelectionAutoScrollEdgeThreshold,
@@ -213,6 +221,7 @@ public sealed class MediaBrowserController : IDisposable
         _dragSelectionAutoScrollTimer.Stop();
         _visibleThumbnailLoadTimer.Tick -= VisibleThumbnailLoadTimer_Tick;
         _visibleThumbnailLoadTimer.Stop();
+        CancelAllThumbnailLoads();
         EndDragSelection();
     }
 
@@ -391,6 +400,71 @@ public sealed class MediaBrowserController : IDisposable
     {
         SearchBox.Focus(FocusState.Programmatic);
         SearchBox.SelectAll();
+    }
+
+    // 展开折叠分组会触发分组视图整树重排;先保存偏移,待重排落定后重新定位目标。
+    private void PreserveRevealScrollOffset(int requestId, ListViewBase? activeView)
+    {
+        if (activeView == null)
+        {
+            return;
+        }
+
+        var scrollViewer = GetScrollViewer(activeView);
+        if (scrollViewer == null)
+        {
+            return;
+        }
+
+        _revealPreservedScrollOffset = scrollViewer.VerticalOffset;
+        _revealPreservedRequestId = requestId;
+        _hasRevealPreservedScrollOffset = true;
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            "media-scroll-preserve",
+            $"Reveal scroll offset preserved. RequestId={requestId}, Offset={_revealPreservedScrollOffset:0.##}, ScrollableHeight={scrollViewer.ScrollableHeight:0.##}, ViewMode={_viewModel.ViewMode}.",
+            TimeSpan.FromSeconds(1));
+    }
+
+    private void RestoreRevealScrollOffset(int requestId, MediaItemViewModel target, ListViewBase? activeView)
+    {
+        if (!_hasRevealPreservedScrollOffset || _revealPreservedRequestId != requestId)
+        {
+            return;
+        }
+
+        _hasRevealPreservedScrollOffset = false;
+        if (activeView == null)
+        {
+            return;
+        }
+
+        if (!_page.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            if (IsMediaVisible(activeView, target))
+            {
+                return;
+            }
+
+            var scrollViewer = GetScrollViewer(activeView);
+            if (scrollViewer == null)
+            {
+                return;
+            }
+
+            SuppressIncrementalLoadForProgrammaticScroll();
+            activeView.ScrollIntoView(target);
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "media-scroll-restore",
+                $"Reveal scroll re-applied after group expansion. RequestId={requestId}, MediaId='{target.Id}', PreservedOffset={_revealPreservedScrollOffset:0.##}, VerticalOffset={scrollViewer.VerticalOffset:0.##}, ScrollableHeight={scrollViewer.ScrollableHeight:0.##}, ViewMode={_viewModel.ViewMode}.",
+                TimeSpan.FromSeconds(1));
+        }))
+        {
+            AppTraceLogger.Log(
+                "MediaBrowser",
+                $"Reveal scroll restore dispatch failed. RequestId={requestId}, MediaId='{target.Id}'.");
+        }
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -955,6 +1029,19 @@ public sealed class MediaBrowserController : IDisposable
 
         if (args.InRecycleQueue)
         {
+            var activeView = GetActiveMediaView();
+            var isStillRealizedInActiveView = !ReferenceEquals(sender, activeView)
+                && activeView.ContainerFromItem(media) != null;
+            if (!isStillRealizedInActiveView)
+            {
+                CancelThumbnailLoad(media);
+                if (!media.IsSelected && !media.IsNowPlaying)
+                {
+                    media.Thumbnail = null;
+                    media.CancelThumbnailLoad();
+                }
+            }
+
             AppTraceLogger.LogSampled(
                 "MediaBrowser",
                 $"container-media-recycle:{sender.GetType().Name}",
@@ -969,6 +1056,11 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        if (!ReferenceEquals(sender, GetActiveMediaView()))
+        {
+            return;
+        }
+
         if (media.Thumbnail != null)
         {
             return;
@@ -980,7 +1072,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        _ = _viewModel.EnsureThumbnailAsync(media);
+        StartThumbnailLoad(media);
     }
 
     private void MediaView_DragItemsStarting(object sender, DragItemsStartingEventArgs e)
@@ -1060,12 +1152,11 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         PruneTrackedSelectionToLoadedItems("filtered-items-changed");
-        UpdateNowPlayingState(_viewModel.SelectedMedia);
+        ReconcileNowPlayingState(_viewModel.SelectedMedia);
         TryApplyPendingMediaScroll();
-        if (addedCount > 0 || removedCount > 0)
+        if (removedCount > 0)
         {
-            ScheduleSelectedMediaVisibilityVerificationAfterItemsChanged(
-                removedCount > 0 ? "filtered-items-removed-or-replaced" : "filtered-items-added");
+            ScheduleSelectedMediaVisibilityVerificationAfterItemsChanged("filtered-items-removed-or-replaced");
         }
     }
 
@@ -1441,6 +1532,11 @@ public sealed class MediaBrowserController : IDisposable
         _isMediaViewScrolling = e.IsIntermediate;
         ScheduleVisibleThumbnailLoad();
 
+        if (IsIncrementalLoadSuppressedForProgrammaticScroll())
+        {
+            return;
+        }
+
         if (sender is not ScrollViewer scrollViewer
             || scrollViewer.ScrollableHeight <= 0
             || scrollViewer.ScrollableHeight - scrollViewer.VerticalOffset > MediaPagePreloadDistance)
@@ -1481,15 +1577,110 @@ public sealed class MediaBrowserController : IDisposable
 
     private void LoadRealizedThumbnails(ListViewBase listViewBase)
     {
-        foreach (var item in _selectionSync.LoadedItems)
+        // WP-B: iterate realized containers only. The previous loop over all
+        // loaded items with ContainerFromItem per item was O(loaded) per scroll
+        // settle and janked with large libraries.
+        foreach (var container in EnumerateRealizedContainers(listViewBase))
         {
-            if (item.Thumbnail != null
-                || listViewBase.ContainerFromItem(item) == null)
+            if (container.Content is MediaItemViewModel item && item.Thumbnail == null)
             {
-                continue;
+                StartThumbnailLoad(item);
+            }
+        }
+    }
+
+    // WP-B: enumerates realized item containers without touching the full item
+    // collection. The media views are grouped, so ItemsPanelRoot children are
+    // group containers (ContentControl) hosting the realized SelectorItems.
+    private static IEnumerable<SelectorItem> EnumerateRealizedContainers(ListViewBase listViewBase)
+    {
+        var panel = listViewBase.ItemsPanelRoot;
+        if (panel == null)
+        {
+            yield break;
+        }
+
+        foreach (var child in panel.Children)
+        {
+            if (child is SelectorItem itemContainer)
+            {
+                yield return itemContainer;
+            }
+            else if (child is ContentControl groupContainer)
+            {
+                foreach (var nested in EnumerateContainersInElement(groupContainer))
+                {
+                    yield return nested;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<SelectorItem> EnumerateContainersInElement(DependencyObject root)
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is SelectorItem itemContainer)
+            {
+                yield return itemContainer;
+            }
+            else
+            {
+                foreach (var nested in EnumerateContainersInElement(child))
+                {
+                    yield return nested;
+                }
+            }
+        }
+    }
+
+    private void StartThumbnailLoad(MediaItemViewModel item)
+    {
+        if (_thumbnailLoadCancellations.ContainsKey(item.Id))
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _thumbnailLoadCancellations[item.Id] = cancellation;
+        _ = LoadThumbnailAsync(item, cancellation);
+    }
+
+    private async Task LoadThumbnailAsync(MediaItemViewModel item, CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await _viewModel.EnsureThumbnailAsync(item, cancellation.Token);
+        }
+        finally
+        {
+            if (_thumbnailLoadCancellations.TryGetValue(item.Id, out var current)
+                && ReferenceEquals(current, cancellation))
+            {
+                _thumbnailLoadCancellations.Remove(item.Id);
             }
 
-            _ = _viewModel.EnsureThumbnailAsync(item);
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelThumbnailLoad(MediaItemViewModel item)
+    {
+        if (_thumbnailLoadCancellations.Remove(item.Id, out var cancellation))
+        {
+            cancellation.Cancel();
+        }
+    }
+
+    private void CancelAllThumbnailLoads()
+    {
+        var cancellations = _thumbnailLoadCancellations.Values.ToList();
+        _thumbnailLoadCancellations.Clear();
+        foreach (var cancellation in cancellations)
+        {
+            cancellation.Cancel();
         }
     }
 
@@ -1543,12 +1734,11 @@ public sealed class MediaBrowserController : IDisposable
 
     private void UpdateVisibleListItemSizes()
     {
-        foreach (var item in _viewModel.FilteredMediaItems)
+        // WP-B: realized containers only; the previous ContainerFromItem scan
+        // over all filtered items stalled on large libraries during icon zoom.
+        foreach (var container in EnumerateRealizedContainers(ListView))
         {
-            if (ListView.ContainerFromItem(item) is SelectorItem container)
-            {
-                ApplyListItemSize(container);
-            }
+            ApplyListItemSize(container);
         }
     }
 
@@ -1750,8 +1940,9 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         scrollViewer.ChangeView(null, nextOffset, null, true);
+        // WP-B: only refresh the small selection overlay; forcing a full
+        // BrowserRoot.UpdateLayout() every 16ms tick stalled the whole pane.
         _dragSelection.View.UpdateLayout();
-        BrowserRoot.UpdateLayout();
         UpdateDragSelection(ClampToBrowserBounds(_dragSelection.CurrentPointerPoint));
     }
 
@@ -1822,25 +2013,42 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         var result = new List<MediaItemViewModel>();
-        foreach (var media in _viewModel.FilteredMediaItems)
+        // WP-B: iterate realized containers instead of the full filtered
+        // collection; the previous per-pointer-move ContainerFromItem scan was
+        // O(loaded) per frame during marquee selection.
+        foreach (var container in EnumerateRealizedContainers(listViewBase))
         {
-            if (listViewBase.ContainerFromItem(media) is not SelectorItem container
-                || container.Visibility != Visibility.Visible
-                || container.ActualWidth <= 0
-                || container.ActualHeight <= 0)
+            try
             {
-                continue;
-            }
+                if (container.Content is not MediaItemViewModel media
+                    || container.Visibility != Visibility.Visible
+                    || container.ActualWidth <= 0
+                    || container.ActualHeight <= 0)
+                {
+                    continue;
+                }
 
-            var containerBounds = GetElementBounds(container, BrowserRoot);
-            if (containerBounds.Width <= 0 || containerBounds.Height <= 0)
-            {
-                continue;
-            }
+                var containerBounds = GetElementBounds(container, BrowserRoot);
+                if (containerBounds.Width <= 0 || containerBounds.Height <= 0)
+                {
+                    continue;
+                }
 
-            if (DoRectsIntersect(selectionRect, containerBounds))
+                if (DoRectsIntersect(selectionRect, containerBounds))
+                {
+                    result.Add(media);
+                }
+            }
+            catch (Exception ex)
             {
-                result.Add(media);
+                // WP-B: containers can be recycled mid-drag; TransformToVisual
+                // may throw for detached elements. Skip them instead of
+                // crashing the marquee selection.
+                AppTraceLogger.LogSampled(
+                    "MediaBrowser",
+                    "drag-intersect-skipped",
+                    $"Skipped container during drag intersection test. Error={ex.GetType().Name}.",
+                    TimeSpan.FromSeconds(5));
             }
         }
 
@@ -1944,6 +2152,11 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        if (_viewModel.IsMediaInCollapsedOrUnloadedGroup(target))
+        {
+            PreserveRevealScrollOffset(requestId, GetActiveMediaView());
+        }
+
         _viewModel.EnsureMediaFolderExpanded(target);
 
         if (ShouldSuppressRevealForRecentUserSelection(operationName, target.Id))
@@ -2010,6 +2223,11 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        if (_viewModel.IsMediaInCollapsedOrUnloadedGroup(target))
+        {
+            PreserveRevealScrollOffset(requestId, GetActiveMediaView());
+        }
+
         _viewModel.EnsureMediaFolderExpanded(target);
 
         if (ShouldSuppressRevealForRecentUserSelection(operationName, target.Id))
@@ -2034,6 +2252,7 @@ public sealed class MediaBrowserController : IDisposable
         var beforeMetrics = GetScrollMetrics(activeView);
         var containerState = DescribeMediaContainer(activeView, target);
         var targetIndex = _viewModel.FilteredMediaItems.IndexOf(target);
+        SuppressIncrementalLoadForProgrammaticScroll();
         activeView.ScrollIntoView(target);
         AppTraceLogger.Log(
             "MediaBrowser",
@@ -2095,6 +2314,7 @@ public sealed class MediaBrowserController : IDisposable
                 appliedSampleKey,
                 $"{operationName} confirmed visible. RequestId={requestId}, Attempt={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', LoadedCount={_selectionSync.LoadedCount}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}, Container=({containerState}).",
                 TimeSpan.FromSeconds(1));
+            RestoreRevealScrollOffset(requestId, target, activeView);
             ClearPendingMediaScroll(requestId, target.Id);
             return;
         }
@@ -2111,6 +2331,7 @@ public sealed class MediaBrowserController : IDisposable
         AppTraceLogger.Log(
             "MediaBrowser",
             $"{operationName} failed to reveal target after retries. RequestId={requestId}, Attempts={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', LoadedCount={_selectionSync.LoadedCount}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, {scrollMetrics}, Container=({containerState}).");
+        RestoreRevealScrollOffset(requestId, target, activeView);
         ClearPendingMediaScroll(requestId, target.Id);
     }
 
@@ -2283,6 +2504,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
+        SuppressIncrementalLoadForProgrammaticScroll();
         activeView.ScrollIntoView(target);
         AppTraceLogger.LogSampled(
             "MediaBrowser",
@@ -2328,6 +2550,18 @@ public sealed class MediaBrowserController : IDisposable
         {
             AppTraceLogger.LogException("MediaBrowser", $"{operationName} layout update failed.", ex);
         }
+    }
+
+    private void SuppressIncrementalLoadForProgrammaticScroll()
+    {
+        var suppressedUntil = Environment.TickCount64
+            + (long)ProgrammaticScrollIncrementalLoadSuppression.TotalMilliseconds;
+        Interlocked.Exchange(ref _incrementalLoadSuppressedUntilTick, suppressedUntil);
+    }
+
+    private bool IsIncrementalLoadSuppressedForProgrammaticScroll()
+    {
+        return Environment.TickCount64 < Interlocked.Read(ref _incrementalLoadSuppressedUntilTick);
     }
 
     private void StorePendingMediaScroll(int requestId, string mediaId, string reason)
@@ -2649,6 +2883,31 @@ public sealed class MediaBrowserController : IDisposable
     private void UpdateNowPlayingState(MediaItemViewModel? selectedMedia)
     {
         var selectedId = selectedMedia?.Id;
+        if (string.Equals(_nowPlayingMediaId, selectedId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_nowPlayingMediaId)
+            && _selectionSync.TryGet(_nowPlayingMediaId, out var previous)
+            && previous.IsNowPlaying)
+        {
+            previous.IsNowPlaying = false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectedId)
+            && _selectionSync.TryGet(selectedId, out var current)
+            && !current.IsNowPlaying)
+        {
+            current.IsNowPlaying = true;
+        }
+
+        _nowPlayingMediaId = selectedId;
+    }
+
+    private void ReconcileNowPlayingState(MediaItemViewModel? selectedMedia)
+    {
+        var selectedId = selectedMedia?.Id;
         foreach (var item in _selectionSync.LoadedItems)
         {
             var isNowPlaying = !string.IsNullOrWhiteSpace(selectedId)
@@ -2658,6 +2917,8 @@ public sealed class MediaBrowserController : IDisposable
                 item.IsNowPlaying = isNowPlaying;
             }
         }
+
+        _nowPlayingMediaId = selectedId;
     }
 
     private static async Task ExecuteUiActionAsync(Func<Task> action, string failureTitle, Func<string, string, Task> showInfoAsync)
