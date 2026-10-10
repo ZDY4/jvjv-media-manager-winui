@@ -77,6 +77,21 @@ internal static class SettingsFlushTests
                 Assert.Equal("before-dispose", ReadLockPassword(settingsPath), "Post-dispose updates are ignored");
             });
         });
+
+        registry.Add(Suite, "auto advance defaults on and persists explicit opt-out", async () =>
+        {
+            await WithIsolatedStorageRoot(async settingsPath =>
+            {
+                await using var service = new SettingsService();
+
+                Assert.True(service.PlaybackAutoAdvanceEnabled, "Auto advance defaults to enabled for a new settings file");
+
+                service.SetPlaybackAutoAdvanceEnabled(false);
+                await service.FlushAsync();
+                Assert.False(service.PlaybackAutoAdvanceEnabled, "Explicitly disabling auto advance is reflected immediately");
+                Assert.False(ReadBooleanProperty(settingsPath, "PlaybackAutoAdvanceEnabled"), "Explicit opt-out is persisted");
+            });
+        });
     }
 
     private static async Task WithIsolatedStorageRoot(Func<string, Task> body)
@@ -127,6 +142,12 @@ internal static class SettingsFlushTests
     {
         var raw = ReadRawProperty(settingsPath, property);
         return raw is { ValueKind: JsonValueKind.String } value ? value.GetString() : null;
+    }
+
+    private static bool ReadBooleanProperty(string settingsPath, string property)
+    {
+        var raw = ReadRawProperty(settingsPath, property);
+        return raw is { ValueKind: JsonValueKind.True };
     }
 
     private static JsonElement? ReadRawProperty(string settingsPath, string property)

@@ -109,7 +109,8 @@ public sealed class ClipEditorController : IClipTimelineEditor
         IClipEditorHost host,
         ClipEditorViewModel viewModel,
         Button clipModeToggleButton,
-        ClipEditorBarView clipBarView)
+        ClipEditorBarView clipBarView,
+        PlaybackResourceCoordinator? playbackResources = null)
     {
         _host = host;
         _viewModel = viewModel;
@@ -120,7 +121,8 @@ public sealed class ClipEditorController : IClipTimelineEditor
             TimelineThumbnailTileWidth,
             TimelineThumbnailHeight,
             TimelineThumbnailMinCount,
-            TimelineThumbnailMaxCount);
+            TimelineThumbnailMaxCount,
+            playbackResources);
         _timelineUi = new ClipTimelineUIController(_clipBarView, TimelineHandleWidth);
         _clipModeActionButton = clipBarView.ClipModeActionButton;
         _exitClipModeButton = clipBarView.ExitClipModeButton;

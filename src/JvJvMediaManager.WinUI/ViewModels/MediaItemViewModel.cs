@@ -13,6 +13,7 @@ public sealed class MediaItemViewModel : ObservableObject
     private bool _isNowPlaying;
     private int _thumbnailRequested;
     private int _thumbnailFailureCount;
+    private int _thumbnailIdentityVersion;
     private long _thumbnailRetryAfterTicks;
     private string _fileSystemPath;
     private string _folderPath;
@@ -60,6 +61,8 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public int FingerprintVersion => Media.FingerprintVersion;
 
+    public int Rotation => Media.Rotation;
+
     public ObservableCollection<string> Tags { get; }
 
     public string TagsText => _tagsText;
@@ -69,6 +72,8 @@ public sealed class MediaItemViewModel : ObservableObject
         get => _thumbnail;
         set => SetProperty(ref _thumbnail, value);
     }
+
+    public int ThumbnailIdentityVersion => Volatile.Read(ref _thumbnailIdentityVersion);
 
     public bool IsSelected
     {
@@ -116,6 +121,7 @@ public sealed class MediaItemViewModel : ObservableObject
         Media.PlayCount = media.PlayCount;
         Media.ContentHash = media.ContentHash;
         Media.FingerprintVersion = media.FingerprintVersion;
+        Media.Rotation = media.Rotation;
         Media.Tags = nextTags;
 
         if (pathChanged)
@@ -152,6 +158,7 @@ public sealed class MediaItemViewModel : ObservableObject
 
         if (thumbnailIdentityChanged)
         {
+            Interlocked.Increment(ref _thumbnailIdentityVersion);
             Thumbnail = null;
             ResetThumbnailLoadState();
         }
@@ -222,12 +229,24 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public bool TryBeginThumbnailLoad()
     {
-        if (DateTime.UtcNow.Ticks < Interlocked.Read(ref _thumbnailRetryAfterTicks))
+        if (GetThumbnailRetryRemaining() > TimeSpan.Zero)
         {
             return false;
         }
 
         return Interlocked.CompareExchange(ref _thumbnailRequested, 1, 0) == 0;
+    }
+
+    public TimeSpan GetThumbnailRetryRemaining()
+    {
+        var retryAfterTicks = Interlocked.Read(ref _thumbnailRetryAfterTicks);
+        if (retryAfterTicks <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var remaining = retryAfterTicks - DateTime.UtcNow.Ticks;
+        return remaining > 0 ? TimeSpan.FromTicks(remaining) : TimeSpan.Zero;
     }
 
     public void ResetThumbnailLoadState()
@@ -244,8 +263,16 @@ public sealed class MediaItemViewModel : ObservableObject
 
     public void RecordThumbnailLoadFailure()
     {
-        var failureCount = Math.Min(Interlocked.Increment(ref _thumbnailFailureCount), 8);
-        var retryDelay = TimeSpan.FromSeconds(Math.Min(300, 2 << (failureCount - 1)));
+        var failureCount = Math.Min(Interlocked.Increment(ref _thumbnailFailureCount), 5);
+        // First miss retries quickly so a cancelled ffmpeg/shell decode does
+        // not leave a visible tile empty until the next scroll.
+        var retryDelay = failureCount switch
+        {
+            1 => TimeSpan.FromMilliseconds(400),
+            2 => TimeSpan.FromSeconds(2),
+            3 => TimeSpan.FromSeconds(8),
+            _ => TimeSpan.FromSeconds(30)
+        };
         Interlocked.Exchange(ref _thumbnailRetryAfterTicks, DateTime.UtcNow.Add(retryDelay).Ticks);
         Interlocked.Exchange(ref _thumbnailRequested, 0);
     }

@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS media (
   lastPlayed INTEGER,
   playCount INTEGER,
   contentHash TEXT,
-  fingerprintVersion INTEGER NOT NULL DEFAULT 0
+  fingerprintVersion INTEGER NOT NULL DEFAULT 0,
+  rotation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS media_relocations (
   mediaId TEXT PRIMARY KEY,
@@ -188,7 +189,8 @@ SELECT
             ("createdAt", "INTEGER NOT NULL DEFAULT 0"),
             ("modifiedAt", "INTEGER NOT NULL DEFAULT 0"),
             ("lastPlayed", "INTEGER"),
-            ("playCount", "INTEGER")
+            ("playCount", "INTEGER"),
+            ("rotation", "INTEGER NOT NULL DEFAULT 0")
         };
 
         foreach (var (name, definition) in columnDefinitions)

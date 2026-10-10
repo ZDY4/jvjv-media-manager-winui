@@ -77,6 +77,50 @@ internal static class KeysetPaginationTests
             Assert.True(page.HasMore, "Resolution page has more");
             Assert.Null(page.NextCursor, "Resolution sort yields no keyset cursor (OFFSET fallback)");
         });
+
+        registry.Add(Suite, "stale cursor is ignored when query filters change", async () =>
+        {
+            using var ws = new TempWorkspace("keyset-stale-cursor");
+            var db = new MediaDb(ws.Root);
+            db.Initialize();
+            await db.StartupMaintenanceTask;
+
+            var items = Enumerable.Range(0, 40)
+                .Select(i => MediaFactory.Create($"C:/lib/item-{i:D3}.png", tags: i % 2 == 0 ? new[] { "even" } : new[] { "odd" }))
+                .ToList();
+            await db.UpsertMediaBatchAsync(items);
+
+            var first = await db.QueryMediaPageAsync(new MediaQuery
+            {
+                SortField = MediaSortField.FileName,
+                SortOrder = MediaSortOrder.Asc,
+                Limit = 10
+            });
+            Assert.NotNull(first.NextCursor, "First page yields a cursor");
+
+            var changedQuery = new MediaQuery
+            {
+                SortField = MediaSortField.FileName,
+                SortOrder = MediaSortOrder.Asc,
+                SelectedTags = new[] { "odd" },
+                Limit = 10,
+                Cursor = first.NextCursor
+            };
+            var actual = await db.QueryMediaPageAsync(changedQuery);
+            var expected = await db.QueryMediaPageAsync(new MediaQuery
+            {
+                SortField = changedQuery.SortField,
+                SortOrder = changedQuery.SortOrder,
+                SelectedTags = changedQuery.SelectedTags,
+                Limit = changedQuery.Limit,
+                Offset = 0
+            });
+
+            Assert.SequenceEqual(
+                expected.Items.Select(item => item.Id).ToList(),
+                actual.Items.Select(item => item.Id).ToList(),
+                "Cursor from a different filter must be ignored rather than applied");
+        });
     }
 
     private static async Task AssertKeysetMatchesFullQuery(MediaSortField sortField, MediaSortOrder sortOrder)

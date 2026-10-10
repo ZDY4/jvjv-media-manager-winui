@@ -29,7 +29,10 @@ public static class AppServiceRegistration
         services.AddSingleton(provider =>
         {
             var settings = provider.GetRequiredService<SettingsService>();
-            return new TimelineThumbnailStripService(settings.GetTimelineThumbnailCacheDir());
+            var playbackResources = provider.GetRequiredService<PlaybackResourceCoordinator>();
+            return new TimelineThumbnailStripService(
+                settings.GetTimelineThumbnailCacheDir(),
+                playbackResources: playbackResources);
         });
         services.AddSingleton<LibraryShellServices>();
         services.AddTransient<IContentDialogService, ContentDialogService>();

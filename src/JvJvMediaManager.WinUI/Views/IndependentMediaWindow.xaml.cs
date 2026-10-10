@@ -59,12 +59,16 @@ public sealed partial class IndependentMediaWindow : Window
     private PlayerNavigationEdge _pressedNavigationHotspotEdge;
     private readonly double _initialPositionSeconds;
     private readonly bool _initialWasPlaying;
+    private readonly double _initialRotationDegrees;
+    private CancellationTokenSource _restoreCancellation = new();
+    private MediaPlayerSessionTransfer? _bossRecoverySession;
 
     internal IndependentMediaWindow(
         IReadOnlyList<IndependentMediaWindowMedia> mediaItems,
         int initialIndex,
         double initialPositionSeconds = 0,
-        bool initialWasPlaying = true)
+        bool initialWasPlaying = true,
+        double initialRotationDegrees = 0)
     {
         if (mediaItems.Count == 0)
         {
@@ -79,6 +83,7 @@ public sealed partial class IndependentMediaWindow : Window
         _controller = new IndependentMediaWindowController(mediaItems, initialIndex);
         _initialPositionSeconds = initialPositionSeconds;
         _initialWasPlaying = initialWasPlaying;
+        _initialRotationDegrees = initialRotationDegrees;
         var libraryServices = LibraryShellServices.CreateDefault();
         _settings = libraryServices.Settings;
         _library = new LibraryShellViewModel(
@@ -170,13 +175,18 @@ public sealed partial class IndependentMediaWindow : Window
         ConfigureInitialWindowBounds();
         InstallKeyboardSubclass();
         OpenCurrentMedia();
-        _ = RestoreInitialPlaybackStateAsync();
+        _ = RestorePlaybackStateAsync(
+            _initialPositionSeconds,
+            _initialWasPlaying,
+            _initialRotationDegrees,
+            _controller.CurrentMedia.Id,
+            _restoreCancellation.Token);
         NotifyPlaybackTargetActivated();
         FocusPlayer();
     }
 
     internal IndependentMediaWindow(MediaPlayerSessionTransfer session)
-        : this(session.MediaItems, session.CurrentIndex, session.PositionSeconds, session.WasPlaying)
+        : this(session.MediaItems, session.CurrentIndex, session.PositionSeconds, session.WasPlaying, session.RotationDegrees)
     {
     }
 
@@ -186,6 +196,7 @@ public sealed partial class IndependentMediaWindow : Window
 
     internal void PlayMedia(IndependentMediaWindowMedia media)
     {
+        CancelPendingRestore();
         var beforeCount = _controller.Count;
         var played = _controller.PlayOrSelect(media);
         if (_library.FilteredMediaItems.All(item => !string.Equals(item.Id, played.Id, StringComparison.Ordinal)))
@@ -200,6 +211,94 @@ public sealed partial class IndependentMediaWindow : Window
         OpenCurrentMedia();
         NotifyPlaybackTargetActivated();
         FocusPlayer();
+    }
+
+    internal void ApplyExternalTags(string mediaId, IReadOnlyList<string> tags)
+    {
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        var media = _controller.MediaItems.FirstOrDefault(item =>
+            string.Equals(item.Id, mediaId, StringComparison.Ordinal));
+        if (media == null)
+        {
+            return;
+        }
+
+        media.UpdateTags(tags);
+        if (string.Equals(_library.SelectedMedia?.Id, mediaId, StringComparison.Ordinal))
+        {
+            RefreshPlayerTags(media);
+            RefreshNumpadShortcutHint();
+        }
+    }
+
+    internal void RemoveDeletedMedia(IReadOnlyList<string> mediaIds)
+    {
+        if (mediaIds.Count == 0)
+        {
+            return;
+        }
+
+        var deletedIds = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        if (deletedIds.Count == 0)
+        {
+            return;
+        }
+
+        var currentMediaId = _controller.CurrentMedia.Id;
+        var isDeletingCurrentMedia = deletedIds.Contains(currentMediaId);
+        var removedAny = false;
+        var orderedDeletedIds = deletedIds
+            .Where(id => !string.Equals(id, currentMediaId, StringComparison.Ordinal))
+            .Concat(deletedIds.Contains(currentMediaId) ? new[] { currentMediaId } : Array.Empty<string>());
+        foreach (var mediaId in orderedDeletedIds)
+        {
+            var plan = _controller.BuildDeletePlan(mediaId);
+            if (plan.RemovedIndex < 0)
+            {
+                continue;
+            }
+
+            var removed = _controller.MediaItems.ElementAtOrDefault(plan.RemovedIndex);
+            _controller.RemoveDeletedMedia(
+                plan,
+                preserveCurrentMedia: !string.Equals(mediaId, currentMediaId, StringComparison.Ordinal));
+            if (removed != null)
+            {
+                _ = _library.FilteredMediaItems.Remove(removed);
+            }
+
+            removedAny = true;
+        }
+
+        if (!removedAny)
+        {
+            return;
+        }
+
+        if (_controller.Count == 0)
+        {
+            Close();
+            return;
+        }
+
+        if (isDeletingCurrentMedia)
+        {
+            _videoPlaybackController.PauseAndClearSource();
+            _imagePreviewController.Clear();
+            OpenCurrentMedia();
+            FocusPlayer();
+        }
+        else
+        {
+            RefreshPlayerNavigationHotspots();
+            RefreshNumpadShortcutHint();
+        }
     }
 
     internal Task<bool> TryHandleShortcutAsync(VirtualKey key)
@@ -237,34 +336,41 @@ public sealed partial class IndependentMediaWindow : Window
     private MediaPlayerSessionTransfer ExportSession()
     {
         var items = _controller.MediaItems
-            .Select(item => new IndependentMediaWindowMedia(
-                item.Id,
-                item.FileSystemPath,
-                item.FileName,
-                item.Type,
-                item.ResolutionText,
-                item.ContentHash,
-                item.FingerprintVersion,
-                item.Tags.ToList()))
+            .Select(IndependentMediaWindowService.CreateSnapshot)
             .ToList();
         return new MediaPlayerSessionTransfer(
             items,
             _controller.CurrentIndex,
             _videoPlaybackController.GetCurrentPlaybackPosition().TotalSeconds,
-            _videoPlaybackController.IsPlaying);
+            _videoPlaybackController.IsPlaying,
+            _videoPlaybackController.VideoRotationDegrees);
     }
 
-    private async Task RestoreInitialPlaybackStateAsync()
+    private async Task RestorePlaybackStateAsync(
+        double positionSeconds,
+        bool wasPlaying,
+        double rotationDegrees,
+        string expectedMediaId,
+        CancellationToken cancellationToken)
     {
-        if (_initialPositionSeconds <= 0 && _initialWasPlaying) return;
-        for (var attempt = 0; attempt < 20; attempt++)
+        try
         {
-            await Task.Delay(100);
-            if (_library.SelectedMedia?.Type != MediaType.Video) return;
-            if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero) continue;
-            if (_initialPositionSeconds > 0) _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(_initialPositionSeconds));
-            if (!_initialWasPlaying && _videoPlaybackController.IsPlaying) _videoPlaybackController.TogglePlayPause();
-            return;
+            if (positionSeconds <= 0 && wasPlaying && rotationDegrees <= 0) return;
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(100, cancellationToken);
+                if (!string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                    || _library.SelectedMedia?.Type != MediaType.Video) return;
+                if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero) continue;
+                if (positionSeconds > 0) _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(positionSeconds));
+                if (!wasPlaying && _videoPlaybackController.IsPlaying) _videoPlaybackController.TogglePlayPause();
+                if (rotationDegrees > 0) _videoPlaybackController.SetVideoRotation(rotationDegrees);
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Window closed before the transferred state became applicable.
         }
     }
 
@@ -384,6 +490,7 @@ public sealed partial class IndependentMediaWindow : Window
 
     private Task NavigateRelativeAsync(int offset)
     {
+        CancelPendingRestore();
         var media = _controller.NavigateRelative(offset);
         if (media == null)
         {
@@ -646,8 +753,8 @@ public sealed partial class IndependentMediaWindow : Window
             _activePlayerNavigationEdge = PlayerNavigationEdge.None;
         }
 
-        PreviousMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0;
-        NextMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0;
+        PreviousMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0.55) : 0;
+        NextMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0.55) : 0;
     }
 
     private void UpdatePlayerNavigationCue(Windows.Foundation.Point pointerPosition)
@@ -915,27 +1022,44 @@ public sealed partial class IndependentMediaWindow : Window
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var deletePlan = _controller.BuildDeletePlan(media.Id);
         var replacement = deletePlan.Replacement;
+        var deletedPath = media.FileSystemPath;
         AppTraceLogger.Log(
             "IndependentMediaWindow",
-            $"DeleteCurrentMediaAsync start. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}', ReplacementId='{replacement?.Id ?? "<null>"}'.");
+            $"DeleteCurrentMediaAsync start. MediaId='{media.Id}', File='{media.FileName}', Path='{deletedPath}', ReplacementId='{replacement?.Id ?? "<null>"}'.");
 
-        _videoPlaybackController.PauseAndClearSource();
-        _imagePreviewController.Clear();
+        var switchedToReplacement = replacement != null && _controller.TrySelect(replacement.Id);
+        if (switchedToReplacement)
+        {
+            AppTraceLogger.Log(
+                "IndependentMediaWindow",
+                $"Selected replacement before file delete. CurrentMediaId='{media.Id}', ReplacementId='{replacement!.Id}'.");
+            OpenCurrentMedia();
+            FocusPlayer();
+            await UiThreadYield.NextPassAsync();
+        }
+        else
+        {
+            _videoPlaybackController.PauseAndClearSource();
+            _imagePreviewController.Clear();
+        }
 
         try
         {
             await Task.Run(() =>
             {
-                if (File.Exists(media.FileSystemPath))
+                if (File.Exists(deletedPath))
                 {
-                    RecycleBinHelper.SendToRecycleBin(media.FileSystemPath);
+                    RecycleBinHelper.SendToRecycleBin(deletedPath);
                 }
-
             });
         }
         catch
         {
-            OpenCurrentMedia();
+            if (_controller.TrySelect(media.Id))
+            {
+                OpenCurrentMedia();
+            }
+
             FocusPlayer();
             throw;
         }
@@ -951,7 +1075,12 @@ public sealed partial class IndependentMediaWindow : Window
             return;
         }
 
-        OpenCurrentMedia();
+        if (!switchedToReplacement
+            || !string.Equals(_controller.CurrentMedia.Id, replacement?.Id, StringComparison.Ordinal))
+        {
+            OpenCurrentMedia();
+        }
+
         FocusPlayer();
         AppTraceLogger.Log(
             "IndependentMediaWindow",
@@ -960,6 +1089,10 @@ public sealed partial class IndependentMediaWindow : Window
 
     private void IndependentMediaWindow_Closed(object sender, WindowEventArgs args)
     {
+        _restoreCancellation.Cancel();
+        _restoreCancellation.Dispose();
+        _videoPlaybackController.Dispose();
+        _imagePreviewController.Dispose();
         UninstallKeyboardSubclass();
         Closed -= IndependentMediaWindow_Closed;
         Activated -= IndependentMediaWindow_Activated;
@@ -985,8 +1118,6 @@ public sealed partial class IndependentMediaWindow : Window
         NextMediaHotspot.PointerReleased -= PlayerNavigationHotspot_PointerReleased;
         NextMediaHotspot.PointerCaptureLost -= PlayerNavigationHotspot_PointerCaptureLost;
         NextMediaHotspot.RemoveHandler(UIElement.PointerWheelChangedEvent, _playerNavigationHotspotPointerWheelHandler);
-        _videoPlaybackController.Dispose();
-        _imagePreviewController.Dispose();
         _library.Dispose();
     }
 
@@ -1021,8 +1152,15 @@ public sealed partial class IndependentMediaWindow : Window
         _bossKeyController?.HandleBossKeyTrigger();
     }
 
+    internal void RestoreFromBossMode()
+    {
+        _bossKeyController?.ExitBossMode();
+    }
+
     private void EnterBossMode()
     {
+        _bossRecoverySession = ExportSession();
+        CancelPendingRestore();
         _videoPlaybackController.Clear();
         _imagePreviewController.Clear();
         _player.EmptyStateVisibility = Visibility.Visible;
@@ -1038,11 +1176,44 @@ public sealed partial class IndependentMediaWindow : Window
     private void ExitBossMode()
     {
         BossKeyRecoveryButton.Visibility = Visibility.Collapsed;
+        // Entering boss mode clears the visual player state. Re-bind the
+        // current queue item on exit so recovery never leaves a blank player.
+        if (_controller.Count > 0 && _library.SelectedMedia != null)
+        {
+            OpenCurrentMedia();
+            FocusPlayer();
+            var recovery = _bossRecoverySession;
+            _bossRecoverySession = null;
+            var expectedMediaId = recovery?.MediaItems.ElementAtOrDefault(recovery.CurrentIndex)?.Id;
+            if (recovery != null && !string.IsNullOrWhiteSpace(expectedMediaId))
+            {
+                _ = RestorePlaybackStateAsync(
+                    recovery.PositionSeconds,
+                    recovery.WasPlaying,
+                    recovery.RotationDegrees,
+                    expectedMediaId,
+                    _restoreCancellation.Token);
+            }
+        }
     }
 
     private void BossKeyRecoveryButton_Click(object sender, RoutedEventArgs e)
     {
         _bossKeyController?.ExitBossMode();
+    }
+
+    private void CancelPendingRestore()
+    {
+        if (_restoreCancellation.IsCancellationRequested)
+        {
+            _restoreCancellation.Dispose();
+            _restoreCancellation = new CancellationTokenSource();
+            return;
+        }
+
+        _restoreCancellation.Cancel();
+        _restoreCancellation.Dispose();
+        _restoreCancellation = new CancellationTokenSource();
     }
 
     private bool HandleKeyboardSubclassMessage(
@@ -1051,16 +1222,9 @@ public sealed partial class IndependentMediaWindow : Window
         UIntPtr wParam,
         IntPtr lParam)
     {
-        if ((msg == WindowKeyboardInterceptor.WmKeyDown || msg == WindowKeyboardInterceptor.WmSysKeyDown)
-            && (int)wParam == (int)VirtualKey.Escape)
-        {
-            AppTraceLogger.Log(
-                "IndependentMediaWindow",
-                $"Escape received by window subclass. MediaId='{_library.SelectedMedia?.Id ?? "<null>"}'.");
-            _ = DispatcherQueue.TryEnqueue(Close);
-            return true;
-        }
-
+        // Escape must continue through WinUI's key routing. The shortcut
+        // handler owns single-Escape close and double-Escape boss mode; the
+        // native subclass must not close the window before that logic runs.
         return false;
     }
 }

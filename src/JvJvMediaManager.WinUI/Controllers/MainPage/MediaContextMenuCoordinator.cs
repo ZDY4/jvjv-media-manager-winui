@@ -33,6 +33,7 @@ public sealed class MediaContextMenuCoordinator
     private readonly MenuFlyoutItem _showShortcutTagHintItem;
     private readonly MenuFlyoutSeparator _showShortcutTagHintSeparator;
     private readonly MenuFlyoutSubItem _addToPlaylistItem;
+    private readonly MenuFlyoutSubItem _rotateSubItem;
     private readonly MenuFlyoutItem _removeFromPlaylistItem;
     private readonly MenuFlyoutSeparator _deleteSeparator;
     private readonly MenuFlyoutItem _deleteItem;
@@ -40,6 +41,7 @@ public sealed class MediaContextMenuCoordinator
     private IReadOnlyList<MediaItemViewModel> _currentSelection = Array.Empty<MediaItemViewModel>();
     private Action? _showShortcutTagHintAction;
     private string? _shortcutTagHintText;
+    private Action<double>? _rotateVideoAction;
 
     public MediaContextMenuCoordinator(
         LibraryShellViewModel viewModel,
@@ -66,6 +68,7 @@ public sealed class MediaContextMenuCoordinator
         _showShortcutTagHintItem = CreateMenuItem("显示快捷加tag", string.Empty, ShowShortcutTagHintItem_Click);
         _showShortcutTagHintSeparator = new MenuFlyoutSeparator();
         _addToPlaylistItem = new MenuFlyoutSubItem { Text = "加入播放列表" };
+        _rotateSubItem = CreateRotateSubItem();
         _removeFromPlaylistItem = CreateMenuItem(string.Empty, RemoveFromPlaylistShortcutText, RemoveFromPlaylistItem_Click);
         _deleteSeparator = new MenuFlyoutSeparator();
         _deleteItem = CreateMenuItem("删除文件", DeleteShortcutText, DeleteItem_Click);
@@ -85,7 +88,8 @@ public sealed class MediaContextMenuCoordinator
         IReadOnlyList<MediaItemViewModel> selected,
         Action? shortcutTagHintAction = null,
         string? shortcutTagHintText = null,
-        bool includeOpenInSplit = true)
+        bool includeOpenInSplit = true,
+        Action<double>? rotateVideoAction = null)
     {
         if (selected.Count == 0)
         {
@@ -95,6 +99,7 @@ public sealed class MediaContextMenuCoordinator
         _currentSelection = selected.ToArray();
         _showShortcutTagHintAction = shortcutTagHintAction;
         _shortcutTagHintText = shortcutTagHintText;
+        _rotateVideoAction = rotateVideoAction;
         try
         {
             await RefreshMenuStateAsync(includeOpenInSplit);
@@ -141,6 +146,7 @@ public sealed class MediaContextMenuCoordinator
         _editTagsItem.Text = _currentSelection.Count == 1 ? "编辑标签" : $"批量编辑标签 ({_currentSelection.Count})";
         await RefreshPlaylistItemsAsync();
         RefreshShortcutTagHintItem();
+        RefreshRotateItem();
         RefreshOpenInSplitItem(includeOpenInSplit);
 
         if (_viewModel.SelectedPlaylist != null)
@@ -192,6 +198,62 @@ public sealed class MediaContextMenuCoordinator
 
         _ = _flyout.Items.Remove(_showShortcutTagHintItem);
         _ = _flyout.Items.Remove(_showShortcutTagHintSeparator);
+    }
+
+    private MenuFlyoutSubItem CreateRotateSubItem()
+    {
+        var subItem = new MenuFlyoutSubItem { Text = "旋转" };
+        foreach (var (text, deltaDegrees) in new[]
+                 {
+                     ("左转 90°", -90d),
+                     ("右转 90°", 90d)
+                 })
+        {
+            var item = new MenuFlyoutItem { Text = text, Tag = deltaDegrees };
+            item.Click += RotateItem_Click;
+            subItem.Items.Add(item);
+        }
+
+        subItem.Items.Add(new MenuFlyoutSeparator());
+        var resetItem = new MenuFlyoutItem { Text = "还原 (0°)", Tag = 0d };
+        resetItem.Click += RotateItem_Click;
+        subItem.Items.Add(resetItem);
+        return subItem;
+    }
+
+    private void RefreshRotateItem()
+    {
+        if (_rotateVideoAction == null)
+        {
+            _ = _flyout.Items.Remove(_rotateSubItem);
+            return;
+        }
+
+        if (_flyout.Items.Contains(_rotateSubItem))
+        {
+            return;
+        }
+
+        var insertIndex = _flyout.Items.IndexOf(_addToPlaylistItem);
+        if (insertIndex >= 0)
+        {
+            _flyout.Items.Insert(insertIndex + 1, _rotateSubItem);
+        }
+        else
+        {
+            _flyout.Items.Add(_rotateSubItem);
+        }
+    }
+
+    private void RotateItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuFlyoutItem item || item.Tag is not double deltaDegrees)
+        {
+            return;
+        }
+
+        AppTraceLogger.Log("MediaContextMenu", $"RotateVideo requested. Delta={deltaDegrees}, SelectionCount={_currentSelection.Count}.");
+        _rotateVideoAction?.Invoke(deltaDegrees);
     }
 
     private async Task RefreshPlaylistItemsAsync()

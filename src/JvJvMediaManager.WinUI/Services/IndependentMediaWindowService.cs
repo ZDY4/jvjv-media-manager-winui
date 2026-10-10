@@ -38,9 +38,12 @@ public sealed class IndependentMediaWindowService : IDisposable
             return;
         }
 
-        var navigationSnapshots = CreateNavigationSnapshots(navigationItems, mediaItems);
         foreach (var media in mediaItems)
         {
+            // Each window only needs a prev/next neighborhood around its
+            // starting item. Sharing the entire library snapshot would
+            // copy thousands of view-models onto the UI thread.
+            var navigationSnapshots = CreateNavigationSnapshots(navigationItems, new[] { media });
             OpenMediaWindow(media, navigationSnapshots);
         }
     }
@@ -67,6 +70,32 @@ public sealed class IndependentMediaWindowService : IDisposable
 
         window.PlayMedia(media);
         return true;
+    }
+
+    internal void ApplyExternalTags(string mediaId, IReadOnlyList<string> tags)
+    {
+        if (_isDisposed || string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        foreach (var window in _windows.ToList())
+        {
+            window.ApplyExternalTags(mediaId, tags);
+        }
+    }
+
+    internal void RemoveDeletedMedia(IReadOnlyList<string> mediaIds)
+    {
+        if (_isDisposed || mediaIds.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var window in _windows.ToList())
+        {
+            window.RemoveDeletedMedia(mediaIds);
+        }
     }
 
     internal Task<bool> TryHandleActiveIndependentShortcutAsync(VirtualKey key)
@@ -122,18 +151,46 @@ public sealed class IndependentMediaWindowService : IDisposable
         window.MediaTagsChanged += IndependentMediaWindow_MediaTagsChanged;
         window.MediaDeleted += IndependentMediaWindow_MediaDeleted;
         _windows.Add(window);
-        _activePlaybackTarget.SetIndependent(window);
-        window.Activate();
+        try
+        {
+            _activePlaybackTarget.SetIndependent(window);
+            window.Activate();
+        }
+        catch
+        {
+            _windows.Remove(window);
+            window.Closed -= IndependentMediaWindow_Closed;
+            window.PlaybackTargetActivated -= IndependentMediaWindow_PlaybackTargetActivated;
+            window.MediaTagsChanged -= IndependentMediaWindow_MediaTagsChanged;
+            window.MediaDeleted -= IndependentMediaWindow_MediaDeleted;
+            _activePlaybackTarget.ClearIndependentIfActive(window);
+            try
+            {
+                window.Close();
+            }
+            catch
+            {
+                // Best effort cleanup after activation failure.
+            }
+
+            throw;
+        }
     }
 
     internal static IReadOnlyList<IndependentMediaWindowMedia> CreateNavigationSnapshots(
         IReadOnlyList<MediaItemViewModel> navigationItems,
-        IReadOnlyList<MediaItemViewModel> selectedItems)
+        IReadOnlyList<MediaItemViewModel> selectedItems,
+        int radius = PlayerNavigationWindow.DefaultRadius)
     {
-        var snapshots = new List<IndependentMediaWindowMedia>();
-        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        var window = PlayerNavigationWindow.SliceAround(
+            navigationItems,
+            selectedItems,
+            static media => media.Id,
+            radius);
 
-        foreach (var media in navigationItems.Concat(selectedItems))
+        var snapshots = new List<IndependentMediaWindowMedia>(window.Count);
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var media in window)
         {
             if (!seenIds.Add(media.Id))
             {
@@ -156,7 +213,13 @@ public sealed class IndependentMediaWindowService : IDisposable
             media.ResolutionText,
             media.ContentHash,
             media.FingerprintVersion,
-            media.Tags.ToList());
+            media.Tags.ToList(),
+            media.Rotation,
+            media.Size,
+            media.Media.ModifiedAt,
+            media.Media.Duration,
+            media.Media.Width,
+            media.Media.Height);
     }
 
     private static int FindNavigationIndex(IReadOnlyList<IndependentMediaWindowMedia> navigationItems, string mediaId)
@@ -177,6 +240,14 @@ public sealed class IndependentMediaWindowService : IDisposable
         foreach (var window in _windows.ToList())
         {
             window.MinimizeForBossMode();
+        }
+    }
+
+    public void RestoreAllWindowsFromBossMode()
+    {
+        foreach (var window in _windows.ToList())
+        {
+            window.RestoreFromBossMode();
         }
     }
 
@@ -205,6 +276,7 @@ public sealed class IndependentMediaWindowService : IDisposable
         }
 
         _windows.Clear();
+        _activePlaybackTarget.SetMain();
         AppTraceLogger.Log("IndependentMediaWindow", "IndependentMediaWindowService disposed.");
     }
 
@@ -221,6 +293,10 @@ public sealed class IndependentMediaWindowService : IDisposable
         window.MediaDeleted -= IndependentMediaWindow_MediaDeleted;
         _ = _windows.Remove(window);
         _activePlaybackTarget.ClearIndependentIfActive(window);
+        if (_windows.Count > 0 && _activePlaybackTarget.Kind == ActivePlaybackTargetKind.Main)
+        {
+            _activePlaybackTarget.SetIndependent(_windows[^1]);
+        }
         AppTraceLogger.Log("IndependentMediaWindow", $"Closed. ActiveWindowCount={_windows.Count}.");
     }
 

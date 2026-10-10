@@ -7,6 +7,9 @@ namespace JvJvMediaManager.Data;
 internal sealed class PlaylistRepository
 {
     private readonly MediaDbConnectionFactory _connections;
+    // Playlist ordering is derived from MAX(sortOrder), so all mutations need
+    // to share one gate to avoid duplicate order values under concurrent calls.
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     public PlaylistRepository(MediaDbConnectionFactory connections)
     {
@@ -50,9 +53,14 @@ ORDER BY sortOrder ASC, createdAt ASC, name COLLATE NOCASE ASC;
             throw new ArgumentException("播放列表名称不能为空。", nameof(name));
         }
 
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
 
         await using var sortOrderCmd = connection.CreateCommand();
+        sortOrderCmd.Transaction = (SqliteTransaction)tx;
         sortOrderCmd.CommandText = "SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM playlists;";
         var sortOrder = Convert.ToInt32(await sortOrderCmd.ExecuteScalarAsync(cancellationToken));
 
@@ -66,6 +74,7 @@ ORDER BY sortOrder ASC, createdAt ASC, name COLLATE NOCASE ASC;
         };
 
         await using var cmd = connection.CreateCommand();
+        cmd.Transaction = (SqliteTransaction)tx;
         cmd.CommandText = @"
 INSERT INTO playlists (id, name, color, sortOrder, createdAt)
 VALUES ($id, $name, $color, $sortOrder, $createdAt);
@@ -76,9 +85,15 @@ VALUES ($id, $name, $color, $sortOrder, $createdAt);
         cmd.Parameters.AddWithValue("$sortOrder", playlist.SortOrder);
         cmd.Parameters.AddWithValue("$createdAt", playlist.CreatedAt);
         await cmd.ExecuteNonQueryAsync(cancellationToken);
+        await tx.CommitAsync(cancellationToken);
 
         AppTraceLogger.Log("PlaylistRepository", $"CreatePlaylist completed. PlaylistId='{playlist.Id}', NameLength={playlist.Name.Length}, SortOrder={playlist.SortOrder}.");
         return playlist;
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task RenamePlaylistAsync(string playlistId, string name, CancellationToken cancellationToken = default)
@@ -94,14 +109,22 @@ VALUES ($id, $name, $color, $sortOrder, $createdAt);
             throw new ArgumentException("播放列表名称不能为空。", nameof(name));
         }
 
-        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
-        await using var cmd = connection.CreateCommand();
-        cmd.CommandText = "UPDATE playlists SET name = $name WHERE id = $id;";
-        cmd.Parameters.AddWithValue("$id", playlistId);
-        cmd.Parameters.AddWithValue("$name", normalized);
-        var changed = await cmd.ExecuteNonQueryAsync(cancellationToken);
-        AppTraceLogger.Log("PlaylistRepository", $"RenamePlaylist completed. PlaylistId='{playlistId}', Changed={changed}, NameLength={normalized.Length}.");
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = "UPDATE playlists SET name = $name WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", playlistId);
+            cmd.Parameters.AddWithValue("$name", normalized);
+            var changed = await cmd.ExecuteNonQueryAsync(cancellationToken);
+            AppTraceLogger.Log("PlaylistRepository", $"RenamePlaylist completed. PlaylistId='{playlistId}', Changed={changed}, NameLength={normalized.Length}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task SetPlaylistColorAsync(string playlistId, string? colorHex, CancellationToken cancellationToken = default)
@@ -111,14 +134,22 @@ VALUES ($id, $name, $color, $sortOrder, $createdAt);
             throw new ArgumentException("播放列表 ID 不能为空。", nameof(playlistId));
         }
 
-        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
-        await using var cmd = connection.CreateCommand();
-        cmd.CommandText = "UPDATE playlists SET color = $color WHERE id = $id;";
-        cmd.Parameters.AddWithValue("$id", playlistId);
-        cmd.Parameters.AddWithValue("$color", string.IsNullOrWhiteSpace(colorHex) ? DBNull.Value : colorHex.Trim());
-        var changed = await cmd.ExecuteNonQueryAsync(cancellationToken);
-        AppTraceLogger.Log("PlaylistRepository", $"SetPlaylistColor completed. PlaylistId='{playlistId}', HasColor={!string.IsNullOrWhiteSpace(colorHex)}, Changed={changed}.");
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = "UPDATE playlists SET color = $color WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", playlistId);
+            cmd.Parameters.AddWithValue("$color", string.IsNullOrWhiteSpace(colorHex) ? DBNull.Value : colorHex.Trim());
+            var changed = await cmd.ExecuteNonQueryAsync(cancellationToken);
+            AppTraceLogger.Log("PlaylistRepository", $"SetPlaylistColor completed. PlaylistId='{playlistId}', HasColor={!string.IsNullOrWhiteSpace(colorHex)}, Changed={changed}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task DeletePlaylistAsync(string playlistId, CancellationToken cancellationToken = default)
@@ -129,45 +160,61 @@ VALUES ($id, $name, $color, $sortOrder, $createdAt);
             return;
         }
 
-        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
-        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
-        await using var mediaCmd = connection.CreateCommand();
-        mediaCmd.Transaction = (SqliteTransaction)tx;
-        mediaCmd.CommandText = "DELETE FROM playlist_media WHERE playlistId = $id;";
-        mediaCmd.Parameters.AddWithValue("$id", playlistId);
-        await mediaCmd.ExecuteNonQueryAsync(cancellationToken);
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            await using var mediaCmd = connection.CreateCommand();
+            mediaCmd.Transaction = (SqliteTransaction)tx;
+            mediaCmd.CommandText = "DELETE FROM playlist_media WHERE playlistId = $id;";
+            mediaCmd.Parameters.AddWithValue("$id", playlistId);
+            await mediaCmd.ExecuteNonQueryAsync(cancellationToken);
 
-        await using var playlistCmd = connection.CreateCommand();
-        playlistCmd.Transaction = (SqliteTransaction)tx;
-        playlistCmd.CommandText = "DELETE FROM playlists WHERE id = $id;";
-        playlistCmd.Parameters.AddWithValue("$id", playlistId);
-        await playlistCmd.ExecuteNonQueryAsync(cancellationToken);
+            await using var playlistCmd = connection.CreateCommand();
+            playlistCmd.Transaction = (SqliteTransaction)tx;
+            playlistCmd.CommandText = "DELETE FROM playlists WHERE id = $id;";
+            playlistCmd.Parameters.AddWithValue("$id", playlistId);
+            await playlistCmd.ExecuteNonQueryAsync(cancellationToken);
 
-        await tx.CommitAsync(cancellationToken);
-        AppTraceLogger.Log("PlaylistRepository", $"DeletePlaylist completed. PlaylistId='{playlistId}'.");
+            await tx.CommitAsync(cancellationToken);
+            AppTraceLogger.Log("PlaylistRepository", $"DeletePlaylist completed. PlaylistId='{playlistId}'.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task UpdatePlaylistOrderAsync(IReadOnlyList<string> playlistIds, CancellationToken cancellationToken = default)
     {
-        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
-
-        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
-        await using var cmd = connection.CreateCommand();
-        cmd.Transaction = (SqliteTransaction)tx;
-        cmd.CommandText = "UPDATE playlists SET sortOrder = $sortOrder WHERE id = $id;";
-        var sortOrderParam = cmd.Parameters.Add("$sortOrder", SqliteType.Integer);
-        var idParam = cmd.Parameters.Add("$id", SqliteType.Text);
-
-        for (var i = 0; i < playlistIds.Count; i++)
+        await _writeGate.WaitAsync(cancellationToken);
+        try
         {
-            sortOrderParam.Value = i;
-            idParam.Value = playlistIds[i];
-            await cmd.ExecuteNonQueryAsync(cancellationToken);
-        }
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
-        await tx.CommitAsync(cancellationToken);
-        AppTraceLogger.Log("PlaylistRepository", $"UpdatePlaylistOrder completed. Count={playlistIds.Count}.");
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            await using var cmd = connection.CreateCommand();
+            cmd.Transaction = (SqliteTransaction)tx;
+            cmd.CommandText = "UPDATE playlists SET sortOrder = $sortOrder WHERE id = $id;";
+            var sortOrderParam = cmd.Parameters.Add("$sortOrder", SqliteType.Integer);
+            var idParam = cmd.Parameters.Add("$id", SqliteType.Text);
+
+            for (var i = 0; i < playlistIds.Count; i++)
+            {
+                sortOrderParam.Value = i;
+                idParam.Value = playlistIds[i];
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await tx.CommitAsync(cancellationToken);
+            AppTraceLogger.Log("PlaylistRepository", $"UpdatePlaylistOrder completed. Count={playlistIds.Count}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task AddMediaToPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
@@ -188,14 +235,18 @@ VALUES ($id, $name, $color, $sortOrder, $createdAt);
             return;
         }
 
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
+        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
         await using var startOrderCmd = connection.CreateCommand();
+        startOrderCmd.Transaction = (SqliteTransaction)tx;
         startOrderCmd.CommandText = "SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM playlist_media WHERE playlistId = $playlistId;";
         startOrderCmd.Parameters.AddWithValue("$playlistId", playlistId);
         var nextSortOrder = Convert.ToInt32(await startOrderCmd.ExecuteScalarAsync(cancellationToken));
 
-        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
         cmd.Transaction = (SqliteTransaction)tx;
         cmd.CommandText = @"
@@ -219,6 +270,11 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
 
         await tx.CommitAsync(cancellationToken);
         AppTraceLogger.Log("PlaylistRepository", $"AddMediaToPlaylist completed. PlaylistId='{playlistId}', MediaCount={ids.Count}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task RemoveMediaFromPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
@@ -239,24 +295,32 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
             return;
         }
 
-        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
-
-        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
-        await using var cmd = connection.CreateCommand();
-        cmd.Transaction = (SqliteTransaction)tx;
-        cmd.CommandText = "DELETE FROM playlist_media WHERE playlistId = $playlistId AND mediaId = $mediaId;";
-        var playlistParam = cmd.Parameters.Add("$playlistId", SqliteType.Text);
-        var mediaParam = cmd.Parameters.Add("$mediaId", SqliteType.Text);
-
-        foreach (var mediaId in ids)
+        await _writeGate.WaitAsync(cancellationToken);
+        try
         {
-            playlistParam.Value = playlistId;
-            mediaParam.Value = mediaId;
-            await cmd.ExecuteNonQueryAsync(cancellationToken);
-        }
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
-        await tx.CommitAsync(cancellationToken);
-        AppTraceLogger.Log("PlaylistRepository", $"RemoveMediaFromPlaylist completed. PlaylistId='{playlistId}', MediaCount={ids.Count}.");
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            await using var cmd = connection.CreateCommand();
+            cmd.Transaction = (SqliteTransaction)tx;
+            cmd.CommandText = "DELETE FROM playlist_media WHERE playlistId = $playlistId AND mediaId = $mediaId;";
+            var playlistParam = cmd.Parameters.Add("$playlistId", SqliteType.Text);
+            var mediaParam = cmd.Parameters.Add("$mediaId", SqliteType.Text);
+
+            foreach (var mediaId in ids)
+            {
+                playlistParam.Value = playlistId;
+                mediaParam.Value = mediaId;
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await tx.CommitAsync(cancellationToken);
+            AppTraceLogger.Log("PlaylistRepository", $"RemoveMediaFromPlaylist completed. PlaylistId='{playlistId}', MediaCount={ids.Count}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task<bool> AreAllMediaInPlaylistAsync(string playlistId, IEnumerable<string> mediaIds, CancellationToken cancellationToken = default)
@@ -268,6 +332,7 @@ VALUES ($playlistId, $mediaId, $sortOrder, $addedAt);
 
         var mediaIdList = mediaIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (mediaIdList.Count == 0)

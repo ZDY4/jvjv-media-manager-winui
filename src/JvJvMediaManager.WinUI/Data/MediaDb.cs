@@ -40,7 +40,9 @@ public sealed class MediaDb
         // WP-A: heavy one-time maintenance (duplicate path merge, FTS rebuild,
         // sort-tuple indexes, orphan audit) runs on a background thread so it
         // cannot block first paint on large libraries. LibraryShellViewModel
-        // awaits StartupMaintenanceTask before its first media query.
+        // shows the first cached page immediately, then awaits this task
+        // before arming folder watchers (and silently refreshes if maintenance
+        // was still running during that first query).
         StartupMaintenanceTask = Task.Run(RunStartupMaintenanceAsync);
     }
 
@@ -80,9 +82,27 @@ public sealed class MediaDb
         return _media.GetAllMediaAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// H2: streams all media in bounded pages instead of materializing the
+    /// whole library at once.
+    /// </summary>
+    public IAsyncEnumerable<MediaFile> StreamAllMediaAsync(CancellationToken cancellationToken = default)
+    {
+        return _media.StreamAllMediaAsync(cancellationToken);
+    }
+
     public Task<MediaPageResult> QueryMediaPageAsync(MediaQuery query, CancellationToken cancellationToken = default)
     {
         return _media.QueryMediaPageAsync(query, cancellationToken);
+    }
+
+    /// <summary>
+    /// H3: 0-based position of the target row in the query's ordered result, or
+    /// null when the sort is not positionable.
+    /// </summary>
+    public Task<int?> QueryMediaPositionAsync(MediaQuery query, MediaFile target, CancellationToken cancellationToken = default)
+    {
+        return _media.QueryMediaPositionAsync(query, target, cancellationToken);
     }
 
     public Task<IReadOnlyList<MediaFolderSummary>> QueryMediaFolderSummariesAsync(MediaQuery query, CancellationToken cancellationToken = default)
@@ -153,6 +173,14 @@ public sealed class MediaDb
         return _media.ClearAllMediaAsync(includePlaylists, cancellationToken);
     }
 
+    public Task DeleteMediaUnderFoldersAsync(
+        IReadOnlyList<string> removedFolderPaths,
+        IReadOnlyList<string> keepFolderPaths,
+        CancellationToken cancellationToken = default)
+    {
+        return _media.DeleteMediaUnderFoldersAsync(removedFolderPaths, keepFolderPaths, cancellationToken);
+    }
+
     public Task<IReadOnlyList<MediaEntryRef>> GetMediaEntriesUnderFoldersAsync(
         IReadOnlyList<string> folderPaths,
         CancellationToken cancellationToken = default)
@@ -162,14 +190,12 @@ public sealed class MediaDb
 
     public async Task AddTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
     {
-        await _tags.AddTagAsync(mediaId, tag, cancellationToken);
-        await _media.RefreshSearchIndexAsync(mediaId, cancellationToken);
+        await _media.AddTagAsync(mediaId, tag, cancellationToken);
     }
 
     public async Task RemoveTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
     {
-        await _tags.RemoveTagAsync(mediaId, tag, cancellationToken);
-        await _media.RefreshSearchIndexAsync(mediaId, cancellationToken);
+        await _media.RemoveTagAsync(mediaId, tag, cancellationToken);
     }
 
     /// <summary>
@@ -187,6 +213,14 @@ public sealed class MediaDb
     public Task<IReadOnlyList<string>> GetTagsAsync(string mediaId, CancellationToken cancellationToken = default)
     {
         return _tags.GetTagsAsync(mediaId, cancellationToken);
+    }
+
+    /// <summary>
+    /// P-rotation: persists the per-media display rotation (0/90/180/270).
+    /// </summary>
+    public Task SetMediaRotationAsync(string mediaId, int rotation, CancellationToken cancellationToken = default)
+    {
+        return _media.SetMediaRotationAsync(mediaId, rotation, cancellationToken);
     }
 
     public Task<IReadOnlyList<string>> GetAllTagsAsync(CancellationToken cancellationToken = default)

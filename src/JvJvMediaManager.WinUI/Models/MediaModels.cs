@@ -97,6 +97,7 @@ public sealed class MediaFile
     public int? PlayCount { get; set; }
     public string? ContentHash { get; set; }
     public int FingerprintVersion { get; set; }
+    public int Rotation { get; set; }
     public List<string> Tags { get; set; } = new();
 }
 

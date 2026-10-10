@@ -155,7 +155,8 @@ public sealed class MainPageModuleFactory
             host,
             viewModel,
             clipModeToggleButton,
-            clipBarView);
+            clipBarView,
+            _services.GetRequiredService<PlaybackResourceCoordinator>());
     }
 
     public ImagePreviewController CreateImagePreviewController(

@@ -118,13 +118,38 @@ internal sealed class MediaPageStore
 
     public async Task<bool> EnsureMediaIdAvailableAsync(string mediaId)
     {
-        if (GetCurrentQueryState() == null)
+        var queryState = GetCurrentQueryState();
+        if (queryState == null)
         {
             AppTraceLogger.Log("MediaPageStore", $"EnsureMediaIdAvailableAsync skipped because query state has not been initialized. MediaId='{mediaId}'.");
             return false;
         }
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // H3: locate the target row with a single COUNT query and load one
+        // window straight up to it, instead of serially paging 120 items at a
+        // time (which meant dozens of queries to reach the tail of a large
+        // library). Falls back to sequential paging for non-positionable sorts
+        // or if the fast path does not confirm the row.
+        var target = await _library.GetMediaByIdAsync(mediaId);
+        var position = target == null
+            ? null
+            : await _library.QueryMediaPositionAsync(queryState.ToMediaQuery(0, 0), target);
+        if (position is >= 0)
+        {
+            await _items.EnsureItemAvailableAsync(position.Value);
+            if (_items.IndexOfMediaId(mediaId) >= 0)
+            {
+                AppTraceLogger.LogSampled(
+                    "MediaPageStore",
+                    "ensure-media-id-position",
+                    $"Ensure media id available via position lookup. MediaId='{mediaId}', Position={position.Value}, LoadedCount={_items.Count}, HasMore={_items.HasMoreItems}, ElapsedMs={stopwatch.ElapsedMilliseconds}.",
+                    TimeSpan.FromSeconds(1));
+                return true;
+            }
+        }
+
         var found = await _items.EnsureMediaIdAvailableAsync(mediaId);
         AppTraceLogger.LogSampled(
             "MediaPageStore",
@@ -263,7 +288,10 @@ internal sealed class MediaPageStore
                         "keyset-cursor-missing",
                         $"Keyset continuation had no cursor; restarting from the first page instead of OFFSET. Generation={generation}, Offset={offset}.",
                         TimeSpan.FromSeconds(2));
-                    query = CloneQueryWithCursor(queryState.ToMediaQuery(0, limit), cursor: null);
+                    // Preserve the requested offset when a cursor cannot be
+                    // rebuilt. Restarting at offset 0 would append the first
+                    // page again and can leave incremental loading stuck.
+                    query = CloneQueryWithCursor(queryState.ToMediaQuery(offset, limit), cursor: null);
                 }
             }
         }

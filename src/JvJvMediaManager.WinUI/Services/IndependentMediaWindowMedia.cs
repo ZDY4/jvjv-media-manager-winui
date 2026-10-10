@@ -11,7 +11,13 @@ internal sealed record IndependentMediaWindowMedia(
     string ResolutionText,
     string? ContentHash,
     int FingerprintVersion,
-    IReadOnlyList<string> Tags)
+    IReadOnlyList<string> Tags,
+    int Rotation = 0,
+    long Size = 0,
+    long ModifiedAt = 0,
+    double? Duration = null,
+    int? Width = null,
+    int? Height = null)
 {
     public MediaFile ToMediaFile()
     {
@@ -21,14 +27,14 @@ internal sealed record IndependentMediaWindowMedia(
             Path = PathHelpers.NormalizePath(FileSystemPath),
             FileName = FileName,
             Type = Type,
-            Size = TryGetFileSize(),
-            Width = TryParseResolutionWidth(),
-            Height = TryParseResolutionHeight(),
-            ModifiedAt = File.Exists(FileSystemPath)
-                ? new DateTimeOffset(File.GetLastWriteTimeUtc(FileSystemPath)).ToUnixTimeSeconds()
-                : 0,
+            Size = Size,
+            Duration = Duration,
+            Width = Width ?? TryParseResolutionWidth(),
+            Height = Height ?? TryParseResolutionHeight(),
+            ModifiedAt = ModifiedAt,
             ContentHash = ContentHash,
             FingerprintVersion = FingerprintVersion,
+            Rotation = Rotation,
             Tags = Tags
                 .Where(tag => !string.IsNullOrWhiteSpace(tag))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -53,19 +59,5 @@ internal sealed record IndependentMediaWindowMedia(
         return parts.Length > partIndex && int.TryParse(parts[partIndex], out var value)
             ? value
             : null;
-    }
-
-    private long TryGetFileSize()
-    {
-        try
-        {
-            return File.Exists(FileSystemPath)
-                ? new FileInfo(FileSystemPath).Length
-                : 0;
-        }
-        catch
-        {
-            return 0;
-        }
     }
 }

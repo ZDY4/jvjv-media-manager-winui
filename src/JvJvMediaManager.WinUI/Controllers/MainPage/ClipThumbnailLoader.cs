@@ -7,7 +7,7 @@ namespace JvJvMediaManager.Controllers.MainPage;
 
 internal sealed class ClipThumbnailLoader : IDisposable
 {
-    private readonly TimelineThumbnailStripService _thumbnailStripService = new();
+    private readonly TimelineThumbnailStripService _thumbnailStripService;
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly double _tileWidth;
     private readonly double _tileHeight;
@@ -21,8 +21,10 @@ internal sealed class ClipThumbnailLoader : IDisposable
         double tileWidth,
         double tileHeight,
         int minFrameCount,
-        int maxFrameCount)
+        int maxFrameCount,
+        PlaybackResourceCoordinator? playbackResources = null)
     {
+        _thumbnailStripService = new TimelineThumbnailStripService(playbackResources: playbackResources);
         _dispatcherQueue = dispatcherQueue;
         _tileWidth = tileWidth;
         _tileHeight = tileHeight;

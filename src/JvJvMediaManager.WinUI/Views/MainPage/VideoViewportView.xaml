@@ -4,14 +4,20 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <Grid>
-        <MediaPlayerElement x:Name="VideoPlayer"
-                            x:FieldModifier="public"
-                            AreTransportControlsEnabled="False"
-                            AutoPlay="True"
-                            IsTabStop="False"
-                            IsHitTestVisible="False"
-                            Visibility="Collapsed"
-                            Stretch="Uniform" />
+        <!-- Canvas does not clamp children to the viewport slot, so a 90/270
+             rotated player can be laid out as the swapped rectangle and still
+             paint the full frame after RenderTransform. -->
+        <Canvas x:Name="VideoPlayerHost"
+                x:FieldModifier="public">
+            <MediaPlayerElement x:Name="VideoPlayer"
+                                x:FieldModifier="public"
+                                AreTransportControlsEnabled="False"
+                                AutoPlay="True"
+                                IsTabStop="False"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed"
+                                Stretch="Uniform" />
+        </Canvas>
 
         <Border x:Name="VideoLoadingPreviewHost"
                 x:FieldModifier="public"

@@ -58,9 +58,9 @@ internal sealed partial class MediaRepository
             cmd.Transaction = (SqliteTransaction)tx;
             cmd.CommandText = @"
 INSERT INTO media (
-  id, path, folderPath, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion
+  id, path, folderPath, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion, rotation
 ) VALUES (
-  $id, $path, $folderPath, $filename, $type, $size, $width, $height, $duration, $thumbnail, $createdAt, $modifiedAt, $lastPlayed, $playCount, $contentHash, $fingerprintVersion
+  $id, $path, $folderPath, $filename, $type, $size, $width, $height, $duration, $thumbnail, $createdAt, $modifiedAt, $lastPlayed, $playCount, $contentHash, $fingerprintVersion, $rotation
 )
 ON CONFLICT(id) DO UPDATE SET
   path = excluded.path,
@@ -80,7 +80,8 @@ ON CONFLICT(id) DO UPDATE SET
   fingerprintVersion = CASE
     WHEN excluded.contentHash IS NULL THEN media.fingerprintVersion
     ELSE excluded.fingerprintVersion
-  END;
+  END,
+  rotation = media.rotation;
 ";
 
             var idParam = cmd.Parameters.Add("$id", SqliteType.Text);
@@ -99,6 +100,7 @@ ON CONFLICT(id) DO UPDATE SET
             var playCountParam = cmd.Parameters.Add("$playCount", SqliteType.Integer);
             var contentHashParam = cmd.Parameters.Add("$contentHash", SqliteType.Text);
             var fingerprintVersionParam = cmd.Parameters.Add("$fingerprintVersion", SqliteType.Integer);
+            var rotationParam = cmd.Parameters.Add("$rotation", SqliteType.Integer);
 
             foreach (var media in items)
             {
@@ -119,6 +121,7 @@ ON CONFLICT(id) DO UPDATE SET
                 playCountParam.Value = (object?)media.PlayCount ?? DBNull.Value;
                 contentHashParam.Value = string.IsNullOrWhiteSpace(media.ContentHash) ? DBNull.Value : media.ContentHash;
                 fingerprintVersionParam.Value = media.FingerprintVersion;
+                rotationParam.Value = media.Rotation;
                 await cmd.ExecuteNonQueryAsync(cancellationToken);
 
                 await MediaTagRepository.AddTagsAsync(connection, (SqliteTransaction)tx, media.Id, media.Tags, cancellationToken);
@@ -309,14 +312,44 @@ ORDER BY
 
     public async Task<IReadOnlyList<MediaFile>> GetAllMediaAsync(CancellationToken cancellationToken = default)
     {
-        var result = await QueryMediaPageAsync(new MediaQuery
+        var items = new List<MediaFile>();
+        await foreach (var media in StreamAllMediaAsync(cancellationToken))
         {
-            Offset = 0,
-            Limit = int.MaxValue,
-            SortField = MediaSortField.ModifiedAt,
-            SortOrder = MediaSortOrder.Desc
-        }, cancellationToken);
-        return result.Items;
+            items.Add(media);
+        }
+
+        return items;
+    }
+
+    // H2: pages through the whole table in bounded chunks so bulk maintenance
+    // (e.g. the invalid thumbnail cache sweep) never materializes the full
+    // library in memory at once.
+    public async IAsyncEnumerable<MediaFile> StreamAllMediaAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        const int pageSize = 1000;
+        var offset = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = await QueryMediaPageAsync(new MediaQuery
+            {
+                Offset = offset,
+                Limit = pageSize,
+                SortField = MediaSortField.ModifiedAt,
+                SortOrder = MediaSortOrder.Desc
+            }, cancellationToken);
+            foreach (var media in page.Items)
+            {
+                yield return media;
+            }
+
+            offset += page.Items.Count;
+            if (!page.HasMore || page.Items.Count == 0)
+            {
+                yield break;
+            }
+        }
     }
 
     public async Task<MediaPageResult> QueryMediaPageAsync(MediaQuery query, CancellationToken cancellationToken = default)
@@ -516,7 +549,7 @@ ORDER BY
 
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
-SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion
+SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion, rotation
 FROM media
 WHERE id = $id;
 ";
@@ -550,7 +583,7 @@ WHERE id = $id;
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
-SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion
+SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion, rotation
 FROM media
 WHERE path = $path COLLATE NOCASE
 LIMIT 1;
@@ -648,8 +681,11 @@ LIMIT 1;
             return;
         }
 
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
-        await using var cmd = connection.CreateCommand();
+        await using var cmd = CreateCommand(connection, null);
         cmd.CommandText = @"
 UPDATE media
 SET contentHash = $contentHash,
@@ -672,6 +708,11 @@ WHERE path = $path COLLATE NOCASE
                 $"UpdateMediaFingerprintByPathAsync completed. Updated={updated}, Path='{path}'.",
                 TimeSpan.FromSeconds(2));
         }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task UpdateMediaMetadataByPathAsync(
@@ -688,8 +729,11 @@ WHERE path = $path COLLATE NOCASE
             return;
         }
 
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
-        await using var cmd = connection.CreateCommand();
+        await using var cmd = CreateCommand(connection, null);
         cmd.CommandText = @"
 UPDATE media
 SET width = COALESCE($width, width),
@@ -714,6 +758,11 @@ WHERE path = $path COLLATE NOCASE
                 $"UpdateMediaMetadataByPathAsync completed. Updated={updated}, Path='{path}', HasSize={width.HasValue && height.HasValue}, HasDuration={duration.HasValue}.",
                 TimeSpan.FromSeconds(2));
         }
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public Task DeleteMediaAsync(string id, CancellationToken cancellationToken = default)
@@ -730,6 +779,9 @@ WHERE path = $path COLLATE NOCASE
         }
 
         var stopwatch = Stopwatch.StartNew();
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
         await using var tx = await connection.BeginTransactionAsync(cancellationToken);
@@ -768,6 +820,11 @@ WHERE path = $path COLLATE NOCASE
 
         await tx.CommitAsync(cancellationToken);
         AppTraceLogger.Log("MediaRepository", $"DeleteMediaAsync completed. Count={mediaIds.Count}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task RemoveMediaRecordsOnlyAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
@@ -779,6 +836,9 @@ WHERE path = $path COLLATE NOCASE
         }
 
         var stopwatch = Stopwatch.StartNew();
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
         await using var tx = await connection.BeginTransactionAsync(cancellationToken);
         await using var relocationCmd = connection.CreateCommand();
@@ -819,11 +879,19 @@ WHERE id = $id;
 
         await tx.CommitAsync(cancellationToken);
         AppTraceLogger.Log("MediaRepository", $"RemoveMediaRecordsOnlyAsync completed. Count={mediaIds.Count}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task ClearAllMediaAsync(bool includePlaylists = false, CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
         await using var tx = await connection.BeginTransactionAsync(cancellationToken);
@@ -836,6 +904,81 @@ WHERE id = $id;
         await ClearSearchIndexAsync(connection, (SqliteTransaction)tx, cancellationToken);
         await tx.CommitAsync(cancellationToken);
         AppTraceLogger.Log("MediaRepository", $"ClearAllMediaAsync completed. IncludePlaylists={includePlaylists}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    public async Task DeleteMediaUnderFoldersAsync(
+        IReadOnlyList<string> removedFolderPaths,
+        IReadOnlyList<string> keepFolderPaths,
+        CancellationToken cancellationToken = default)
+    {
+        if (removedFolderPaths.Count == 0)
+        {
+            return;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            await using var selectCmd = connection.CreateCommand();
+            selectCmd.Transaction = (SqliteTransaction)tx;
+
+            var whereSql = new StringBuilder();
+            AppendFolderPathMatchSql(selectCmd, removedFolderPaths, "removed", whereSql);
+            if (keepFolderPaths.Count > 0)
+            {
+                whereSql.Append(" AND NOT ");
+                AppendFolderPathMatchSql(selectCmd, keepFolderPaths, "keep", whereSql);
+            }
+
+            selectCmd.CommandText = $@"
+DROP TABLE IF EXISTS stale_media_ids;
+CREATE TEMP TABLE stale_media_ids (id TEXT PRIMARY KEY);
+INSERT INTO stale_media_ids(id)
+SELECT id FROM media
+WHERE {whereSql};
+";
+            await selectCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            await using var deleteCmd = connection.CreateCommand();
+            deleteCmd.Transaction = (SqliteTransaction)tx;
+            deleteCmd.CommandText = @"
+DELETE FROM tags WHERE mediaId IN (SELECT id FROM stale_media_ids);
+DELETE FROM playlist_media WHERE mediaId IN (SELECT id FROM stale_media_ids);
+DELETE FROM media_relocations WHERE mediaId IN (SELECT id FROM stale_media_ids);
+DELETE FROM media WHERE id IN (SELECT id FROM stale_media_ids);
+";
+            await deleteCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            if (await IsSearchIndexAvailableAsync(connection, (SqliteTransaction)tx, cancellationToken))
+            {
+                await using var ftsCmd = connection.CreateCommand();
+                ftsCmd.Transaction = (SqliteTransaction)tx;
+                ftsCmd.CommandText = "DELETE FROM media_search WHERE mediaId IN (SELECT id FROM stale_media_ids);";
+                await ftsCmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using var dropCmd = connection.CreateCommand();
+            dropCmd.Transaction = (SqliteTransaction)tx;
+            dropCmd.CommandText = "DROP TABLE stale_media_ids;";
+            await dropCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            await tx.CommitAsync(cancellationToken);
+            AppTraceLogger.Log(
+                "MediaRepository",
+                $"DeleteMediaUnderFoldersAsync completed. RemovedFolders={removedFolderPaths.Count}, KeepFolders={keepFolderPaths.Count}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     private static async Task RemoveRelocationAsync(
@@ -922,9 +1065,50 @@ WHERE id = $id;
             .Replace("_", @"\_", StringComparison.Ordinal);
     }
 
-    private static string BuildFolderLikePattern(string folderPath)
+    // H1: pattern for "this folder and its subfolders". NeedsEscape is true only
+    // when the folder itself contains LIKE wildcards; plain prefixes omit the
+    // ESCAPE clause so SQLite can serve the LIKE via idx_media_folderPath_nocase
+    // instead of scanning the whole table on every filtered page.
+    private static (string Pattern, bool NeedsEscape) BuildFolderLikePattern(string folderPath)
     {
-        return $"{EscapeLikePattern(folderPath.TrimEnd('/'))}/%";
+        var trimmed = folderPath.TrimEnd('/');
+        var escaped = EscapeLikePattern(trimmed);
+        return ($"{escaped}/%", !string.Equals(escaped, trimmed, StringComparison.Ordinal));
+    }
+
+    // H1: emits "(folderPath = <p>Exact COLLATE NOCASE OR folderPath LIKE <p> [ESCAPE '\'] COLLATE NOCASE)"
+    // with a bare column name so it works both with and without a table alias.
+    internal static void AppendFolderFilterTerm(SqliteCommand cmd, StringBuilder sql, string parameterName, string folderPath)
+    {
+        var trimmed = folderPath.TrimEnd('/');
+        var (pattern, needsEscape) = BuildFolderLikePattern(trimmed);
+        sql.Append("(folderPath = ")
+            .Append(parameterName)
+            .Append("Exact COLLATE NOCASE OR folderPath LIKE ")
+            .Append(parameterName)
+            .Append(needsEscape ? " ESCAPE '\\' COLLATE NOCASE)" : " COLLATE NOCASE)");
+        cmd.Parameters.AddWithValue($"{parameterName}Exact", trimmed);
+        cmd.Parameters.AddWithValue(parameterName, pattern);
+    }
+
+    private static void AppendFolderPathMatchSql(
+        SqliteCommand cmd,
+        IReadOnlyList<string> folderPaths,
+        string parameterPrefix,
+        StringBuilder sql)
+    {
+        sql.Append('(');
+        for (var i = 0; i < folderPaths.Count; i++)
+        {
+            if (i > 0)
+            {
+                sql.Append(" OR ");
+            }
+
+            AppendFolderFilterTerm(cmd, sql, $"${parameterPrefix}{i}", folderPaths[i]);
+        }
+
+        sql.Append(')');
     }
 
     private static string GetFolderPath(MediaFile media)
@@ -964,19 +1148,21 @@ WHERE id = $id;
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
 
         await using var cmd = connection.CreateCommand();
-        var filters = new List<string>(folderPaths.Count);
+        var filters = new StringBuilder(folderPaths.Count * 40);
         for (var i = 0; i < folderPaths.Count; i++)
         {
-            var parameterName = $"$folder{i}";
-            filters.Add($"(folderPath = {parameterName}Exact COLLATE NOCASE OR folderPath LIKE {parameterName} ESCAPE '\\' COLLATE NOCASE)");
-            cmd.Parameters.AddWithValue($"{parameterName}Exact", folderPaths[i]);
-            cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(folderPaths[i]));
+            if (i > 0)
+            {
+                filters.Append(" OR ");
+            }
+
+            AppendFolderFilterTerm(cmd, filters, $"$folder{i}", folderPaths[i]);
         }
 
         cmd.CommandText = $@"
 SELECT id, path
 FROM media
-WHERE {string.Join(" OR ", filters)};
+WHERE {filters};
 ";
 
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -988,6 +1174,37 @@ WHERE {string.Join(" OR ", filters)};
 
         AppTraceLogger.Log("MediaRepository", $"GetMediaEntriesUnderFoldersAsync completed. FolderCount={folderPaths.Count}, ResultCount={results.Count}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
         return results;
+    }
+
+    // P-rotation: persists the user's per-media display rotation. Normalized
+    // to the nearest 90 degrees so only 0/90/180/270 are ever stored.
+    public async Task SetMediaRotationAsync(string mediaId, int rotation, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        var normalized = (int)Math.Round(rotation / 90.0) * 90 % 360;
+        if (normalized < 0)
+        {
+            normalized += 360;
+        }
+
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = "UPDATE media SET rotation = $rotation WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$rotation", normalized);
+            cmd.Parameters.AddWithValue("$id", mediaId);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     private static MediaFile ReadMedia(SqliteDataReader reader)
@@ -1008,7 +1225,8 @@ WHERE {string.Join(" OR ", filters)};
             LastPlayed = reader.IsDBNull(11) ? null : reader.GetInt64(11),
             PlayCount = reader.IsDBNull(12) ? null : reader.GetInt32(12),
             ContentHash = reader.IsDBNull(13) ? null : reader.GetString(13),
-            FingerprintVersion = reader.IsDBNull(14) ? 0 : reader.GetInt32(14)
+            FingerprintVersion = reader.IsDBNull(14) ? 0 : reader.GetInt32(14),
+            Rotation = reader.IsDBNull(15) ? 0 : reader.GetInt32(15)
         };
     }
 

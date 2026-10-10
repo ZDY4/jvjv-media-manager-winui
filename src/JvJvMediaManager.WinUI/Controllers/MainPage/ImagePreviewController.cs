@@ -1,13 +1,13 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Graphics.Imaging;
-using Windows.Storage;
 using Windows.Storage.Streams;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Services;
 using JvJvMediaManager.Utilities;
 using JvJvMediaManager.ViewModels;
 using JvJvMediaManager.ViewModels.MainPage;
@@ -25,6 +25,8 @@ public sealed class ImagePreviewController
     private readonly ImageViewportView _imageViewportView;
     private readonly UIElement _playerOverlay;
     private readonly Action _refreshNavigationHotspots;
+    private readonly VideoHoverPreviewFrameService _imageTranscoder = new(maxConcurrentFrames: 1);
+    private CancellationTokenSource _previewCancellation = new();
     private readonly PointerEventHandler _pointerPressedHandler;
     private readonly PointerEventHandler _pointerMovedHandler;
     private readonly PointerEventHandler _pointerReleasedHandler;
@@ -93,6 +95,7 @@ public sealed class ImagePreviewController
         }
 
         _isDisposed = true;
+        CancelPreviewLoad();
         EndImageDrag();
         Interlocked.Increment(ref _imageLoadVersion);
         _imageViewportView.ImageScrollViewer.SizeChanged -= ImageScrollViewer_SizeChanged;
@@ -116,9 +119,19 @@ public sealed class ImagePreviewController
         _imageViewportView.ImageScrollViewer.Visibility = Visibility.Visible;
         SetPreviewImageVisible(false);
         Interlocked.Increment(ref _imageLoadVersion);
-        _imageViewportView.PreviewImageElement.Source = null;
+        try
+        {
+            _imageViewportView.PreviewImageElement.Source = null;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("ImagePreview", "Failed to clear preview image source.", ex);
+        }
+
         BeginImagePreviewSession(media);
-        _ = LoadImagePreviewAsync(media, Volatile.Read(ref _imageLoadVersion));
+        var loadVersion = Volatile.Read(ref _imageLoadVersion);
+        var cancellationToken = ResetPreviewCancellation();
+        _ = LoadImagePreviewAsync(media, loadVersion, cancellationToken);
     }
 
     public void Clear()
@@ -129,6 +142,7 @@ public sealed class ImagePreviewController
         }
 
         EndImageDrag();
+        CancelPreviewLoad();
         Interlocked.Increment(ref _imageLoadVersion);
         _pendingImageFitMediaId = null;
         _imageSourceWidth = 0;
@@ -189,50 +203,67 @@ public sealed class ImagePreviewController
         UpdateImageZoomUi(MinImageZoomFactor);
     }
 
-    private async Task LoadImagePreviewAsync(MediaItemViewModel media, int loadVersion)
+    private async Task LoadImagePreviewAsync(
+        MediaItemViewModel media,
+        int loadVersion,
+        CancellationToken cancellationToken)
     {
         try
         {
-            // WP-F: bail out before starting a decode if the selection has
-            // already moved on. Previously stale loads decoded the full
-            // resolution first and only then discarded it, stacking transient
-            // memory spikes during rapid selection changes.
-            if (loadVersion != Volatile.Read(ref _imageLoadVersion)
-                || !string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            if (!IsCurrentImageLoad(media, loadVersion))
             {
                 return;
             }
 
-            var file = await StorageFile.GetFileFromPathAsync(media.FileSystemPath);
-            using var stream = await file.OpenReadAsync();
-            var decoder = await BitmapDecoder.CreateAsync(stream);
-            var sourceWidth = (int)decoder.PixelWidth;
-            var sourceHeight = (int)decoder.PixelHeight;
-            var bitmap = await DecodePreviewBitmapAsync(decoder, stream);
+            var path = media.FileSystemPath;
+            AppTraceLogger.Log(
+                "ImagePreview",
+                $"LoadImagePreviewAsync start. MediaId='{media.Id}', File='{media.FileName}'.");
 
-            if (loadVersion != Volatile.Read(ref _imageLoadVersion))
+            // Decode with ffmpeg (libjpeg/libavcodec), not WIC. Some JFIF/JPEG
+            // files fail-fast inside combase when BitmapImage/BitmapDecoder
+            // touches them; that cannot be caught in managed code.
+            var jpeg = await _imageTranscoder.TranscodeStillImageAsync(
+                path,
+                MaxPreviewDecodeLongEdge,
+                cancellationToken);
+            if (jpeg == null || jpeg.Length == 0)
+            {
+                throw new InvalidOperationException("ffmpeg produced no preview image.");
+            }
+
+            if (!IsCurrentImageLoad(media, loadVersion))
             {
                 return;
             }
 
-            if (!string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            using var stream = new InMemoryRandomAccessStream();
+            await stream.WriteAsync(jpeg.AsBuffer());
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+            if (!IsCurrentImageLoad(media, loadVersion))
             {
                 return;
             }
 
             _imageViewportView.PreviewImageElement.Source = bitmap;
-            UpdatePreviewImageSourceSize(sourceWidth, sourceHeight);
+            UpdatePreviewImageSourceSize(
+                bitmap.PixelWidth > 0 ? bitmap.PixelWidth : null,
+                bitmap.PixelHeight > 0 ? bitmap.PixelHeight : null);
             _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
+            AppTraceLogger.Log(
+                "ImagePreview",
+                $"LoadImagePreviewAsync completed. MediaId='{media.Id}', PixelSize={bitmap.PixelWidth}x{bitmap.PixelHeight}, JpegBytes={jpeg.Length}.");
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer selection.
         }
         catch (Exception ex)
         {
-            if (loadVersion != Volatile.Read(ref _imageLoadVersion))
-            {
-                return;
-            }
-
-            if (!string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal))
+            if (!IsCurrentImageLoad(media, loadVersion))
             {
                 return;
             }
@@ -240,57 +271,41 @@ public sealed class ImagePreviewController
             AppTraceLogger.LogSampled(
                 "ImagePreview",
                 $"load-image-failed:{media.Id}",
-                $"LoadImagePreviewAsync failed, falling back to thumbnail. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}', ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                $"LoadImagePreviewAsync failed. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}', ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
                 TimeSpan.FromSeconds(5));
-            _imageViewportView.PreviewImageElement.Source = media.Thumbnail;
             _pendingImageFitMediaId = media.Id;
             TryApplyPendingImageFit();
         }
     }
 
-    // WP-F: decodes at most this long edge. Larger sources are scaled down
-    // before decoding so a 50MP photo cannot spike memory by hundreds of MB.
-    private const int MaxPreviewDecodeLongEdge = 4096;
-
-    private static async Task<BitmapImage> DecodePreviewBitmapAsync(BitmapDecoder decoder, IRandomAccessStream sourceStream)
+    private CancellationToken ResetPreviewCancellation()
     {
-        var longEdge = Math.Max((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-        if (longEdge <= MaxPreviewDecodeLongEdge)
-        {
-            sourceStream.Seek(0);
-            var bitmap = new BitmapImage();
-            await bitmap.SetSourceAsync(sourceStream);
-            return bitmap;
-        }
-
-        var scale = (double)MaxPreviewDecodeLongEdge / longEdge;
-        var scaledWidth = (uint)Math.Max(1, Math.Round(decoder.PixelWidth * scale));
-        var scaledHeight = (uint)Math.Max(1, Math.Round(decoder.PixelHeight * scale));
-        using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
-            decoder.BitmapPixelFormat,
-            decoder.BitmapAlphaMode,
-            new BitmapTransform
-            {
-                ScaledWidth = scaledWidth,
-                ScaledHeight = scaledHeight,
-                InterpolationMode = BitmapInterpolationMode.Fant
-            },
-            ExifOrientationMode.RespectExifOrientation,
-            ColorManagementMode.DoNotColorManage);
-
-        using var memoryStream = new InMemoryRandomAccessStream();
-        var encoderId = decoder.BitmapAlphaMode == BitmapAlphaMode.Straight
-            || decoder.BitmapAlphaMode == BitmapAlphaMode.Premultiplied
-                ? BitmapEncoder.PngEncoderId
-                : BitmapEncoder.JpegEncoderId;
-        var encoder = await BitmapEncoder.CreateAsync(encoderId, memoryStream);
-        encoder.SetSoftwareBitmap(softwareBitmap);
-        await encoder.FlushAsync();
-
-        var scaledBitmap = new BitmapImage();
-        await scaledBitmap.SetSourceAsync(memoryStream);
-        return scaledBitmap;
+        CancelPreviewLoad();
+        _previewCancellation = new CancellationTokenSource();
+        return _previewCancellation.Token;
     }
+
+    private void CancelPreviewLoad()
+    {
+        try
+        {
+            _previewCancellation.Cancel();
+            _previewCancellation.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private bool IsCurrentImageLoad(MediaItemViewModel media, int loadVersion)
+    {
+        return !_isDisposed
+            && loadVersion == Volatile.Read(ref _imageLoadVersion)
+            && string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal);
+    }
+
+    // WP-F: decode at most this width so a 50MP photo cannot spike memory.
+    private const int MaxPreviewDecodeLongEdge = 2048;
 
     private void UpdatePreviewImageSourceSize(int? width, int? height)
     {

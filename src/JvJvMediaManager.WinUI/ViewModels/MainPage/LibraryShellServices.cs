@@ -56,7 +56,7 @@ public sealed class LibraryShellServices
             database,
             new MediaLibraryService(database, playbackResources),
             new ThumbnailService(settings.GetThumbnailCacheDir(), playbackResources),
-            new TimelineThumbnailStripService(settings.GetTimelineThumbnailCacheDir()),
+            new TimelineThumbnailStripService(settings.GetTimelineThumbnailCacheDir(), playbackResources: playbackResources),
             playbackResources);
     }
 }

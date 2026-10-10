@@ -222,6 +222,7 @@ public sealed partial class MainPage : Page
     private async void PlayerDockHost_Drop(object sender, DragEventArgs e)
     {
         DockPreview.Visibility = Visibility.Collapsed;
+        var deferral = e.GetDeferral();
         try
         {
             var value = await e.DataView.GetDataAsync(MediaPlayerSessionTransfer.DataFormat) as string;
@@ -233,6 +234,10 @@ public sealed partial class MainPage : Page
         catch (Exception ex)
         {
             AppTraceLogger.LogException("PlayerDock", "Failed to dock transferred player session.", ex);
+        }
+        finally
+        {
+            deferral.Complete();
         }
     }
 

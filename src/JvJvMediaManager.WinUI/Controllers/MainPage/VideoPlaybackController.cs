@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 using Windows.Media.Core;
 using Windows.Media.Playback;
 using JvJvMediaManager.Models;
@@ -64,6 +65,20 @@ public sealed class VideoPlaybackController
     private readonly PointerEventHandler _progressSliderPointerReleasedHandler;
 
     private MediaPlayer? _player;
+    private MediaPlayer? _attachedPlayer;
+    private MediaSource? _currentMediaSource;
+    private TypedEventHandler<MediaPlayer, object>? _mediaOpenedHandler;
+    private TypedEventHandler<MediaPlayer, MediaPlayerFailedEventArgs>? _mediaFailedHandler;
+    private TypedEventHandler<MediaPlayer, object>? _mediaEndedHandler;
+    private TypedEventHandler<MediaPlaybackSession, object>? _playbackStateChangedHandler;
+    private bool _replacePlayerAfterFailure;
+    private int _switchInFlight;
+    private string? _shownMediaId;
+    private MediaItemViewModel? _coalescedShowMedia;
+    private long _coalescedSelectionChangedTimestamp;
+    private int _coalescedSwitchTraceId;
+    private readonly DispatcherTimer _showVideoCoalesceTimer = new();
+    private static readonly TimeSpan ShowVideoCoalesceDelay = TimeSpan.FromMilliseconds(40);
     private bool _isSeeking;
     private bool _areControlsVisible = true;
     private bool _isTransportSuppressed;
@@ -98,12 +113,23 @@ public sealed class VideoPlaybackController
         ".webm"
     };
     private int _mediaSourceVersion;
+    private int _openedMediaSourceVersion;
     private string? _pendingInternalShuffleSelectionId;
     private readonly PlaybackSessionTelemetry _telemetry;
     private int _failedMediaSourceVersion;
     private int _handledMediaFailedSourceVersion;
     private int _pendingPlayerDisposalCount;
     private int _isDisposed;
+    private readonly CompositeTransform _videoRotationTransform = new();
+    private double _videoRotationDegrees;
+
+    // Flash fix: the loading preview is only shown when the video has not
+    // revealed within the delay, so fast local opens never flash a thumbnail.
+    private static readonly TimeSpan VideoLoadingPreviewDelay = TimeSpan.FromMilliseconds(350);
+    private readonly DispatcherTimer _loadingPreviewTimer = new();
+    private MediaItemViewModel? _pendingPreviewMedia;
+    private int _pendingPreviewMediaSourceVersion;
+    private bool _videoSurfaceRevealed;
 
     public VideoPlaybackController(
         SettingsService settings,
@@ -130,6 +156,8 @@ public sealed class VideoPlaybackController
         _navigationOverlayView = navigationOverlayView;
         _videoViewportView = videoViewportView;
         _videoPlayer = videoPlayer;
+        _videoPlayer.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        _videoViewportView.SizeChanged += VideoViewportView_SizeChanged;
         _dispatcherQueue = dispatcherQueue;
         _getAppWindow = getAppWindow;
         _navigateRelativeAsync = navigateRelativeAsync;
@@ -173,7 +201,8 @@ public sealed class VideoPlaybackController
             GetCurrentVideoDuration,
             displayTime => _displayToPlaybackPositionOverride?.Invoke(displayTime) ?? displayTime,
             FormatTime,
-            EnqueueSafeAsync);
+            EnqueueSafeAsync,
+            _playbackResources);
         _progressSliderPointerPressedHandler = ProgressSlider_PointerPressed;
         _progressSliderPointerReleasedHandler = ProgressSlider_PointerReleased;
 
@@ -203,6 +232,10 @@ public sealed class VideoPlaybackController
         _controlsHideTimer.Tick += ControlsHideTimer_Tick;
         _uiHeartbeatTimer.Interval = TimeSpan.FromMilliseconds(500);
         _uiHeartbeatTimer.Tick += UiHeartbeatTimer_Tick;
+        _loadingPreviewTimer.Interval = VideoLoadingPreviewDelay;
+        _loadingPreviewTimer.Tick += LoadingPreviewTimer_Tick;
+        _showVideoCoalesceTimer.Interval = ShowVideoCoalesceDelay;
+        _showVideoCoalesceTimer.Tick += ShowVideoCoalesceTimer_Tick;
         _lastUiHeartbeatTimestamp = Stopwatch.GetTimestamp();
         _uiHeartbeatTimer.Start();
         _shuffleVideoOnlyMenuItem.Click += ShuffleVideoOnlyMenuItem_Click;
@@ -269,6 +302,17 @@ public sealed class VideoPlaybackController
         Interlocked.Increment(ref _mediaSourceVersion);
         LogPlaybackTrace("Dispose start.");
         _playbackLease.SetState(PlaybackActivityState.Inactive);
+        // Pause and unbind from the visual tree first, while MediaPlayerElement
+        // is still alive. Later XAML teardown must not find a live MediaPlayer
+        // attached; native Dispose during Window.Closed fail-fasts in combase.
+        var livePlayer = _player;
+        if (livePlayer != null)
+        {
+            DetachMediaPlayer(livePlayer);
+            TryPauseAndClearPlayer(livePlayer);
+        }
+
+        ReleasePlayerFromVisualTree();
         _transportBarView.ProgressSlider.Loaded -= ProgressSlider_Loaded;
         _transportBarView.ProgressSlider.KeyDown -= ProgressSlider_KeyDown;
         _transportBarView.ProgressSlider.ValueChanged -= ProgressSlider_ValueChanged;
@@ -305,15 +349,21 @@ public sealed class VideoPlaybackController
         _controlsHideTimer.Stop();
         _uiHeartbeatTimer.Stop();
         _uiHeartbeatTimer.Tick -= UiHeartbeatTimer_Tick;
+        _loadingPreviewTimer.Tick -= LoadingPreviewTimer_Tick;
+        _loadingPreviewTimer.Stop();
+        _showVideoCoalesceTimer.Tick -= ShowVideoCoalesceTimer_Tick;
+        _showVideoCoalesceTimer.Stop();
+        CancelCoalescedShowVideo();
+        _videoViewportView.SizeChanged -= VideoViewportView_SizeChanged;
         _progressPreview.Dispose();
 
         var player = Interlocked.Exchange(ref _player, null);
         if (player != null)
         {
             DetachMediaPlayer(player);
-            player.Dispose();
         }
 
+        DisposeCurrentMediaSource();
         _playbackLease.Dispose();
         LogPlaybackTrace("Dispose completed.");
     }
@@ -325,9 +375,93 @@ public sealed class VideoPlaybackController
             return;
         }
 
+        _coalescedShowMedia = media;
+        _coalescedSelectionChangedTimestamp = selectionChangedTimestamp;
+        _coalescedSwitchTraceId = switchTraceId;
+
+        // WP-07 Step A: while a source is still opening, collapse intermediate
+        // selections onto the latest one. The final choice is applied as soon
+        // as the burst settles (or immediately when nothing is in flight).
+        if (Volatile.Read(ref _switchInFlight) == 1 && !_telemetry.FirstPlayingLoggedForSource)
+        {
+            _showVideoCoalesceTimer.Stop();
+            _showVideoCoalesceTimer.Start();
+            LogPlaybackTraceSampled(
+                "show-video-coalesced",
+                $"ShowVideo coalesced pending switch. PendingId='{media.Id}', ShownId='{_shownMediaId ?? "<null>"}'.",
+                TimeSpan.FromMilliseconds(250));
+            return;
+        }
+
+        ApplyShowVideo(media, selectionChangedTimestamp, switchTraceId);
+    }
+
+    private void ShowVideoCoalesceTimer_Tick(object? sender, object e)
+    {
+        _showVideoCoalesceTimer.Stop();
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        TryApplyCoalescedShowVideo();
+    }
+
+    private void TryApplyCoalescedShowVideo()
+    {
+        var pending = _coalescedShowMedia;
+        if (pending == null || IsDisposed())
+        {
+            return;
+        }
+
+        if (string.Equals(pending.Id, _shownMediaId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        ApplyShowVideo(pending, _coalescedSelectionChangedTimestamp, _coalescedSwitchTraceId);
+    }
+
+    private void CancelCoalescedShowVideo()
+    {
+        _showVideoCoalesceTimer.Stop();
+        _coalescedShowMedia = null;
+        Interlocked.Exchange(ref _switchInFlight, 0);
+        _shownMediaId = null;
+    }
+
+    private void CompleteSwitchInFlight(int mediaSourceVersion)
+    {
+        if (mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _switchInFlight, 0);
+        _showVideoCoalesceTimer.Stop();
+        TryApplyCoalescedShowVideo();
+    }
+
+    private void ApplyShowVideo(MediaItemViewModel media, long selectionChangedTimestamp, int switchTraceId)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        _showVideoCoalesceTimer.Stop();
+        _shownMediaId = media.Id;
+        Interlocked.Exchange(ref _switchInFlight, 1);
+
+        // Rotation is per-media: start from the media's persisted rotation.
+        var persistedRotation = NormalizeVideoRotation(media.Rotation);
+        _videoRotationDegrees = persistedRotation;
+        ApplyVideoRotation();
+
         var mediaSourceVersion = Interlocked.Increment(ref _mediaSourceVersion);
         _playbackLease.SetState(PlaybackActivityState.Opening);
-        var player = ReplaceMediaPlayerForNewSource();
+        var player = ReplaceMediaPlayerForNewSource(mediaSourceVersion);
         var showVideoStartTimestamp = Stopwatch.GetTimestamp();
         _telemetry.BeginSwitch(showVideoStartTimestamp, mediaSourceVersion, selectionChangedTimestamp, switchTraceId);
         Interlocked.Exchange(ref _failedMediaSourceVersion, 0);
@@ -338,14 +472,22 @@ public sealed class VideoPlaybackController
             "ShowVideoStart",
             $"SelectedToShowVideoMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(selectionChangedTimestamp)}, PendingPlayerDisposal={Volatile.Read(ref _pendingPlayerDisposalCount)}, ReusePlayer={FeatureFlags.ReusePlayerEnabled}.");
         _progressPreview.ResetForMedia(media.Id);
-        ShowVideoLoadingPreview(media, mediaSourceVersion);
+        ScheduleVideoLoadingPreview(media, mediaSourceVersion);
         _videoPlayer.Visibility = Visibility.Visible;
-        _videoPlayer.Opacity = 0;
+        if (!_videoSurfaceRevealed)
+        {
+            // First open or returning from an image: keep the surface dark
+            // until the first frame is ready (revealed by the watchdog).
+            // Switching between videos keeps the last revealed frame on
+            // screen instead of flashing the new media's thumbnail.
+            _videoPlayer.Opacity = 0;
+        }
+
         _videoPlayer.InvalidateMeasure();
         _videoViewportView.InvalidateMeasure();
         LogPlaybackTrace($"Assigning MediaPlayer source. SourceVersion={mediaSourceVersion}, UriScheme='{new Uri(media.FileSystemPath).Scheme}', PathExists={File.Exists(media.FileSystemPath)}.");
         var sourceAssignStartTimestamp = Stopwatch.GetTimestamp();
-        player.Source = MediaSource.CreateFromUri(new Uri(media.FileSystemPath));
+        AssignPlayerSource(player, media.FileSystemPath);
         _telemetry.MarkSourceAssigned();
         _telemetry.LogSwitchTrace(
             mediaSourceVersion,
@@ -360,6 +502,7 @@ public sealed class VideoPlaybackController
     public void PauseAndClearSource()
     {
         Interlocked.Increment(ref _mediaSourceVersion);
+        Interlocked.Exchange(ref _switchInFlight, 0);
         LogPlaybackTrace("PauseAndClearSource invoked.");
         _playbackLease.SetState(PlaybackActivityState.Inactive);
         if (IsDisposed())
@@ -369,11 +512,12 @@ public sealed class VideoPlaybackController
 
         if (_player == null)
         {
+            DisposeCurrentMediaSource();
             return;
         }
 
-        _player.Pause();
-        _player.Source = null;
+        TryPauseAndClearPlayer(_player);
+        DisposeCurrentMediaSource();
     }
 
     public void Clear()
@@ -384,9 +528,13 @@ public sealed class VideoPlaybackController
         }
 
         LogPlaybackTrace("Clear invoked.");
+        CancelCoalescedShowVideo();
         PauseAndClearSource();
         CloseVolumeFlyout();
         _progressPreview.Clear();
+        _videoSurfaceRevealed = false;
+        _loadingPreviewTimer.Stop();
+        _pendingPreviewMedia = null;
         _videoPlayer.Visibility = Visibility.Collapsed;
         _videoPlayer.Opacity = 1;
         HideVideoLoadingPreview();
@@ -410,13 +558,147 @@ public sealed class VideoPlaybackController
         }
 
         LogPlaybackTrace("ShowImageState invoked.");
+        CancelCoalescedShowVideo();
         PauseAndClearSource();
         CloseVolumeFlyout();
         _progressPreview.Clear();
+        _videoSurfaceRevealed = false;
+        _loadingPreviewTimer.Stop();
+        _pendingPreviewMedia = null;
         _videoPlayer.Visibility = Visibility.Collapsed;
         _videoPlayer.Opacity = 1;
         HideVideoLoadingPreview();
         SetPassiveState(showImageNavigation: true);
+    }
+
+    public double VideoRotationDegrees => _videoRotationDegrees;
+
+    private static int NormalizeVideoRotation(double degrees)
+    {
+        var normalized = (int)Math.Round(degrees / 90) * 90 % 360;
+        return normalized < 0 ? normalized + 360 : normalized;
+    }
+
+    // Rotates relative to the current orientation. The context menu's
+    // 左转 90° / 右转 90° map to -90 / +90; a delta of 0 resets to 0.
+    public void RotateVideoBy(double deltaDegrees)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        var delta = NormalizeVideoRotation(deltaDegrees);
+        if (delta == 0)
+        {
+            SetVideoRotation(0);
+            return;
+        }
+
+        SetVideoRotation(NormalizeVideoRotation(_videoRotationDegrees + delta));
+    }
+
+    // Rotates the video surface for the current media. Degrees are normalized
+    // to 0/90/180/270 and persisted per media so the rotation survives
+    // restarts and is re-applied the next time the media opens.
+    public void SetVideoRotation(double degrees)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        var normalized = NormalizeVideoRotation(degrees);
+        if (Math.Abs(normalized - _videoRotationDegrees) < 0.5)
+        {
+            ShowControls();
+            return;
+        }
+
+        _videoRotationDegrees = normalized;
+        ApplyVideoRotation();
+        ShowControls();
+        LogPlaybackTrace($"Video rotation set. Degrees={_videoRotationDegrees}.");
+        PersistVideoRotationForCurrentMedia(normalized);
+    }
+
+    private void PersistVideoRotationForCurrentMedia(int rotation)
+    {
+        var selected = _libraryViewModel.SelectedMedia;
+        if (selected?.Type != MediaType.Video || string.IsNullOrWhiteSpace(selected.Id))
+        {
+            return;
+        }
+
+        _ = PersistVideoRotationAsync(selected.Id, rotation);
+    }
+
+    private async Task PersistVideoRotationAsync(string mediaId, int rotation)
+    {
+        try
+        {
+            await _libraryViewModel.SaveMediaRotationAsync(mediaId, rotation);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", $"Failed to persist video rotation. MediaId='{mediaId}', Rotation={rotation}.", ex);
+        }
+    }
+
+    private void ApplyVideoRotation()
+    {
+        var viewportWidth = _videoViewportView.ActualWidth;
+        var viewportHeight = _videoViewportView.ActualHeight;
+        if (viewportWidth <= 0 || viewportHeight <= 0)
+        {
+            return;
+        }
+
+        // MediaPlayerElement clips to its layout slot. A Grid would clamp a
+        // swapped 90/270 box to the viewport height, so the rotated frame
+        // was cropped. Canvas keeps the full swapped rectangle.
+        var swapAxes = _videoRotationDegrees is 90 or 270;
+        var layoutWidth = swapAxes ? viewportHeight : viewportWidth;
+        var layoutHeight = swapAxes ? viewportWidth : viewportHeight;
+        var left = (viewportWidth - layoutWidth) / 2;
+        var top = (viewportHeight - layoutHeight) / 2;
+
+        _videoPlayer.Clip = null;
+        _videoPlayer.Width = layoutWidth;
+        _videoPlayer.Height = layoutHeight;
+        _videoPlayer.HorizontalAlignment = HorizontalAlignment.Left;
+        _videoPlayer.VerticalAlignment = VerticalAlignment.Top;
+        Canvas.SetLeft(_videoPlayer, left);
+        Canvas.SetTop(_videoPlayer, top);
+        _videoPlayer.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+
+        if (_videoRotationDegrees == 0)
+        {
+            _videoRotationTransform.Rotation = 0;
+            _videoRotationTransform.ScaleX = 1;
+            _videoRotationTransform.ScaleY = 1;
+            _videoRotationTransform.TranslateX = 0;
+            _videoRotationTransform.TranslateY = 0;
+            _videoPlayer.RenderTransform = null;
+            return;
+        }
+
+        _videoRotationTransform.Rotation = _videoRotationDegrees;
+        _videoRotationTransform.ScaleX = 1;
+        _videoRotationTransform.ScaleY = 1;
+        _videoRotationTransform.TranslateX = 0;
+        _videoRotationTransform.TranslateY = 0;
+        _videoPlayer.RenderTransform = _videoRotationTransform;
+    }
+
+    private void VideoViewportView_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (IsDisposed())
+        {
+            return;
+        }
+
+        ApplyVideoRotation();
     }
 
     public void ShowControls()
@@ -804,127 +1086,260 @@ public sealed class VideoPlaybackController
             return _player;
         }
 
-        _player = CreateMediaPlayer();
-        _videoPlayer.SetMediaPlayer(_player);
+        var version = Volatile.Read(ref _mediaSourceVersion);
+        _player = CreateMediaPlayer(version);
+        try
+        {
+            _videoPlayer.SetMediaPlayer(_player);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to attach MediaPlayer to MediaPlayerElement.", ex);
+        }
+
         _playbackTimer.Start();
         return _player;
     }
 
-    private MediaPlayer ReplaceMediaPlayerForNewSource()
+    private MediaPlayer ReplaceMediaPlayerForNewSource(int mediaSourceVersion)
     {
         ObjectDisposedException.ThrowIf(IsDisposed(), this);
 
-        // WP-07 Step B: controlled player reuse behind a feature flag. Reuses the
-        // same MediaPlayer and only swaps the source, avoiding native decoder /
-        // GPU resource churn. Off by default; the replace-per-source strategy
-        // below remains the verified default.
-        if (FeatureFlags.ReusePlayerEnabled && _player != null)
+        // WP-07: reuse the existing MediaPlayer and only swap the source so
+        // consecutive switches skip native decoder / GPU session churn.
+        // After MediaFailed the native session is treated as poisoned and
+        // the next switch replaces the player. JVJVMM_ENABLE_PLAYER_REUSE=0
+        // restores replace-per-source.
+        if (FeatureFlags.ReusePlayerEnabled && _player != null && !_replacePlayerAfterFailure)
         {
             var reused = _player;
             try
             {
+                DetachMediaPlayer(reused);
                 reused.Pause();
-                reused.Source = null;
+                AttachMediaPlayer(reused, mediaSourceVersion);
+                AppTraceLogger.LogSampled(
+                    "VideoPlayback",
+                    "player-reused",
+                    "Reused existing MediaPlayer for new source (ReusePlayer strategy).",
+                    TimeSpan.FromSeconds(2));
+                return reused;
             }
             catch (Exception ex)
             {
-                AppTraceLogger.LogException("VideoPlayback", "Failed to reset reused MediaPlayer source.", ex);
+                AppTraceLogger.LogException("VideoPlayback", "Failed to pause reused MediaPlayer; replacing player.", ex);
             }
-
-            AppTraceLogger.LogSampled(
-                "VideoPlayback",
-                "player-reused",
-                "Reused existing MediaPlayer for new source (ReusePlayer strategy).",
-                TimeSpan.FromSeconds(2));
-            return reused;
         }
 
+        _replacePlayerAfterFailure = false;
         var oldPlayer = _player;
         if (oldPlayer != null)
         {
-            try
-            {
-                // Synchronously stop the outgoing player before scheduling its
-                // disposal so its decoder/session releases promptly and stale
-                // events stop arriving.
-                oldPlayer.Pause();
-                oldPlayer.Source = null;
-            }
-            catch (Exception ex)
-            {
-                AppTraceLogger.LogException("VideoPlayback", "Failed to pause old MediaPlayer while replacing source.", ex);
-            }
-
             DetachMediaPlayer(oldPlayer);
+            TryPauseAndClearPlayer(oldPlayer);
+            DisposeCurrentMediaSource();
         }
 
-        var player = CreateMediaPlayer();
+        var player = CreateMediaPlayer(mediaSourceVersion);
         var exchangedPlayer = Interlocked.Exchange(ref _player, player);
         if (exchangedPlayer != null && !ReferenceEquals(exchangedPlayer, oldPlayer))
         {
             oldPlayer = exchangedPlayer;
             DetachMediaPlayer(oldPlayer);
+            TryPauseAndClearPlayer(oldPlayer);
         }
 
-        _videoPlayer.SetMediaPlayer(player);
+        try
+        {
+            _videoPlayer.SetMediaPlayer(player);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to attach replacement MediaPlayer to MediaPlayerElement.", ex);
+        }
+
         _playbackTimer.Start();
 
         if (oldPlayer != null)
         {
-            var pending = Interlocked.Increment(ref _pendingPlayerDisposalCount);
-            if (pending > 1)
-            {
-                AppTraceLogger.LogSampled(
-                    "VideoPlayback",
-                    "pending-player-disposal-backlog",
-                    $"Pending MediaPlayer disposal backlog detected. PendingDisposalCount={pending}.",
-                    TimeSpan.FromSeconds(2));
-            }
-
-            var playerToDispose = oldPlayer;
-            _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
-            {
-                if (ReferenceEquals(playerToDispose, Volatile.Read(ref _player)))
-                {
-                    Interlocked.Decrement(ref _pendingPlayerDisposalCount);
-                    return;
-                }
-
-                try
-                {
-                    playerToDispose.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    AppTraceLogger.LogException("VideoPlayback", "Failed to dispose old MediaPlayer after source replacement.", ex);
-                }
-                finally
-                {
-                    Interlocked.Decrement(ref _pendingPlayerDisposalCount);
-                }
-            });
+            QueueDeferredMediaPlayerDispose(oldPlayer);
         }
 
         return player;
     }
 
-    private MediaPlayer CreateMediaPlayer()
+    private MediaPlayer CreateMediaPlayer(int mediaSourceVersion)
     {
         var player = new MediaPlayer();
-        player.MediaOpened += Player_MediaOpened;
-        player.MediaFailed += Player_MediaFailed;
-        player.MediaEnded += Player_MediaEnded;
-        player.PlaybackSession.PlaybackStateChanged += PlaybackSession_PlaybackStateChanged;
+        AttachMediaPlayer(player, mediaSourceVersion);
         player.Volume = _transportBarView.VolumeSlider.Value;
         return player;
     }
 
+    private void AttachMediaPlayer(MediaPlayer player, int mediaSourceVersion)
+    {
+        if (_attachedPlayer != null)
+        {
+            DetachMediaPlayer(_attachedPlayer);
+        }
+
+        _mediaOpenedHandler = (sender, args) => Player_MediaOpened(sender, args, mediaSourceVersion);
+        _mediaFailedHandler = (sender, args) => Player_MediaFailed(sender, args, mediaSourceVersion);
+        _mediaEndedHandler = (sender, args) => Player_MediaEnded(sender, args, mediaSourceVersion);
+        _playbackStateChangedHandler = (sender, args) => PlaybackSession_PlaybackStateChanged(sender, args, mediaSourceVersion);
+        player.MediaOpened += _mediaOpenedHandler;
+        player.MediaFailed += _mediaFailedHandler;
+        player.MediaEnded += _mediaEndedHandler;
+        player.PlaybackSession.PlaybackStateChanged += _playbackStateChangedHandler;
+        _attachedPlayer = player;
+    }
+
     private void DetachMediaPlayer(MediaPlayer player)
     {
-        player.MediaOpened -= Player_MediaOpened;
-        player.MediaFailed -= Player_MediaFailed;
-        player.MediaEnded -= Player_MediaEnded;
-        player.PlaybackSession.PlaybackStateChanged -= PlaybackSession_PlaybackStateChanged;
+        if (_mediaOpenedHandler != null)
+        {
+            player.MediaOpened -= _mediaOpenedHandler;
+        }
+
+        if (_mediaFailedHandler != null)
+        {
+            player.MediaFailed -= _mediaFailedHandler;
+        }
+
+        if (_mediaEndedHandler != null)
+        {
+            player.MediaEnded -= _mediaEndedHandler;
+        }
+
+        if (_playbackStateChangedHandler != null)
+        {
+            player.PlaybackSession.PlaybackStateChanged -= _playbackStateChangedHandler;
+        }
+
+        if (ReferenceEquals(_attachedPlayer, player))
+        {
+            _mediaOpenedHandler = null;
+            _mediaFailedHandler = null;
+            _mediaEndedHandler = null;
+            _playbackStateChangedHandler = null;
+            _attachedPlayer = null;
+        }
+    }
+
+    private void ReleasePlayerFromVisualTree()
+    {
+        try
+        {
+            _videoPlayer.SetMediaPlayer(null);
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to detach MediaPlayer from MediaPlayerElement.", ex);
+        }
+    }
+
+    private static void TryPauseAndClearPlayer(MediaPlayer player)
+    {
+        try
+        {
+            player.Pause();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to pause MediaPlayer.", ex);
+        }
+
+        try
+        {
+            player.Source = null;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to clear MediaPlayer source.", ex);
+        }
+    }
+
+    private void QueueDeferredMediaPlayerDispose(MediaPlayer player)
+    {
+        var pending = Interlocked.Increment(ref _pendingPlayerDisposalCount);
+        if (pending > 1)
+        {
+            AppTraceLogger.LogSampled(
+                "VideoPlayback",
+                "pending-player-disposal-backlog",
+                $"Pending MediaPlayer disposal backlog detected. PendingDisposalCount={pending}.",
+                TimeSpan.FromSeconds(2));
+        }
+
+        var queued = _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            try
+            {
+                if (IsDisposed() || ReferenceEquals(player, Volatile.Read(ref _player)))
+                {
+                    return;
+                }
+
+                player.Dispose();
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("VideoPlayback", "Failed to dispose retired MediaPlayer.", ex);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _pendingPlayerDisposalCount);
+            }
+        });
+        if (queued)
+        {
+            return;
+        }
+
+        Interlocked.Decrement(ref _pendingPlayerDisposalCount);
+        AppTraceLogger.Log(
+            "VideoPlayback",
+            "Skipped MediaPlayer.Dispose because DispatcherQueue rejected the callback.");
+    }
+
+    private void AssignPlayerSource(MediaPlayer player, string fileSystemPath)
+    {
+        var source = MediaSource.CreateFromUri(new Uri(fileSystemPath));
+        var previous = Interlocked.Exchange(ref _currentMediaSource, source);
+        try
+        {
+            player.Source = source;
+        }
+        catch
+        {
+            Interlocked.CompareExchange(ref _currentMediaSource, previous, source);
+            DisposeMediaSource(source);
+            throw;
+        }
+
+        DisposeMediaSource(previous);
+    }
+
+    private void DisposeCurrentMediaSource()
+    {
+        DisposeMediaSource(Interlocked.Exchange(ref _currentMediaSource, null));
+    }
+
+    private static void DisposeMediaSource(MediaSource? source)
+    {
+        if (source == null)
+        {
+            return;
+        }
+
+        try
+        {
+            source.Dispose();
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "Failed to dispose MediaSource.", ex);
+        }
     }
 
     private void UpdatePlayPauseState()
@@ -1527,7 +1942,7 @@ public sealed class VideoPlaybackController
             TimeSpan.FromMilliseconds(500));
     }
 
-    private void Player_MediaOpened(MediaPlayer sender, object args)
+    private void Player_MediaOpened(MediaPlayer sender, object args, int mediaSourceVersion)
     {
         if (IsDisposed() || !ReferenceEquals(sender, _player))
         {
@@ -1535,7 +1950,6 @@ public sealed class VideoPlaybackController
         }
 
         var duration = sender.PlaybackSession.NaturalDuration;
-        var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
         _dispatcherQueue.TryEnqueue(() =>
         {
             if (IsDisposed() || !ReferenceEquals(sender, _player) || !IsCurrentMediaSourceActive(mediaSourceVersion))
@@ -1551,6 +1965,7 @@ public sealed class VideoPlaybackController
                 $"SelectedToMediaOpenedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToMediaOpenedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0.###}, NaturalSize={sender.PlaybackSession.NaturalVideoWidth}x{sender.PlaybackSession.NaturalVideoHeight}.");
             _lastPlaybackPosition = TimeSpan.Zero;
             _lastPlaybackDuration = duration;
+            Interlocked.Exchange(ref _openedMediaSourceVersion, mediaSourceVersion);
             UpdateTimeDisplay();
             _handleMediaOpened(duration);
             _notifyPlaybackProgressChanged();
@@ -1559,14 +1974,13 @@ public sealed class VideoPlaybackController
         });
     }
 
-    private void Player_MediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args)
+    private void Player_MediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args, int mediaSourceVersion)
     {
         if (IsDisposed() || !ReferenceEquals(sender, _player))
         {
             return;
         }
 
-        var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
         if (Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, mediaSourceVersion, 0) != 0)
         {
             LogPlaybackTrace($"Duplicate MediaFailed ignored. SourceVersion={mediaSourceVersion}, Error={args.Error}, ExtendedError=0x{args.ExtendedErrorCode.HResult:X8}.");
@@ -1581,28 +1995,48 @@ public sealed class VideoPlaybackController
             }
 
             Interlocked.Exchange(ref _failedMediaSourceVersion, mediaSourceVersion);
+            _replacePlayerAfterFailure = true;
             var selected = _libraryViewModel.SelectedMedia;
             LogPlaybackTrace(
                 $"MediaFailed error={args.Error} extendedError=0x{args.ExtendedErrorCode.HResult:X8} message={args.ErrorMessage} file='{selected?.FileName ?? "<none>"}' path='{selected?.FileSystemPath ?? "<none>"}' SourceVersion={mediaSourceVersion} OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} {DescribeMediaPlaybackDiagnostics(selected)} CompatibilityHint='{GetPlaybackCompatibilityHint(selected, args)}'.");
             _playbackLease.SetState(PlaybackActivityState.Inactive);
             TryStopFailedPlaybackSource(sender, mediaSourceVersion);
+            DisposeCurrentMediaSource();
+            _videoSurfaceRevealed = true;
+            _loadingPreviewTimer.Stop();
+            _pendingPreviewMedia = null;
             _videoPlayer.Visibility = Visibility.Visible;
             _videoPlayer.Opacity = 1;
             HideVideoLoadingPreview();
+            CompleteSwitchInFlight(mediaSourceVersion);
         });
     }
 
-    private void Player_MediaEnded(MediaPlayer sender, object args)
+    private void Player_MediaEnded(MediaPlayer sender, object args, int mediaSourceVersion)
     {
         if (IsDisposed() || !ReferenceEquals(sender, _player))
         {
             return;
         }
 
-        var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
+        if (sender.Source == null)
+        {
+            LogPlaybackTrace("MediaEnded ignored because the player source was cleared.");
+            return;
+        }
+
+        if (mediaSourceVersion != Volatile.Read(ref _openedMediaSourceVersion))
+        {
+            LogPlaybackTrace($"MediaEnded ignored during source replacement. SourceVersion={mediaSourceVersion}, OpenedVersion={Volatile.Read(ref _openedMediaSourceVersion)}.");
+            return;
+        }
+
         EnqueueSafeAsync(async () =>
         {
-            if (IsDisposed() || !ReferenceEquals(sender, _player) || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+            if (IsDisposed()
+                || !ReferenceEquals(sender, _player)
+                || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion)
+                || mediaSourceVersion != Volatile.Read(ref _openedMediaSourceVersion))
             {
                 return;
             }
@@ -1642,14 +2076,13 @@ public sealed class VideoPlaybackController
         }, $"MediaEnded handling failed. SourceVersion={mediaSourceVersion}.");
     }
 
-    private void PlaybackSession_PlaybackStateChanged(MediaPlaybackSession sender, object args)
+    private void PlaybackSession_PlaybackStateChanged(MediaPlaybackSession sender, object args, int mediaSourceVersion)
     {
         if (IsDisposed())
         {
             return;
         }
 
-        var mediaSourceVersion = Volatile.Read(ref _mediaSourceVersion);
         _dispatcherQueue.TryEnqueue(() =>
         {
             if (IsDisposed() || !IsCurrentMediaSourceActive(mediaSourceVersion))
@@ -1676,6 +2109,7 @@ public sealed class VideoPlaybackController
                     "FirstPlaying",
                     $"SelectedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, FirstPlayingElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(sourceVersion):0.###}, Position={sender.Position.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
                 _watchdog.ScheduleVideoSurfaceReveal(sourceVersion, "PlaybackStateChanged");
+                CompleteSwitchInFlight(sourceVersion);
             }
 
             UpdatePlayPauseState();
@@ -1941,7 +2375,36 @@ public sealed class VideoPlaybackController
         _transportBarView.VolumeFlyoutPopup.IsOpen = true;
     }
 
-    private void ShowVideoLoadingPreview(MediaItemViewModel media, int mediaSourceVersion)
+    // Flash fix: the preview is scheduled, not shown synchronously. If the
+    // video reveals within the delay the preview never appears, so fast local
+    // opens transition straight from the previous frame to playback.
+    private void ScheduleVideoLoadingPreview(MediaItemViewModel media, int mediaSourceVersion)
+    {
+        LogPlaybackTrace("ScheduleVideoLoadingPreview invoked.");
+        _pendingPreviewMedia = media;
+        _pendingPreviewMediaSourceVersion = mediaSourceVersion;
+        _loadingPreviewTimer.Stop();
+        _loadingPreviewTimer.Start();
+    }
+
+    private void LoadingPreviewTimer_Tick(object? sender, object e)
+    {
+        _loadingPreviewTimer.Stop();
+        var media = _pendingPreviewMedia;
+        var mediaSourceVersion = _pendingPreviewMediaSourceVersion;
+        _pendingPreviewMedia = null;
+        if (media == null
+            || IsDisposed()
+            || _videoSurfaceRevealed
+            || !IsCurrentMediaSourceActive(mediaSourceVersion))
+        {
+            return;
+        }
+
+        ShowVideoLoadingPreviewNow(media, mediaSourceVersion);
+    }
+
+    private void ShowVideoLoadingPreviewNow(MediaItemViewModel media, int mediaSourceVersion)
     {
         var hasCurrentThumbnail = media.Thumbnail != null;
         LogPlaybackTrace($"ShowVideoLoadingPreview hasCurrentThumbnail={hasCurrentThumbnail}");
@@ -1980,7 +2443,8 @@ public sealed class VideoPlaybackController
             if (IsDisposed()
                 || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion)
                 || !string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal)
-                || media.Thumbnail == null)
+                || media.Thumbnail == null
+                || _videoSurfaceRevealed)
             {
                 return;
             }
@@ -2198,6 +2662,9 @@ public sealed class VideoPlaybackController
                 return;
             }
 
+            _videoSurfaceRevealed = true;
+            _loadingPreviewTimer.Stop();
+            _pendingPreviewMedia = null;
             _videoPlayer.Visibility = Visibility.Visible;
             _videoPlayer.InvalidateMeasure();
             _videoViewportView.InvalidateMeasure();

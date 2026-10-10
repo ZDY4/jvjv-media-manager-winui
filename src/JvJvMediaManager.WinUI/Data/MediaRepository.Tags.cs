@@ -8,6 +8,56 @@ namespace JvJvMediaManager.Data;
 // refresh per media id — all serialized behind the repository write gate.
 internal sealed partial class MediaRepository
 {
+    public async Task AddTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
+    {
+        var normalizedTag = tag?.Trim();
+        if (string.IsNullOrWhiteSpace(mediaId) || string.IsNullOrWhiteSpace(normalizedTag))
+        {
+            return;
+        }
+
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+            await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            await MediaTagRepository.AddTagsAsync(connection, tx, mediaId, new[] { normalizedTag }, cancellationToken);
+            await RefreshSearchIndexAsync(connection, tx, mediaId, cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    public async Task RemoveTagAsync(string mediaId, string tag, CancellationToken cancellationToken = default)
+    {
+        var normalizedTag = tag?.Trim();
+        if (string.IsNullOrWhiteSpace(mediaId) || string.IsNullOrWhiteSpace(normalizedTag))
+        {
+            return;
+        }
+
+        await _writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+            await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            await using var command = CreateCommand(connection, tx);
+            command.CommandText = "DELETE FROM tags WHERE mediaId = $mediaId AND name = $name COLLATE NOCASE;";
+            command.Parameters.AddWithValue("$mediaId", mediaId);
+            command.Parameters.AddWithValue("$name", normalizedTag);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            await RefreshSearchIndexAsync(connection, tx, mediaId, cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
     public async Task SetTagsForMediaAsync(
         IReadOnlyList<(string MediaId, IReadOnlyList<string> Tags)> updates,
         CancellationToken cancellationToken = default)

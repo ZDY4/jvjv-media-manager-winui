@@ -36,17 +36,17 @@ public sealed class MediaDeletionWorkflow
         _preserveSelectionDuringCollectionMutation = preserveSelectionDuringCollectionMutation;
     }
 
-    public async Task DeleteAsync(IEnumerable<MediaItemViewModel> initialSelection)
+    public async Task<IReadOnlyList<string>> DeleteAsync(IEnumerable<MediaItemViewModel> initialSelection)
     {
         if (Interlocked.Exchange(ref _deleteInProgress, 1) == 1)
         {
             AppTraceLogger.Log("MediaDeletion", "DeleteAsync skipped because another delete is already in progress.");
-            return;
+            return Array.Empty<string>();
         }
 
         try
         {
-            await DeleteCoreAsync(initialSelection);
+            return await DeleteCoreAsync(initialSelection);
         }
         finally
         {
@@ -54,19 +54,19 @@ public sealed class MediaDeletionWorkflow
         }
     }
 
-    private async Task DeleteCoreAsync(IEnumerable<MediaItemViewModel> initialSelection)
+    private async Task<IReadOnlyList<string>> DeleteCoreAsync(IEnumerable<MediaItemViewModel> initialSelection)
     {
         var selected = NormalizeSelection(initialSelection);
         if (selected.Count == 0)
         {
             AppTraceLogger.Log("MediaDeletion", "DeleteAsync skipped. SelectionCount=0.");
-            return;
+            return Array.Empty<string>();
         }
 
         if (selected.Count > 1 && !await _confirmBatchDeleteAsync(selected.Count))
         {
             AppTraceLogger.Log("MediaDeletion", $"DeleteAsync canceled by user. SelectionCount={selected.Count}.");
-            return;
+            return Array.Empty<string>();
         }
 
         var originalCurrentMedia = _viewModel.SelectedMedia;
@@ -74,13 +74,36 @@ public sealed class MediaDeletionWorkflow
         var isDeletingCurrent = !string.IsNullOrWhiteSpace(currentMediaId)
             && selected.Any(item => string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
         MediaItemViewModel? plannedReplacement = null;
+        var switchedToReplacement = false;
 
         if (isDeletingCurrent)
         {
-            plannedReplacement = FindLoadedReplacementSelection(selected);
-            await Task.Yield();
-            AppTraceLogger.Log("MediaDeletion", $"DeleteAsync releasing preview handles if still current. CurrentMediaId='{currentMediaId}', ReplacementId='{plannedReplacement?.Id ?? "<null>"}'.");
-            _releasePreviewHandlesForMedia(currentMediaId);
+            plannedReplacement = FindLoadedReplacementSelection(selected)
+                ?? await FindReplacementSelectionAsync(selected);
+            if (plannedReplacement != null)
+            {
+                // Switch the player before recycle-bin I/O so the next media
+                // starts opening immediately. Recycle-bin retries must not
+                // run on the UI thread or the new source cannot paint.
+                AppTraceLogger.Log(
+                    "MediaDeletion",
+                    $"Selected replacement before file delete. CurrentMediaId='{currentMediaId}', ReplacementId='{plannedReplacement.Id}'.");
+                _viewModel.SelectedMedia = plannedReplacement;
+                _syncSelection(plannedReplacement);
+                _forceUpdatePlayer(plannedReplacement);
+                switchedToReplacement = true;
+                // Let MediaPlayer finish swapping sources on this dispatcher
+                // pass before recycle-bin I/O starts. Otherwise the outgoing
+                // file stays locked and the next video cannot paint yet.
+                await UiThreadYield.NextPassAsync();
+            }
+            else
+            {
+                AppTraceLogger.Log(
+                    "MediaDeletion",
+                    $"DeleteAsync releasing preview handles; no replacement available. CurrentMediaId='{currentMediaId}'.");
+                _releasePreviewHandlesForMedia(currentMediaId);
+            }
         }
 
         var deletionResult = await Task.Run(() =>
@@ -128,10 +151,17 @@ public sealed class MediaDeletionWorkflow
             {
                 _viewModel.SelectedMedia = nextSelection;
                 _syncSelection(nextSelection);
-                _forceUpdatePlayer(nextSelection);
+                var alreadyPlayingReplacement = switchedToReplacement
+                    && plannedReplacement != null
+                    && string.Equals(plannedReplacement.Id, nextSelection.Id, StringComparison.Ordinal);
+                if (!alreadyPlayingReplacement)
+                {
+                    _forceUpdatePlayer(nextSelection);
+                }
+
                 AppTraceLogger.Log(
                     "MediaDeletion",
-                    $"DeleteAsync applied replacement after current media deletion. ReplacementId='{nextSelection.Id}', Deleted={deleted.Count}.");
+                    $"DeleteAsync applied replacement after current media deletion. ReplacementId='{nextSelection.Id}', Deleted={deleted.Count}, AlreadyPlaying={alreadyPlayingReplacement}.");
             }
             else
             {
@@ -161,6 +191,7 @@ public sealed class MediaDeletionWorkflow
 
         _syncSelection(_viewModel.SelectedMedia);
         AppTraceLogger.Log("MediaDeletion", $"DeleteAsync completed. Requested={selected.Count}, Deleted={deleted.Count}, Failed={failed.Count}, NextSelection='{_viewModel.SelectedMedia?.Id ?? "<null>"}'.");
+        return deleted.Select(item => item.Id).ToList();
     }
 
     private MediaItemViewModel? FindLoadedReplacementSelection(IReadOnlyList<MediaItemViewModel> selected)

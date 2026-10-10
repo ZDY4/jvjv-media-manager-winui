@@ -9,16 +9,107 @@ namespace JvJvMediaManager.Services;
 public sealed class VideoHoverPreviewFrameService
 {
     private static readonly TimeSpan FrameGenerationTimeout = TimeSpan.FromSeconds(4);
-    private readonly SemaphoreSlim _frameGate = new(1, 1);
+    private readonly SemaphoreSlim _frameGate;
     private readonly ExternalProcessRunner _processRunner = new();
     private readonly string? _ffmpegPath;
 
-    public VideoHoverPreviewFrameService(string? ffmpegPath = null)
+    public VideoHoverPreviewFrameService(string? ffmpegPath = null, int maxConcurrentFrames = 1)
     {
         _ffmpegPath = ResolveToolPath("ffmpeg.exe", ffmpegPath);
+        _frameGate = new SemaphoreSlim(Math.Max(1, maxConcurrentFrames), Math.Max(1, maxConcurrentFrames));
     }
 
-    public bool IsAvailable => true;
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(_ffmpegPath);
+
+    public async Task<byte[]?> TranscodeStillImageAsync(
+        string mediaPath,
+        int maxLongEdge,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath)
+            || !File.Exists(mediaPath)
+            || maxLongEdge <= 0
+            || string.IsNullOrWhiteSpace(_ffmpegPath))
+        {
+            return null;
+        }
+
+        await _frameGate.WaitAsync(cancellationToken);
+        var startedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = _ffmpegPath,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+
+            startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-loglevel");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-nostdin");
+            startInfo.ArgumentList.Add("-i");
+            startInfo.ArgumentList.Add(mediaPath);
+            startInfo.ArgumentList.Add("-frames:v");
+            startInfo.ArgumentList.Add("1");
+            startInfo.ArgumentList.Add("-vf");
+            startInfo.ArgumentList.Add($"scale={maxLongEdge}:{maxLongEdge}:force_original_aspect_ratio=decrease");
+            startInfo.ArgumentList.Add("-q:v");
+            startInfo.ArgumentList.Add("3");
+            startInfo.ArgumentList.Add("-f");
+            startInfo.ArgumentList.Add("image2pipe");
+            startInfo.ArgumentList.Add("-vcodec");
+            startInfo.ArgumentList.Add("mjpeg");
+            startInfo.ArgumentList.Add("pipe:1");
+
+            await using var output = new MemoryStream();
+            var result = await _processRunner.RunAsync(
+                startInfo,
+                TimeSpan.FromSeconds(8),
+                readStandardOutputAsync: async (reader, token) =>
+                {
+                    await reader.BaseStream.CopyToAsync(output, token);
+                    return string.Empty;
+                },
+                cancellationToken: cancellationToken);
+
+            if (result.ExitCode != 0 || output.Length == 0)
+            {
+                AppTraceLogger.LogSampled(
+                    "VideoHoverPreview",
+                    "ffmpeg-still-failed",
+                    $"TranscodeStillImageAsync failed. ExitCode={result.ExitCode}, Bytes={output.Length}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}, Error='{result.StandardError}'.",
+                    TimeSpan.FromSeconds(2));
+                return null;
+            }
+
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "ffmpeg-still-generated",
+                $"TranscodeStillImageAsync completed. MaxLongEdge={maxLongEdge}, Bytes={output.Length}, ElapsedMs={Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:0}.",
+                TimeSpan.FromSeconds(1));
+            return output.ToArray();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException(
+                "VideoHoverPreview",
+                $"TranscodeStillImageAsync failed. Path='{mediaPath}'.",
+                ex);
+            return null;
+        }
+        finally
+        {
+            _frameGate.Release();
+        }
+    }
 
     public async Task<byte[]?> GenerateFrameAsync(
         string mediaPath,

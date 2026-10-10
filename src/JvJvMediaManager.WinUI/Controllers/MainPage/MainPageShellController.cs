@@ -86,6 +86,8 @@ public sealed class MainPageShellController
     private MediaItemViewModel? _activePlayerMedia;
     private string? _activePlayerMediaId;
     private MediaType? _activePlayerMediaType;
+    private MediaPlayerSessionTransfer? _bossRecoverySession;
+    private CancellationTokenSource _bossRecoveryCancellation = new();
 
     private Grid RootLayout => _page.RootLayout;
     private SplitView LibrarySplitView => _page.LibrarySplitView;
@@ -222,6 +224,18 @@ public sealed class MainPageShellController
             {
                 if (!_isDisposed)
                 {
+                    _bossRecoveryCancellation.Cancel();
+                    _bossRecoveryCancellation.Dispose();
+                    _bossRecoveryCancellation = new CancellationTokenSource();
+                    var selected = ViewModel.SelectedMedia;
+                    _bossRecoverySession = selected == null
+                        ? null
+                        : new MediaPlayerSessionTransfer(
+                            new[] { IndependentMediaWindowService.CreateSnapshot(selected) },
+                            0,
+                            _videoPlaybackController.GetCurrentPlaybackPosition().TotalSeconds,
+                            _videoPlaybackController.IsPlaying,
+                            _videoPlaybackController.VideoRotationDegrees);
                     _videoPlaybackController.Clear();
                     _imagePreviewController.Clear();
                     _shell.Player.EmptyStateVisibility = Visibility.Visible;
@@ -242,6 +256,18 @@ public sealed class MainPageShellController
                 {
                     _shell.Library.IsBossMode = false;
                     _page.ExitBossMode();
+                    _independentMediaWindows.RestoreAllWindowsFromBossMode();
+                    if (ViewModel.SelectedMedia != null)
+                    {
+                        ForceUpdatePlayer(ViewModel.SelectedMedia);
+                        var recovery = _bossRecoverySession;
+                        _bossRecoverySession = null;
+                        if (recovery != null
+                            && string.Equals(recovery.MediaItems[0].Id, ViewModel.SelectedMedia.Id, StringComparison.Ordinal))
+                        {
+                            _ = RestoreBossPlaybackStateAsync(recovery, _bossRecoveryCancellation.Token);
+                        }
+                    }
                 }
             },
             () => _isDisposed);
@@ -389,10 +415,14 @@ public sealed class MainPageShellController
         _mediaBrowserController.Dispose();
         _playlistRailCoordinator.Dispose();
         _libraryPaneController.Dispose();
+        // Close extra playback windows before tearing down the main player so
+        // nested Window.Closed does not run after the main MediaPlayer is gone.
+        _independentMediaWindows.Dispose();
         _videoPlaybackController.Dispose();
+        _bossRecoveryCancellation.Cancel();
+        _bossRecoveryCancellation.Dispose();
         _clipEditorController.Dispose();
         _imagePreviewController.Dispose();
-        _independentMediaWindows.Dispose();
         _page.DockedSessionDetachRequested -= Page_DockedSessionDetachRequested;
         _page.DockedSessionActivated -= Page_DockedSessionActivated;
         _page.DockedSessionClosed -= Page_DockedSessionClosed;
@@ -578,7 +608,10 @@ public sealed class MainPageShellController
             e.GetPosition(PlayerRoot),
             selected,
             ToggleNumpadShortcutHint,
-            GetNumpadShortcutHintMenuText());
+            GetNumpadShortcutHintMenuText(),
+            rotateVideoAction: currentPlayerMedia.Type == MediaType.Video
+                ? angle => _videoPlaybackController.RotateVideoBy(angle)
+                : null);
         e.Handled = true;
     }
 
@@ -625,7 +658,8 @@ public sealed class MainPageShellController
             new[] { media },
             e.ToggleShortcutHint,
             e.ShortcutHintMenuText,
-            includeOpenInSplit: false);
+            includeOpenInSplit: false,
+            rotateVideoAction: e.RotateVideo);
     }
 
     private MediaItemViewModel ResolveLibraryMedia(MediaItemViewModel media)
@@ -740,6 +774,8 @@ public sealed class MainPageShellController
             await ViewModel.RefreshMediaAsync(preserveSelection: true, updateLoadingState: false);
         }
 
+        BroadcastMediaTagsChanged(mediaId, tags);
+
         AppTraceLogger.Log(
             "IndependentMediaWindow",
             $"Synced tag changes to main window. MediaId='{mediaId}', Loaded={loadedMedia != null}, TagCount={tags.Count}.");
@@ -800,6 +836,8 @@ public sealed class MainPageShellController
         {
             _mediaBrowserController.SyncSelectionFromViewModel(ViewModel.SelectedMedia);
         }
+
+        BroadcastMediaDeleted(mediaIds);
 
         AppTraceLogger.Log(
             "IndependentMediaWindow",
@@ -961,10 +999,32 @@ public sealed class MainPageShellController
         AppTraceLogger.Log(
             "MainPageShell",
             $"ForceUpdatePlayer requested. MediaId='{media.Id}', PreviousActiveId='{_activePlayerMediaId ?? "<null>"}', PreviousActiveType='{_activePlayerMediaType.ToString() ?? "<null>"}'.");
+        Interlocked.Increment(ref _playerAvailabilityCheckVersion);
         _activePlayerMediaId = null;
         _activePlayerMediaType = null;
         _activePlayerMedia = null;
-        QueueVerifiedPlayerUpdate(media);
+
+        void Apply()
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            UpdatePlayer(media);
+            _mediaBrowserController.RevealSelectedMedia(media);
+        }
+
+        if (_page.DispatcherQueue.HasThreadAccess)
+        {
+            Apply();
+            return;
+        }
+
+        if (!_page.DispatcherQueue.TryEnqueue(Apply))
+        {
+            AppTraceLogger.Log("MainPageShell", $"ForceUpdatePlayer dispatcher rejected. MediaId='{media.Id}'.");
+        }
     }
 
     private void LogMissingMediaDetected(MediaItemViewModel media, string source)
@@ -1533,6 +1593,7 @@ public sealed class MainPageShellController
         {
             RefreshPlayerTags(currentMedia);
             RefreshNumpadShortcutHint();
+            BroadcastMediaTagsChanged(currentMedia.Id, currentMedia.Tags.ToList());
         }
 
         return applied;
@@ -1551,6 +1612,7 @@ public sealed class MainPageShellController
         {
             RefreshPlayerTags(currentMedia);
             RefreshNumpadShortcutHint();
+            BroadcastMediaTagsChanged(currentMedia.Id, currentMedia.Tags.ToList());
         }
 
         return applied;
@@ -1575,6 +1637,7 @@ public sealed class MainPageShellController
         await ViewModel.UpdateTagsAsync(new[] { currentMedia }, nextTags, TagUpdateMode.Replace);
         RefreshPlayerTags(currentMedia);
         RefreshNumpadShortcutHint();
+        BroadcastMediaTagsChanged(currentMedia.Id, currentMedia.Tags.ToList());
     }
 
     private void TogglePlayPause()
@@ -1994,19 +2057,19 @@ public sealed class MainPageShellController
         return DeleteSelectionAsync(_mediaBrowserController.GetSelectedItems());
     }
 
-    private Task DeleteCurrentPlayerMediaAsync()
+    private async Task DeleteCurrentPlayerMediaAsync()
     {
         var media = GetCurrentPlayerMedia();
         if (media == null)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         AppTraceLogger.Log(
             "MainPageShell",
             $"DeleteCurrentPlayerMediaAsync start. MediaId='{media.Id}', File='{media.FileName}', Type='{media.Type}'.");
 
-        return _mediaDeletionWorkflow.DeleteAsync(new[] { media });
+        await DeleteSelectionAndSyncDockedAsync(new[] { media });
     }
 
     private Task FocusMediaInLibraryAsync(IReadOnlyList<MediaItemViewModel> selection)
@@ -2031,9 +2094,8 @@ public sealed class MainPageShellController
 
     private async Task DeleteSelectionAndSyncDockedAsync(IReadOnlyList<MediaItemViewModel> initialSelection)
     {
-        var deletedIds = initialSelection.Select(item => item.Id).ToList();
-        await _mediaDeletionWorkflow.DeleteAsync(initialSelection);
-        _page.RemoveDeletedMediaFromDockedSession(deletedIds);
+        var deletedIds = await _mediaDeletionWorkflow.DeleteAsync(initialSelection);
+        BroadcastMediaDeleted(deletedIds);
     }
 
     private void ReleasePreviewHandlesForMedia(string? mediaId)
@@ -2130,8 +2192,8 @@ public sealed class MainPageShellController
             _activePlayerNavigationEdge = PlayerNavigationEdge.None;
         }
 
-        PreviousMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0;
-        NextMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0;
+        PreviousMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0.55) : 0;
+        NextMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0.55) : 0;
     }
 
     private void UpdatePlayerNavigationCue(Windows.Foundation.Point pointerPosition)
@@ -2256,6 +2318,51 @@ public sealed class MainPageShellController
     private TimeSpan GetCurrentPlaybackPosition() => _videoPlaybackController.GetCurrentPlaybackPosition();
 
     private TimeSpan GetCurrentVideoDuration() => _videoPlaybackController.GetCurrentVideoDuration();
+
+    private async Task RestoreBossPlaybackStateAsync(
+        MediaPlayerSessionTransfer recovery,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var expectedMediaId = recovery.MediaItems[0].Id;
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(100, cancellationToken);
+                if (!string.Equals(ViewModel.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                    || ViewModel.SelectedMedia?.Type != MediaType.Video)
+                {
+                    return;
+                }
+
+                if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero)
+                {
+                    continue;
+                }
+
+                if (recovery.PositionSeconds > 0)
+                {
+                    _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(recovery.PositionSeconds));
+                }
+
+                if (!recovery.WasPlaying && _videoPlaybackController.IsPlaying)
+                {
+                    _videoPlaybackController.TogglePlayPause();
+                }
+
+                if (recovery.RotationDegrees > 0)
+                {
+                    _videoPlaybackController.SetVideoRotation(recovery.RotationDegrees);
+                }
+
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by another boss-mode transition or disposal.
+        }
+    }
 
     private static string FormatTime(TimeSpan value)
     {
@@ -2386,8 +2493,30 @@ public sealed class MainPageShellController
         RefreshNumpadShortcutHint();
         foreach (var media in items)
         {
-            _page.ApplyTagsToDockedSession(media.Id, media.Tags.ToList());
+            BroadcastMediaTagsChanged(media.Id, media.Tags.ToList());
         }
+    }
+
+    private void BroadcastMediaTagsChanged(string mediaId, IReadOnlyList<string> tags)
+    {
+        if (_isDisposed || string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        _page.ApplyTagsToDockedSession(mediaId, tags);
+        _independentMediaWindows.ApplyExternalTags(mediaId, tags);
+    }
+
+    private void BroadcastMediaDeleted(IReadOnlyList<string> mediaIds)
+    {
+        if (_isDisposed || mediaIds.Count == 0)
+        {
+            return;
+        }
+
+        _page.RemoveDeletedMediaFromDockedSession(mediaIds);
+        _independentMediaWindows.RemoveDeletedMedia(mediaIds);
     }
 
 

@@ -19,7 +19,7 @@ internal sealed class WatchedFolderMonitorService : IDisposable
 
     public event EventHandler<WatchedFolderChangesEventArgs>? ChangesReady;
 
-    public void SetWatchedFolders(IEnumerable<string> folderPaths)
+    public void SetWatchedFolders(IEnumerable<string> folderPaths, bool forceRecreate = false)
     {
         if (_isDisposed)
         {
@@ -39,7 +39,7 @@ internal sealed class WatchedFolderMonitorService : IDisposable
                 return;
             }
 
-            if (_currentFolders.SequenceEqual(normalizedFolders, StringComparer.OrdinalIgnoreCase))
+            if (!forceRecreate && _currentFolders.SequenceEqual(normalizedFolders, StringComparer.OrdinalIgnoreCase))
             {
                 AppTraceLogger.LogSampled(
                     "WatchedFolderMonitor",
@@ -209,7 +209,9 @@ internal sealed class WatchedFolderMonitorService : IDisposable
             QueueChange(currentFolders, Array.Empty<string>(), Array.Empty<string>());
         }
 
-        SetWatchedFolders(currentFolders);
+        // An overflow invalidates the native watcher buffer even though the
+        // configured folder list is unchanged, so force a fresh watcher.
+        SetWatchedFolders(currentFolders, forceRecreate: IsBufferOverflow(exception));
     }
 
     private static bool IsBufferOverflow(Exception? exception)

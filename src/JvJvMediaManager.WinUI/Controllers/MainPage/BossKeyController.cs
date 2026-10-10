@@ -43,10 +43,9 @@ public sealed class BossKeyController
         if (key == VirtualKey.Escape)
         {
             var now = Stopwatch.GetTimestamp();
-            var elapsed = Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastEscapePressTimestamp));
-            Interlocked.Exchange(ref _lastEscapePressTimestamp, now);
+            var previous = Interlocked.Exchange(ref _lastEscapePressTimestamp, now);
 
-            if (_lastEscapePressTimestamp != 0 && elapsed <= DoubleEscInterval)
+            if (previous != 0 && Stopwatch.GetElapsedTime(previous) <= DoubleEscInterval)
             {
                 Interlocked.Exchange(ref _lastEscapePressTimestamp, 0);
                 return true;

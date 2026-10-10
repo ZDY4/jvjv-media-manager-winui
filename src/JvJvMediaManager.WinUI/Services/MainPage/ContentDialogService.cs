@@ -7,7 +7,10 @@ namespace JvJvMediaManager.Services.MainPage;
 
 public sealed class ContentDialogService : IContentDialogService
 {
+    private readonly SemaphoreSlim _dialogGate = new(1, 1);
+    private readonly object _infoKeySync = new();
     private XamlRoot? _xamlRoot;
+    private string? _activeInfoKey;
 
     public void AttachHost(XamlRoot xamlRoot)
     {
@@ -16,22 +19,27 @@ public sealed class ContentDialogService : IContentDialogService
 
     public Task<ContentDialogResult> ShowAsync(ContentDialog dialog)
     {
-        if (_xamlRoot != null)
-        {
-            dialog.XamlRoot = _xamlRoot;
-        }
-
-        dialog.RequestedTheme = ElementTheme.Dark;
-        dialog.Background ??= Application.Current.Resources["SurfaceBrush"] as Brush;
-        dialog.Foreground ??= Application.Current.Resources["TextBrush"] as Brush;
-        dialog.BorderBrush ??= Application.Current.Resources["SurfaceStrokeBrush"] as Brush;
-        dialog.BorderThickness = new Thickness(1);
-
-        return dialog.ShowAsync().AsTask();
+        return ShowExclusiveAsync(dialog);
     }
 
     public async Task ShowInfoAsync(string title, string message)
     {
+        var infoKey = $"{title}\n{message}";
+        lock (_infoKeySync)
+        {
+            if (string.Equals(_activeInfoKey, infoKey, StringComparison.Ordinal))
+            {
+                AppTraceLogger.LogSampled(
+                    "ContentDialog",
+                    "duplicate-info-suppressed",
+                    $"Suppressed duplicate info dialog. Title='{title}'.",
+                    TimeSpan.FromSeconds(2));
+                return;
+            }
+
+            _activeInfoKey = infoKey;
+        }
+
         var dialog = new ContentDialog
         {
             Title = title,
@@ -43,7 +51,20 @@ public sealed class ContentDialogService : IContentDialogService
             CloseButtonText = "关闭"
         };
 
-        await ShowAsync(dialog);
+        try
+        {
+            await ShowExclusiveAsync(dialog);
+        }
+        finally
+        {
+            lock (_infoKeySync)
+            {
+                if (string.Equals(_activeInfoKey, infoKey, StringComparison.Ordinal))
+                {
+                    _activeInfoKey = null;
+                }
+            }
+        }
     }
 
     public async Task<bool> ConfirmAsync(string title, string message, string primaryButtonText)
@@ -142,5 +163,29 @@ public sealed class ContentDialogService : IContentDialogService
             ContentDialogResult.Secondary => null,
             _ => colorHex
         };
+    }
+
+    private async Task<ContentDialogResult> ShowExclusiveAsync(ContentDialog dialog)
+    {
+        await _dialogGate.WaitAsync();
+        try
+        {
+            if (_xamlRoot != null)
+            {
+                dialog.XamlRoot = _xamlRoot;
+            }
+
+            dialog.RequestedTheme = ElementTheme.Dark;
+            dialog.Background ??= Application.Current.Resources["SurfaceBrush"] as Brush;
+            dialog.Foreground ??= Application.Current.Resources["TextBrush"] as Brush;
+            dialog.BorderBrush ??= Application.Current.Resources["SurfaceStrokeBrush"] as Brush;
+            dialog.BorderThickness = new Thickness(1);
+
+            return await dialog.ShowAsync().AsTask();
+        }
+        finally
+        {
+            _dialogGate.Release();
+        }
     }
 }

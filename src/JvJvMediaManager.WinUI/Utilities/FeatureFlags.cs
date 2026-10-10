@@ -2,9 +2,8 @@ namespace JvJvMediaManager.Utilities;
 
 /// <summary>
 /// Central, environment-variable backed feature flags for risk-gated changes.
-/// Flags default to the safe/legacy behavior and are opt-in so runtime-sensitive
-/// optimizations (WP-07 player reuse, WP-08 keyset pagination) can be validated
-/// before becoming default.
+/// Runtime-sensitive optimizations default to the validated behavior; set the
+/// matching env var to 0 to force the legacy path.
 /// </summary>
 public static class FeatureFlags
 {
@@ -22,11 +21,11 @@ public static class FeatureFlags
     public static bool KeysetPaginationEnabled { get; } = IsEnabled(KeysetPaginationVariable, defaultValue: true);
 
     /// <summary>
-    /// WP-07: when enabled, the video player reuses a single MediaPlayer and
-    /// only swaps the source, instead of rebuilding the player per source.
-    /// Off by default; the replace-per-source strategy remains the default.
+    /// WP-07: reuse a single MediaPlayer and only swap the source, instead of
+    /// rebuilding the native decoder/GPU session per video. Enabled by default;
+    /// set JVJVMM_ENABLE_PLAYER_REUSE=0 to force replace-per-source.
     /// </summary>
-    public static bool ReusePlayerEnabled { get; } = IsEnabled(ReusePlayerVariable);
+    public static bool ReusePlayerEnabled { get; } = IsEnabled(ReusePlayerVariable, defaultValue: true);
 
     private static bool IsEnabled(string variable, bool defaultValue = false)
     {

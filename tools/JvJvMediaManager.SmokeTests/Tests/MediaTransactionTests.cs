@@ -48,6 +48,46 @@ internal static class MediaTransactionTests
             Assert.Equal(1, byName.Items.Count, "FTS search by filename should return the item");
         });
 
+        registry.Add(Suite, "scan re-upsert preserves persisted rotation", async () =>
+        {
+            using var ws = new TempWorkspace("tx-rotation-preserve");
+            var db = CreateDb(ws);
+
+            var media = MediaFactory.Create("C:/media/rotated.mp4", MediaType.Video);
+            await db.UpsertMediaBatchAsync(new[] { media });
+
+            await db.SetMediaRotationAsync(media.Id, 90);
+            var rotated = await db.GetMediaByIdAsync(media.Id);
+            Assert.Equal(90, rotated!.Rotation, "Rotation persisted after set");
+
+            // A later scan upserts the same file with default rotation 0; the
+            // stored value must survive (upsert uses rotation = media.rotation).
+            var rescanned = MediaFactory.Create("C:/media/rotated.mp4", MediaType.Video);
+            await db.UpsertMediaBatchAsync(new[] { rescanned });
+
+            var afterRescan = await db.GetMediaByIdAsync(media.Id);
+            Assert.Equal(90, afterRescan!.Rotation, "Scan re-upsert must not clobber persisted rotation");
+        });
+
+        registry.Add(Suite, "rotation round-trips through page queries", async () =>
+        {
+            using var ws = new TempWorkspace("tx-rotation-page");
+            var db = CreateDb(ws);
+
+            var media = MediaFactory.Create("C:/media/roundtrip.mp4", MediaType.Video);
+            await db.UpsertMediaBatchAsync(new[] { media });
+
+            await db.SetMediaRotationAsync(media.Id, 270);
+            var page = await db.QueryMediaPageAsync(new MediaQuery { Limit = 50 });
+            var item = page.Items.Single(m => m.FileName == "roundtrip.mp4");
+            Assert.Equal(270, item.Rotation, "Page query returns persisted rotation");
+
+            // Off-angle writes normalize to the nearest 90 degrees.
+            await db.SetMediaRotationAsync(media.Id, 45);
+            var normalized = await db.GetMediaByIdAsync(media.Id);
+            Assert.Equal(0, normalized!.Rotation, "Rotation normalizes to the nearest 90 degrees");
+        });
+
         registry.Add(Suite, "cancellation before upsert rolls back and releases write gate", async () =>
         {
             using var ws = new TempWorkspace("tx-cancel-before");

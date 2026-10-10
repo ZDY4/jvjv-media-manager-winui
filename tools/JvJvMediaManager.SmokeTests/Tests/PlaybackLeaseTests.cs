@@ -21,7 +21,7 @@ internal static class PlaybackLeaseTests
             using var coordinator = new PlaybackResourceCoordinator();
             using var lease = coordinator.Acquire("main");
             Assert.Equal(1, coordinator.ActiveLeaseCount, "One active lease");
-            Assert.False(coordinator.IsPlaybackActive, "Opening/inactive lease is not active yet");
+            Assert.False(coordinator.IsPlaybackActive, "Newly acquired lease is inactive until a playback state is set");
 
             lease.SetState(PlaybackActivityState.Playing);
             Assert.True(coordinator.IsPlaybackActive, "Playing lease makes playback active");
@@ -65,6 +65,26 @@ internal static class PlaybackLeaseTests
             using var lease = coordinator.Acquire("main");
             lease.SetState(PlaybackActivityState.Buffering);
             Assert.True(coordinator.IsPlaybackActive, "Buffering -> active");
+        });
+
+        registry.Add(Suite, "opening counts as active playback", () =>
+        {
+            using var coordinator = new PlaybackResourceCoordinator();
+            using var lease = coordinator.Acquire("main");
+            lease.SetState(PlaybackActivityState.Opening);
+            Assert.True(coordinator.IsPlaybackActive, "Opening -> active");
+
+            lease.SetState(PlaybackActivityState.Playing);
+            Assert.True(coordinator.IsPlaybackActive, "Opening to Playing stays active without dropping the count");
+        });
+
+        registry.Add(Suite, "playing to opening stays active", () =>
+        {
+            using var coordinator = new PlaybackResourceCoordinator();
+            using var lease = coordinator.Acquire("main");
+            lease.SetState(PlaybackActivityState.Playing);
+            lease.SetState(PlaybackActivityState.Opening);
+            Assert.True(coordinator.IsPlaybackActive, "Decoder warmup during a switch still counts as active");
         });
 
         registry.Add(Suite, "double dispose of a lease is safe", () =>

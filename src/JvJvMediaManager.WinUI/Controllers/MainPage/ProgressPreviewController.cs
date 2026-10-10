@@ -24,11 +24,11 @@ internal sealed class ProgressPreviewController : IDisposable
     private const double TimeBucketSeconds = 0.5;
     private const double BubbleWidth = 188;
     private const double BubbleHeight = 132;
-    private const long HeavyMediaSizeThresholdBytes = 256L * 1024 * 1024;
+    private const long HeavyMediaSizeThresholdBytes = 4L * 1024 * 1024 * 1024;
 
     private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(120);
     private static readonly TimeSpan FailureCooldown = TimeSpan.FromSeconds(6);
-    private static readonly TimeSpan HeavyMediaDurationThreshold = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan HeavyMediaDurationThreshold = TimeSpan.FromMinutes(60);
 
     private readonly LibraryShellViewModel _libraryViewModel;
     private readonly TransportControlBarView _transportBarView;
@@ -41,6 +41,7 @@ internal sealed class ProgressPreviewController : IDisposable
     private readonly Func<TimeSpan, TimeSpan> _mapDisplayToPlaybackPosition;
     private readonly Func<TimeSpan, string> _formatTime;
     private readonly Action<Func<Task>, string> _enqueueSafeAsync;
+    private readonly PlaybackResourceCoordinator? _playbackResources;
 
     private CancellationTokenSource? _frameCts;
     private ProgressPreviewRequest? _pendingRequest;
@@ -62,7 +63,8 @@ internal sealed class ProgressPreviewController : IDisposable
         Func<TimeSpan> getDuration,
         Func<TimeSpan, TimeSpan> mapDisplayToPlaybackPosition,
         Func<TimeSpan, string> formatTime,
-        Action<Func<Task>, string> enqueueSafeAsync)
+        Action<Func<Task>, string> enqueueSafeAsync,
+        PlaybackResourceCoordinator? playbackResources = null)
     {
         _libraryViewModel = libraryViewModel;
         _transportBarView = transportBarView;
@@ -72,6 +74,7 @@ internal sealed class ProgressPreviewController : IDisposable
         _mapDisplayToPlaybackPosition = mapDisplayToPlaybackPosition;
         _formatTime = formatTime;
         _enqueueSafeAsync = enqueueSafeAsync;
+        _playbackResources = playbackResources;
 
         _debounceTimer.Interval = DebounceDelay;
         _debounceTimer.Tick += DebounceTimer_Tick;
@@ -84,8 +87,7 @@ internal sealed class ProgressPreviewController : IDisposable
         string MediaPath,
         long ModifiedAt,
         TimeSpan PlaybackTime,
-        TimeSpan BucketedPlaybackTime,
-        ImageSource? FallbackSource);
+        TimeSpan BucketedPlaybackTime);
 
     public void UpdateFromPointer(PointerRoutedEventArgs e)
     {
@@ -104,7 +106,9 @@ internal sealed class ProgressPreviewController : IDisposable
             return;
         }
 
-        var fallbackSource = _lastSource ?? media.Thumbnail;
+        // Never fall back to the media cover: the bubble shows the last
+        // generated frame for this media, or stays empty until a frame arrives.
+        var fallbackSource = _lastSource;
         Show(playbackTime, sliderX, fallbackSource);
 
         if (ShouldSkipFrameGeneration(media, _getDuration()))
@@ -155,7 +159,10 @@ internal sealed class ProgressPreviewController : IDisposable
             return;
         }
 
-        CancelFrameRequest();
+        // Latest-wins without cancelling in-flight work: moving the pointer
+        // only records the newest target. The debounce starts a generation
+        // when none is in flight, and a completed generation chases the
+        // pending target (see DebounceTimer_Tick / LoadFrameAsync finally).
         _pendingRequest = new ProgressPreviewRequest(
             Volatile.Read(ref _requestVersion),
             cacheKey,
@@ -163,14 +170,13 @@ internal sealed class ProgressPreviewController : IDisposable
             media.FileSystemPath,
             media.Media.ModifiedAt,
             playbackTime,
-            bucketedTime,
-            fallbackSource);
+            bucketedTime);
         _debounceTimer.Stop();
         _debounceTimer.Start();
         AppTraceLogger.LogSampled(
             "VideoHoverPreview",
             "preview-request-scheduled",
-            $"Progress preview request scheduled. MediaId='{media.Id}', Bucket={bucketedTime.TotalSeconds:F3}, Playback={playbackTime.TotalSeconds:F3}, HasFallback={fallbackSource != null}.",
+            $"Progress preview request scheduled. MediaId='{media.Id}', Bucket={bucketedTime.TotalSeconds:F3}, Playback={playbackTime.TotalSeconds:F3}.",
             TimeSpan.FromMilliseconds(500));
     }
 
@@ -256,11 +262,9 @@ internal sealed class ProgressPreviewController : IDisposable
     private void Show(TimeSpan playbackTime, double sliderX, ImageSource? previewSource)
     {
         _transportBarView.ProgressPreviewTimeText.Text = _formatTime(playbackTime);
-        if (previewSource != null)
-        {
-            _transportBarView.ProgressPreviewImage.Source = previewSource;
-        }
-
+        // Assign unconditionally: a null clears a stale source so the bubble
+        // never shows the media cover or an outdated frame.
+        _transportBarView.ProgressPreviewImage.Source = previewSource;
         UpdatePopupPosition(sliderX);
         if (!_transportBarView.ProgressPreviewPopup.IsOpen)
         {
@@ -305,6 +309,14 @@ internal sealed class ProgressPreviewController : IDisposable
             return;
         }
 
+        // Single-flight: never cancel an in-flight generation from a pointer
+        // move. When it completes, LoadFrameAsync chases the newest pending
+        // target, so frames keep appearing while scanning the timeline.
+        if (_inFlightCacheKey != null)
+        {
+            return;
+        }
+
         _ = LoadFrameAsync(request);
     }
 
@@ -331,12 +343,26 @@ internal sealed class ProgressPreviewController : IDisposable
                 "preview-frame-generate-start",
                 $"Progress preview frame generation started. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, Playback={request.PlaybackTime.TotalSeconds:F3}.",
                 TimeSpan.FromMilliseconds(500));
-            var frameBytes = await _hoverPreviewFrameService.GenerateFrameAsync(
-                request.MediaPath,
-                request.BucketedPlaybackTime,
-                FrameWidth,
-                FrameHeight,
-                cancellationToken);
+            IDisposable? backgroundIo = null;
+            if (_playbackResources != null)
+            {
+                backgroundIo = await _playbackResources.EnterBackgroundIoAsync("hover-preview", cancellationToken);
+            }
+
+            byte[]? frameBytes;
+            try
+            {
+                frameBytes = await _hoverPreviewFrameService.GenerateFrameAsync(
+                    request.MediaPath,
+                    request.BucketedPlaybackTime,
+                    FrameWidth,
+                    FrameHeight,
+                    cancellationToken);
+            }
+            finally
+            {
+                backgroundIo?.Dispose();
+            }
             var generationElapsed = Stopwatch.GetElapsedTime(frameStartTimestamp);
             if (frameBytes == null || cancellationToken.IsCancellationRequested)
             {
@@ -400,6 +426,17 @@ internal sealed class ProgressPreviewController : IDisposable
             }
 
             cancellation.Dispose();
+
+            // Single-flight chase: if the pointer moved while this frame was
+            // generating, immediately start the latest pending target instead
+            // of waiting for another hover event.
+            var next = _pendingRequest;
+            _pendingRequest = null;
+            if (next != null
+                && !string.Equals(next.CacheKey, request.CacheKey, StringComparison.Ordinal))
+            {
+                _ = LoadFrameAsync(next);
+            }
         }
     }
 

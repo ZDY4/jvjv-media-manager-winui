@@ -37,6 +37,23 @@ internal sealed class IndependentMediaWindowController
         return CurrentMedia;
     }
 
+    public bool TrySelect(string mediaId)
+    {
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return false;
+        }
+
+        var index = _mediaItems.FindIndex(item => string.Equals(item.Id, mediaId, StringComparison.Ordinal));
+        if (index < 0)
+        {
+            return false;
+        }
+
+        _currentIndex = index;
+        return true;
+    }
+
     public MediaItemViewModel PlayOrSelect(IndependentMediaWindowMedia media)
     {
         var existingIndex = _mediaItems.FindIndex(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal));
@@ -61,8 +78,9 @@ internal sealed class IndependentMediaWindowController
         return new DeletePlan(removedIndex, replacement);
     }
 
-    public void RemoveDeletedMedia(DeletePlan deletePlan)
+    public void RemoveDeletedMedia(DeletePlan deletePlan, bool preserveCurrentMedia = false)
     {
+        var currentMediaId = CurrentMedia.Id;
         if (deletePlan.RemovedIndex >= 0)
         {
             _mediaItems.RemoveAt(deletePlan.RemovedIndex);
@@ -72,6 +90,17 @@ internal sealed class IndependentMediaWindowController
         {
             _currentIndex = 0;
             return;
+        }
+
+        if (preserveCurrentMedia)
+        {
+            var currentIndex = _mediaItems.FindIndex(item =>
+                string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
+            if (currentIndex >= 0)
+            {
+                _currentIndex = currentIndex;
+                return;
+            }
         }
 
         if (deletePlan.Replacement != null)

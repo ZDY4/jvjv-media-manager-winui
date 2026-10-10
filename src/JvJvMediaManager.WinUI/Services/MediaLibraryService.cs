@@ -84,6 +84,15 @@ public sealed class MediaLibraryService : IDisposable
         return Task.Run(() => _db.QueryMediaFolderSummariesAsync(query, cancellationToken), cancellationToken);
     }
 
+    /// <summary>
+    /// H3: position lookup for deep navigation. The COUNT scans the filtered
+    /// table, so keep it off the UI thread like the page queries.
+    /// </summary>
+    public Task<int?> QueryMediaPositionAsync(MediaQuery query, MediaFile target, CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() => _db.QueryMediaPositionAsync(query, target, cancellationToken), cancellationToken);
+    }
+
     public Task<MediaFile?> GetMediaByIdAsync(string id, CancellationToken cancellationToken = default)
     {
         return string.IsNullOrWhiteSpace(id)
@@ -231,11 +240,38 @@ public sealed class MediaLibraryService : IDisposable
 
         var pendingDirectories = new Stack<string>();
         pendingDirectories.Push(folderPath);
+        var visitedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         while (pendingDirectories.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var currentDirectory = pendingDirectories.Pop();
+            var normalizedDirectory = Path.GetFullPath(currentDirectory);
+            if (!visitedDirectories.Add(normalizedDirectory))
+            {
+                continue;
+            }
+
+            try
+            {
+                var attributes = File.GetAttributes(currentDirectory);
+                if ((attributes & System.IO.FileAttributes.ReparsePoint) != 0)
+                {
+                    // Junctions and symlinks can escape the watched root or
+                    // create cycles; the root scan only follows real folders.
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                state.HadErrors = true;
+                AppTraceLogger.LogSampled(
+                    "MediaLibrary",
+                    "enumerate-directory-attributes-failed",
+                    $"EnumerateFolderMediaFiles could not inspect directory attributes. Directory='{currentDirectory}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                    TimeSpan.FromSeconds(5));
+                continue;
+            }
 
             foreach (var childDirectory in EnumerateDirectoryEntries(currentDirectory, directories: true, state, cancellationToken))
             {

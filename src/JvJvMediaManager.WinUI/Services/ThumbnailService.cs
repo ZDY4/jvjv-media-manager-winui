@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics.Imaging;
@@ -11,9 +12,11 @@ namespace JvJvMediaManager.Services;
 
 public sealed class ThumbnailService
 {
-    private const int ThumbnailCacheVersion = 2;
-    private const int MaxMemoryCacheEntries = 384;
-    private const int ThumbnailSize = 320;
+    private const int ThumbnailCacheVersion = 3;
+    private const int MaxMemoryCacheEntries = 1024;
+    // 256 matches Explorer's large/extra-large thumbcache slot. 320 often
+    // misses that cache and forces a custom-size decode.
+    private const int ThumbnailSize = 256;
     private static readonly TimeSpan ThumbnailPerfLogInterval = TimeSpan.FromSeconds(2);
 
     // WP-06: disk cache quota. Configurable defaults; tune with real telemetry.
@@ -24,9 +27,11 @@ public sealed class ThumbnailService
         TargetBytesAfterTrim: (long)(1.5 * 1024 * 1024 * 1024));
     private const int TrimTriggerFileInterval = 500;
 
-    private readonly SemaphoreSlim _loadGate = new(2, 2);
+    private readonly SemaphoreSlim _cacheReadGate = new(8, 8);
+    private readonly SemaphoreSlim _generateGate = new(2, 2);
+    private readonly SemaphoreSlim _cacheMutationGate = new(1, 1);
     private readonly PlaybackResourceCoordinator _playbackResources;
-    private readonly VideoHoverPreviewFrameService _videoFrameService = new();
+    private readonly VideoHoverPreviewFrameService _videoFrameService = new(maxConcurrentFrames: 2);
     private readonly Dictionary<string, ImageSource> _memoryCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LinkedListNode<string>> _memoryCacheNodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, InflightThumbnailRequest> _inflight = new(StringComparer.OrdinalIgnoreCase);
@@ -66,7 +71,17 @@ public sealed class ThumbnailService
                 return cached;
             }
 
-            if (!_inflight.TryGetValue(cacheKey, out request!))
+            if (_inflight.TryGetValue(cacheKey, out request!)
+                && IsRequestUnavailable(request))
+            {
+                // A just-cancelled prefetch can still be present in the map
+                // while its producer unwinds. Do not attach a visible waiter
+                // to that doomed task; replace it with a fresh request.
+                _inflight.Remove(cacheKey);
+                request = null!;
+            }
+
+            if (request == null)
             {
                 var cacheGeneration = _cacheGeneration;
                 var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(_cacheCancellation.Token);
@@ -101,6 +116,39 @@ public sealed class ThumbnailService
         }
     }
 
+    private static bool IsRequestUnavailable(InflightThumbnailRequest request)
+    {
+        if (request.Task.IsCompleted)
+        {
+            return true;
+        }
+
+        try
+        {
+            return request.Cancellation.IsCancellationRequested;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
+    }
+
+    public bool TryGetCachedThumbnail(MediaFile media, out ImageSource? source)
+    {
+        var cacheKey = BuildCacheKey(media);
+        lock (_sync)
+        {
+            if (_memoryCache.TryGetValue(cacheKey, out source))
+            {
+                TouchMemoryCacheEntry(cacheKey);
+                return true;
+            }
+        }
+
+        source = null;
+        return false;
+    }
+
     /// <summary>
     /// WP-06: runs a one-time low-priority quota check shortly after startup so
     /// large caches from previous sessions are bounded without blocking first paint.
@@ -117,7 +165,7 @@ public sealed class ThumbnailService
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(5));
-                _diskTrimmer.Trim(DiskQuota, "*.thumb");
+                await TrimDiskCacheAsync();
             }
             catch (Exception ex)
             {
@@ -143,11 +191,11 @@ public sealed class ThumbnailService
             return;
         }
 
-        _ = Task.Run(() =>
+        _ = Task.Run(async () =>
         {
             try
             {
-                _diskTrimmer.Trim(DiskQuota, "*.thumb");
+                await TrimDiskCacheAsync();
             }
             catch (Exception ex)
             {
@@ -162,6 +210,19 @@ public sealed class ThumbnailService
                 Interlocked.Exchange(ref _trimScheduled, 0);
             }
         });
+    }
+
+    private async Task TrimDiskCacheAsync()
+    {
+        await _cacheMutationGate.WaitAsync();
+        try
+        {
+            _diskTrimmer.Trim(DiskQuota, "*.thumb");
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
+        }
     }
 
     public void ClearCache()
@@ -186,43 +247,32 @@ public sealed class ThumbnailService
             ReleaseImageSource(source);
         }
 
-        if (!Directory.Exists(_cacheDir))
-        {
-            return;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
-        {
-            try
-            {
-                File.Delete(file);
-            }
-            catch
-            {
-                // Best-effort cleanup only.
-            }
-        }
+        var cacheDir = _cacheDir;
+        var clearStartedAtUtc = DateTime.UtcNow;
+        _ = Task.Run(() => DeleteAllFilesInDirectoryAsync(cacheDir, clearStartedAtUtc));
     }
 
     public void ClearCacheForMediaIds(IEnumerable<string> mediaIds)
     {
-        var ids = mediaIds
+        var idSet = mediaIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (ids.Count == 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (idSet.Count == 0)
         {
             return;
         }
 
-        CancellationTokenSource oldCancellation;
+        var requestsToCancel = new List<CancellationTokenSource>();
         var removedSources = new List<ImageSource>();
         lock (_sync)
         {
-            oldCancellation = _cacheCancellation;
-            _cacheCancellation = new CancellationTokenSource();
-            foreach (var cacheKey in _memoryCache.Keys.Where(key => ids.Any(id => key.StartsWith($"{id}:", StringComparison.OrdinalIgnoreCase))).ToList())
+            foreach (var cacheKey in _memoryCache.Keys.ToList())
             {
+                if (!CacheKeyMatchesMediaIds(cacheKey, idSet))
+                {
+                    continue;
+                }
+
                 if (_memoryCache.Remove(cacheKey, out var source))
                 {
                     removedSources.Add(source);
@@ -234,53 +284,141 @@ public sealed class ThumbnailService
                 }
             }
 
-            foreach (var inflightKey in _inflight.Keys.Where(key => ids.Any(id => key.StartsWith($"{id}:", StringComparison.OrdinalIgnoreCase))).ToList())
+            foreach (var inflightKey in _inflight.Keys.ToList())
             {
-                _inflight.Remove(inflightKey);
+                if (CacheKeyMatchesMediaIds(inflightKey, idSet))
+                {
+                    if (_inflight.Remove(inflightKey, out var request))
+                    {
+                        requestsToCancel.Add(request.Cancellation);
+                    }
+                }
             }
-
-            _cacheGeneration++;
         }
 
-        CancelAndDisposeLater(oldCancellation);
+        foreach (var cancellation in requestsToCancel)
+        {
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The request completed concurrently and disposed its CTS.
+            }
+        }
         foreach (var source in removedSources)
         {
             ReleaseImageSource(source);
         }
 
-        if (!Directory.Exists(_cacheDir))
-        {
-            return;
-        }
+        var cacheDir = _cacheDir;
+        var clearStartedAtUtc = DateTime.UtcNow;
+        _ = Task.Run(() => DeleteThumbFilesForMediaIdsAsync(cacheDir, idSet, clearStartedAtUtc));
+    }
 
-        foreach (var id in ids)
+    private static bool CacheKeyMatchesMediaIds(string cacheKey, HashSet<string> mediaIds)
+    {
+        var separator = cacheKey.IndexOf(':');
+        var mediaId = separator > 0 ? cacheKey[..separator] : cacheKey;
+        return mediaIds.Contains(mediaId);
+    }
+
+    private async Task DeleteAllFilesInDirectoryAsync(string directory, DateTime clearStartedAtUtc)
+    {
+        await _cacheMutationGate.WaitAsync();
+        try
         {
-            var pattern = $"{id}_*.thumb";
-            foreach (var file in Directory.EnumerateFiles(_cacheDir, pattern, SearchOption.TopDirectoryOnly))
+            if (!Directory.Exists(directory))
             {
-                try
-                {
-                    File.Delete(file);
-                }
-                catch
-                {
-                    // Best-effort cleanup only.
-                }
+                return;
             }
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+            {
+                TryDeleteCacheFileCreatedBefore(file, clearStartedAtUtc);
+            }
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
         }
     }
 
-    public int ClearInvalidCache(IEnumerable<MediaFile> mediaItems)
+    private async Task DeleteThumbFilesForMediaIdsAsync(string directory, HashSet<string> mediaIds, DateTime clearStartedAtUtc)
     {
-        var validFileNames = mediaItems
-            .Where(media => !string.IsNullOrWhiteSpace(media.Id))
-            .Select(media => Path.GetFileName(GetCachePath(media)))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var validCacheKeys = mediaItems
-            .Where(media => !string.IsNullOrWhiteSpace(media.Id))
-            .Select(BuildCacheKey)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        await _cacheMutationGate.WaitAsync();
+        try
+        {
+            if (!Directory.Exists(directory))
+            {
+                return;
+            }
 
+            foreach (var file in Directory.EnumerateFiles(directory, "*.thumb", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                var separator = name.IndexOf('_');
+                var mediaId = separator > 0 ? name[..separator] : name;
+                if (!mediaIds.Contains(mediaId))
+                {
+                    continue;
+                }
+
+                TryDeleteCacheFileCreatedBefore(file, clearStartedAtUtc);
+            }
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
+        }
+    }
+
+    private static void TryDeleteCacheFileCreatedBefore(string file, DateTime cutoffUtc)
+    {
+        try
+        {
+            if (File.GetLastWriteTimeUtc(file) <= cutoffUtc)
+            {
+                File.Delete(file);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup only.
+        }
+    }
+
+    // H2: consumes the page iterator and sweeps the cache directory on
+    // background threads; the UI thread never materializes the full library
+    // and never blocks on a tens-of-thousands-file directory enumeration.
+    public async Task<int> ClearInvalidCacheAsync(IAsyncEnumerable<MediaFile> mediaItems, CancellationToken cancellationToken = default)
+    {
+        var clearStartedAtUtc = DateTime.UtcNow;
+        var validFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var validCacheKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await Task.Run(async () =>
+        {
+            await foreach (var media in mediaItems.WithCancellation(cancellationToken))
+            {
+                if (string.IsNullOrWhiteSpace(media.Id))
+                {
+                    continue;
+                }
+
+                validFileNames.Add(Path.GetFileName(GetCachePath(media)));
+                validCacheKeys.Add(BuildCacheKey(media));
+            }
+        }, cancellationToken);
+
+        return await ClearInvalidCacheFromValidSetsAsync(validFileNames, validCacheKeys, clearStartedAtUtc);
+    }
+
+    private async Task<int> ClearInvalidCacheFromValidSetsAsync(
+        HashSet<string> validFileNames,
+        HashSet<string> validCacheKeys,
+        DateTime clearStartedAtUtc)
+    {
         CancellationTokenSource oldCancellation;
         var removedSources = new List<ImageSource>();
         lock (_sync)
@@ -314,32 +452,59 @@ public sealed class ThumbnailService
             ReleaseImageSource(source);
         }
 
-        if (!Directory.Exists(_cacheDir))
+        return await Task.Run(() => DeleteInvalidCacheFiles(validFileNames, clearStartedAtUtc));
+    }
+
+    private int DeleteInvalidCacheFiles(HashSet<string> validFileNames, DateTime clearStartedAtUtc)
+    {
+        _cacheMutationGate.Wait();
+        try
         {
-            return 0;
-        }
+            if (!Directory.Exists(_cacheDir))
+            {
+                return 0;
+            }
 
-        var deleted = 0;
-        foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
+            var deleted = 0;
+            foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (validFileNames.Contains(Path.GetFileName(file)))
+                {
+                    continue;
+                }
+
+                // The media snapshot is inherently racy with imports. Keep
+                // files written after the sweep began; they were not visible
+                // to the snapshot and must not be treated as stale.
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(file) > clearStartedAtUtc)
+                    {
+                        continue;
+                    }
+                }
+                catch
+                {
+                    continue;
+                }
+
+                try
+                {
+                    File.Delete(file);
+                    deleted++;
+                }
+                catch
+                {
+                    // Best-effort stale cache cleanup only.
+                }
+            }
+
+            return deleted;
+        }
+        finally
         {
-            var fileName = Path.GetFileName(file);
-            if (validFileNames.Contains(fileName))
-            {
-                continue;
-            }
-
-            try
-            {
-                File.Delete(file);
-                deleted++;
-            }
-            catch
-            {
-                // Best-effort stale cache cleanup only.
-            }
+            _cacheMutationGate.Release();
         }
-
-        return deleted;
     }
 
     private async Task<ImageSource?> LoadThumbnailCoreAsync(MediaFile media, string cacheKey, InflightThumbnailRequest request)
@@ -350,54 +515,103 @@ public sealed class ThumbnailService
         var gateWaitMs = 0L;
         var startedAt = 0L;
         var sourceStage = "none";
-        var gateEntered = false;
+        var generateGateEntered = false;
         try
         {
-            using var backgroundIo = await _playbackResources.EnterBackgroundIoAsync("thumbnail", cancellationToken);
-            await _loadGate.WaitAsync(cancellationToken);
-            gateEntered = true;
-            gateWaitMs = Environment.TickCount64 - gateWaitStartedAt;
             startedAt = Environment.TickCount64;
-
             var cachePath = GetCachePath(media);
-            var source = await TryLoadBitmapAsync(cachePath, cancellationToken);
+
+            var source = await TryLoadFromDiskCacheAsync(cachePath, cancellationToken);
             if (source != null)
             {
                 sourceStage = "disk-cache";
             }
-            else if (media.Type == MediaType.Image)
+
+            if (source == null && media.Type != MediaType.Image)
             {
-                source = await GenerateAndPersistThumbnailAsync(media, cachePath, cancellationToken);
+                source = await TryGetWindowsThumbnailAsync(media, cachePath, cachedOnly: true, persist: false, cancellationToken);
                 if (source != null)
                 {
-                    sourceStage = "windows-thumbnail";
+                    sourceStage = "windows-cached";
                 }
             }
 
             if (source == null)
             {
-                source = await GenerateFallbackThumbnailAsync(media, cachePath, cancellationToken);
-                if (source != null)
+                // Visible-library thumbnails keep their own generate gate so
+                // playback does not serialize them behind scan/hover/timeline
+                // on the single background-IO channel. Two concurrent decodes
+                // is the contention cap while a video is playing.
+                await _generateGate.WaitAsync(cancellationToken);
+                generateGateEntered = true;
+                gateWaitMs = Environment.TickCount64 - gateWaitStartedAt;
+
+                if (media.Type == MediaType.Image)
                 {
-                    sourceStage = "fallback";
+                    // StorageFile.GetThumbnailAsync / BitmapDecoder fail-fast
+                    // in combase (E_UNEXPECTED) on some JPEG/JFIF files while
+                    // the grouped GridView is realizing tiles.
+                    source = await GenerateFallbackImageThumbnailAsync(media, cachePath, cancellationToken);
+                    if (source != null)
+                    {
+                        sourceStage = "image-file";
+                    }
+                }
+                else
+                {
+                    source = await TryGetWindowsThumbnailAsync(media, cachePath, cachedOnly: false, persist: true, cancellationToken);
+                    if (source != null)
+                    {
+                        sourceStage = "windows-thumbnail";
+                    }
+                    else
+                    {
+                        source = await GenerateFallbackThumbnailAsync(media, cachePath, cancellationToken);
+                        if (source != null)
+                        {
+                            sourceStage = "fallback";
+                        }
+                    }
                 }
             }
 
+            var acceptedSource = false;
+            var requestInvalidated = false;
             lock (_sync)
             {
                 if (source != null && !cancellationToken.IsCancellationRequested && cacheGeneration == _cacheGeneration)
                 {
                     RememberInMemoryCache(cacheKey, source);
+                    acceptedSource = true;
                 }
-                else if (source != null)
+                else
                 {
-                    ReleaseImageSource(source);
+                    requestInvalidated = cancellationToken.IsCancellationRequested || cacheGeneration != _cacheGeneration;
+                    if (source != null)
+                    {
+                        ReleaseImageSource(source);
+                    }
                 }
 
                 RemoveInflightIfCurrentLocked(cacheKey, request);
             }
 
-            return source;
+            if (requestInvalidated)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            // A cache clear or request cancellation can invalidate the source
+            // while the generation is running. Never return an ImageSource that
+            // was just released from the cache in that case.
+            return acceptedSource ? source : null;
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation means the item left the realized/prefetch window or
+            // the cache was cleared. Let the caller reset its in-flight marker;
+            // it must not be recorded as a generation failure with backoff.
+            throw;
         }
         catch (Exception ex)
         {
@@ -411,7 +625,7 @@ public sealed class ThumbnailService
         finally
         {
             var elapsedMs = startedAt == 0 ? 0 : Environment.TickCount64 - startedAt;
-            if (gateEntered && elapsedMs >= 750)
+            if (elapsedMs >= 750)
             {
                 var inflightCount = 0;
                 lock (_sync)
@@ -425,7 +639,7 @@ public sealed class ThumbnailService
                     $"Slow thumbnail load. MediaId='{media.Id}', File='{media.FileName}', Stage={sourceStage}, GateWaitMs={gateWaitMs}, ElapsedMs={elapsedMs}, InflightCount={inflightCount}, PlaybackActive={_playbackResources.IsPlaybackActive}.",
                     ThumbnailPerfLogInterval);
             }
-            else if (gateEntered && gateWaitMs >= 100)
+            else if (generateGateEntered && gateWaitMs >= 100)
             {
                 AppTraceLogger.LogSampled(
                     "ThumbnailService",
@@ -439,9 +653,9 @@ public sealed class ThumbnailService
                 RemoveInflightIfCurrentLocked(cacheKey, request);
             }
 
-            if (gateEntered)
+            if (generateGateEntered)
             {
-                _loadGate.Release();
+                _generateGate.Release();
             }
 
             request.Cancellation.Dispose();
@@ -455,7 +669,14 @@ public sealed class ThumbnailService
             request.WaiterCount = Math.Max(0, request.WaiterCount - 1);
             if (request.WaiterCount == 0 && !request.Task.IsCompleted)
             {
-                request.Cancellation.Cancel();
+                try
+                {
+                    request.Cancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The producer completed its finalization concurrently.
+                }
             }
         }
     }
@@ -468,37 +689,78 @@ public sealed class ThumbnailService
         }
     }
 
-    private async Task<ImageSource?> GenerateAndPersistThumbnailAsync(MediaFile media, string cachePath, CancellationToken cancellationToken)
+    private async Task<ImageSource?> TryLoadFromDiskCacheAsync(string cachePath, CancellationToken cancellationToken)
     {
+        await _cacheReadGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await TryLoadBitmapAsync(cachePath, cancellationToken);
+        }
+        finally
+        {
+            _cacheReadGate.Release();
+        }
+    }
+
+    private async Task<ImageSource?> TryGetWindowsThumbnailAsync(
+        MediaFile media,
+        string cachePath,
+        bool cachedOnly,
+        bool persist,
+        CancellationToken cancellationToken)
+    {
+        var useCacheReadGate = cachedOnly;
+        if (useCacheReadGate)
+        {
+            await _cacheReadGate.WaitAsync(cancellationToken);
+        }
+
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             var file = await StorageFile.GetFileFromPathAsync(PathHelpers.ToNativePath(media.Path));
             var thumbnailMode = media.Type == MediaType.Video ? ThumbnailMode.VideosView : ThumbnailMode.PicturesView;
-
-            using var cachedThumbnail = await file.GetThumbnailAsync(
-                thumbnailMode,
-                ThumbnailSize,
-                ThumbnailOptions.UseCurrentScale | ThumbnailOptions.ReturnOnlyIfCached);
-            if (cachedThumbnail != null && cachedThumbnail.Size > 0)
+            var options = ThumbnailOptions.UseCurrentScale;
+            if (cachedOnly)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                await PersistStreamAsync(media, cachedThumbnail, cachePath);
+                options |= ThumbnailOptions.ReturnOnlyIfCached;
+            }
+
+            using var thumbnail = await file.GetThumbnailAsync(thumbnailMode, ThumbnailSize, options);
+            if (!IsUsableContentThumbnail(thumbnail))
+            {
+                return null;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = await CreateBitmapFromStreamAsync(thumbnail, cancellationToken);
+            if (source != null && persist)
+            {
+                try
+                {
+                    thumbnail.Seek(0);
+                    await PersistStreamAsync(media, thumbnail, cachePath);
+                }
+                catch (Exception persistEx)
+                {
+                    AppTraceLogger.LogSampled(
+                        "ThumbnailService",
+                        "windows-thumbnail-persist-failed",
+                        $"Windows thumbnail persist failed. MediaId='{media.Id}', File='{media.FileName}'. ErrorType={persistEx.GetType().Name}, Message='{persistEx.Message}'.",
+                        TimeSpan.FromSeconds(5));
+                }
+            }
+
+            if (source != null)
+            {
                 AppTraceLogger.LogSampled(
                     "ThumbnailService",
-                    "windows-cached-thumbnail-used",
-                    $"Used cached Windows thumbnail. MediaId='{media.Id}', File='{media.FileName}'.",
+                    cachedOnly ? "windows-cached-thumbnail-used" : "windows-thumbnail-used",
+                    $"Used Windows thumbnail. MediaId='{media.Id}', File='{media.FileName}', CachedOnly={cachedOnly}, Type={media.Type}.",
                     TimeSpan.FromSeconds(2));
-                return await TryLoadBitmapAsync(cachePath, cancellationToken);
             }
 
-            using var thumbnail = await file.GetThumbnailAsync(thumbnailMode, ThumbnailSize, ThumbnailOptions.UseCurrentScale);
-            if (thumbnail != null && thumbnail.Size > 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await PersistStreamAsync(media, thumbnail, cachePath);
-                return await TryLoadBitmapAsync(cachePath, cancellationToken);
-            }
+            return source;
         }
         catch (Exception ex)
         {
@@ -509,12 +771,37 @@ public sealed class ThumbnailService
 
             AppTraceLogger.LogSampled(
                 "ThumbnailService",
-                "generate-thumbnail-failed",
-                $"GenerateAndPersistThumbnailAsync failed. MediaId='{media.Id}', File='{media.FileName}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                cachedOnly ? "windows-cached-thumbnail-miss" : "generate-thumbnail-failed",
+                $"TryGetWindowsThumbnailAsync failed. MediaId='{media.Id}', File='{media.FileName}', CachedOnly={cachedOnly}. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
                 TimeSpan.FromSeconds(5));
+            return null;
         }
+        finally
+        {
+            if (useCacheReadGate)
+            {
+                _cacheReadGate.Release();
+            }
+        }
+    }
 
-        return null;
+    private static bool IsUsableContentThumbnail(StorageItemThumbnail? thumbnail)
+    {
+        return thumbnail != null
+            && thumbnail.Size > 0
+            && thumbnail.Type != ThumbnailType.Icon;
+    }
+
+    private static async Task<ImageSource?> CreateBitmapFromStreamAsync(IRandomAccessStream stream, CancellationToken cancellationToken)
+    {
+        stream.Seek(0);
+        var bitmap = new BitmapImage
+        {
+            DecodePixelWidth = ThumbnailSize
+        };
+        await bitmap.SetSourceAsync(stream);
+        cancellationToken.ThrowIfCancellationRequested();
+        return bitmap;
     }
 
     private async Task<ImageSource?> GenerateFallbackThumbnailAsync(MediaFile media, string cachePath, CancellationToken cancellationToken)
@@ -536,51 +823,26 @@ public sealed class ThumbnailService
                 return null;
             }
 
-            var file = await StorageFile.GetFileFromPathAsync(nativePath);
-            using var sourceStream = await file.OpenReadAsync();
-            cancellationToken.ThrowIfCancellationRequested();
+            var jpeg = await _videoFrameService.TranscodeStillImageAsync(nativePath, ThumbnailSize, cancellationToken);
+            if (jpeg == null || jpeg.Length == 0)
+            {
+                return null;
+            }
 
-            var decoder = await BitmapDecoder.CreateAsync(sourceStream);
-            var scale = Math.Min(1d, Math.Min(
-                (double)ThumbnailSize / Math.Max(1, decoder.PixelWidth),
-                (double)ThumbnailSize / Math.Max(1, decoder.PixelHeight)));
-            var scaledWidth = (uint)Math.Max(1, Math.Round(decoder.PixelWidth * scale));
-            var scaledHeight = (uint)Math.Max(1, Math.Round(decoder.PixelHeight * scale));
-
-            using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
-                decoder.BitmapPixelFormat,
-                decoder.BitmapAlphaMode,
-                new BitmapTransform
-                {
-                    ScaledWidth = scaledWidth,
-                    ScaledHeight = scaledHeight,
-                    InterpolationMode = BitmapInterpolationMode.Fant
-                },
-                ExifOrientationMode.RespectExifOrientation,
-                ColorManagementMode.DoNotColorManage);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // WP-F: persist the scaled fallback so later sessions and scroll
-            // passes hit the disk cache instead of re-decoding the full source
-            // image every time the shell refused to thumbnail it. PNG keeps
-            // alpha for transparent sources; JPEG keeps the cache quota small.
-            var encoderId = decoder.BitmapAlphaMode == BitmapAlphaMode.Straight
-                || decoder.BitmapAlphaMode == BitmapAlphaMode.Premultiplied
-                    ? BitmapEncoder.PngEncoderId
-                    : BitmapEncoder.JpegEncoderId;
-            using var encodedStream = new InMemoryRandomAccessStream();
-            var encoder = await BitmapEncoder.CreateAsync(encoderId, encodedStream);
-            encoder.SetSoftwareBitmap(softwareBitmap);
-            await encoder.FlushAsync();
-            cancellationToken.ThrowIfCancellationRequested();
-
-            await PersistStreamAsync(media, encodedStream, cachePath);
+            using var stream = new InMemoryRandomAccessStream();
+            await stream.WriteAsync(jpeg.AsBuffer());
+            stream.Seek(0);
+            var bitmap = new BitmapImage
+            {
+                DecodePixelWidth = ThumbnailSize
+            };
+            await bitmap.SetSourceAsync(stream);
             AppTraceLogger.LogSampled(
                 "ThumbnailService",
                 "image-file-fallback-thumbnail-used",
-                $"Generated image file fallback thumbnail. MediaId='{media.Id}', File='{media.FileName}', Scaled={scaledWidth}x{scaledHeight}.",
+                $"Generated image file fallback thumbnail. MediaId='{media.Id}', File='{media.FileName}'.",
                 TimeSpan.FromSeconds(2));
-            return await TryLoadBitmapAsync(cachePath, cancellationToken);
+            return bitmap;
         }
         catch (Exception ex)
         {
@@ -617,8 +879,16 @@ public sealed class ThumbnailService
             }
 
             Directory.CreateDirectory(_cacheDir);
-            DeleteStaleCacheFiles(media, cachePath);
-            await File.WriteAllBytesAsync(cachePath, frameBytes, cancellationToken);
+            await _cacheMutationGate.WaitAsync(cancellationToken);
+            try
+            {
+                DeleteStaleCacheFiles(media, cachePath);
+                await File.WriteAllBytesAsync(cachePath, frameBytes, cancellationToken);
+            }
+            finally
+            {
+                _cacheMutationGate.Release();
+            }
             NotifyDiskCacheWrite();
 
             AppTraceLogger.LogSampled(
@@ -671,40 +941,48 @@ public sealed class ThumbnailService
 
     private async Task PersistStreamAsync(MediaFile media, IRandomAccessStream stream, string cachePath)
     {
-        Directory.CreateDirectory(_cacheDir);
-        DeleteStaleCacheFiles(media, cachePath);
-
-        // WP-06: write to a temp file then atomically rename so a cancelled or
-        // crashed write never leaves a half-written file that reads as valid.
-        var tempName = $"{Path.GetFileName(cachePath)}.{Guid.NewGuid():N}.tmp";
-        var folder = await StorageFolder.GetFolderFromPathAsync(_cacheDir);
-        var tempFile = await folder.CreateFileAsync(tempName, CreationCollisionOption.ReplaceExisting);
+        await _cacheMutationGate.WaitAsync();
         try
         {
-            using (var output = await tempFile.OpenAsync(FileAccessMode.ReadWrite))
-            {
-                stream.Seek(0);
-                output.Seek(0);
-                await RandomAccessStream.CopyAsync(stream, output);
-                await output.FlushAsync();
-            }
+            Directory.CreateDirectory(_cacheDir);
+            DeleteStaleCacheFiles(media, cachePath);
 
-            await tempFile.MoveAndReplaceAsync(
-                await folder.CreateFileAsync(Path.GetFileName(cachePath), CreationCollisionOption.OpenIfExists));
-            NotifyDiskCacheWrite();
-        }
-        catch
-        {
+            // WP-06: write to a temp file then atomically rename so a cancelled or
+            // crashed write never leaves a half-written file that reads as valid.
+            var tempName = $"{Path.GetFileName(cachePath)}.{Guid.NewGuid():N}.tmp";
+            var folder = await StorageFolder.GetFolderFromPathAsync(_cacheDir);
+            var tempFile = await folder.CreateFileAsync(tempName, CreationCollisionOption.ReplaceExisting);
             try
             {
-                await tempFile.DeleteAsync();
+                using (var output = await tempFile.OpenAsync(FileAccessMode.ReadWrite))
+                {
+                    stream.Seek(0);
+                    output.Seek(0);
+                    await RandomAccessStream.CopyAsync(stream, output);
+                    await output.FlushAsync();
+                }
+
+                await tempFile.MoveAndReplaceAsync(
+                    await folder.CreateFileAsync(Path.GetFileName(cachePath), CreationCollisionOption.OpenIfExists));
+                NotifyDiskCacheWrite();
             }
             catch
             {
-                // Best-effort temp cleanup only.
-            }
+                try
+                {
+                    await tempFile.DeleteAsync();
+                }
+                catch
+                {
+                    // Best-effort temp cleanup only.
+                }
 
-            throw;
+                throw;
+            }
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
         }
     }
 
@@ -729,7 +1007,10 @@ public sealed class ThumbnailService
             }
 
             stream.Seek(0);
-            var bitmap = new BitmapImage();
+            var bitmap = new BitmapImage
+            {
+                DecodePixelWidth = ThumbnailSize
+            };
             await bitmap.SetSourceAsync(stream);
             cancellationToken.ThrowIfCancellationRequested();
             return bitmap;
@@ -746,6 +1027,7 @@ public sealed class ThumbnailService
                 "load-cache-failed",
                 $"TryLoadBitmapAsync failed. CachePath='{cachePath}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
                 TimeSpan.FromSeconds(5));
+            await _cacheMutationGate.WaitAsync(cancellationToken);
             try
             {
                 File.Delete(cachePath);
@@ -754,29 +1036,109 @@ public sealed class ThumbnailService
             {
                 // Ignore cleanup errors for broken cache entries.
             }
+            finally
+            {
+                _cacheMutationGate.Release();
+            }
 
             return null;
         }
     }
 
+    // H2: stale-variant cleanup is batched. The previous implementation
+    // enumerated the whole cache directory once per generated thumbnail
+    // (O(ids x files) on large caches); requests now coalesce into one
+    // background sweep that skips each media's current cache file.
+    private static readonly TimeSpan StaleCleanupDebounce = TimeSpan.FromSeconds(2);
+    private readonly object _staleCleanupSync = new();
+    private readonly Dictionary<string, string> _pendingStaleCurrentPaths = new(StringComparer.OrdinalIgnoreCase);
+    private int _staleCleanupScheduled;
+
     private void DeleteStaleCacheFiles(MediaFile media, string currentCachePath)
     {
-        var pattern = $"{media.Id}_*.thumb";
-        foreach (var file in Directory.EnumerateFiles(_cacheDir, pattern, SearchOption.TopDirectoryOnly))
+        lock (_staleCleanupSync)
         {
-            if (string.Equals(file, currentCachePath, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+            _pendingStaleCurrentPaths[media.Id] = currentCachePath;
+        }
 
+        ScheduleStaleCleanup();
+    }
+
+    private void ScheduleStaleCleanup()
+    {
+        if (Interlocked.Exchange(ref _staleCleanupScheduled, 1) == 1)
+        {
+            return;
+        }
+
+        var cacheDir = _cacheDir;
+        _ = Task.Run(async () =>
+        {
             try
             {
-                File.Delete(file);
+                await Task.Delay(StaleCleanupDebounce);
             }
             catch
             {
-                // Best-effort stale cache cleanup only.
+                Interlocked.Exchange(ref _staleCleanupScheduled, 0);
+                return;
             }
+
+            Dictionary<string, string> pending;
+            lock (_staleCleanupSync)
+            {
+                pending = new Dictionary<string, string>(_pendingStaleCurrentPaths, StringComparer.OrdinalIgnoreCase);
+                _pendingStaleCurrentPaths.Clear();
+            }
+
+            Interlocked.Exchange(ref _staleCleanupScheduled, 0);
+            await DeleteStaleThumbFilesAsync(cacheDir, pending);
+
+            // Requests that queued while this sweep ran still need a flush.
+            lock (_staleCleanupSync)
+            {
+                if (_pendingStaleCurrentPaths.Count > 0)
+                {
+                    ScheduleStaleCleanup();
+                }
+            }
+        });
+    }
+
+    private async Task DeleteStaleThumbFilesAsync(string directory, IReadOnlyDictionary<string, string> currentPathsByMediaId)
+    {
+        await _cacheMutationGate.WaitAsync();
+        try
+        {
+            if (!Directory.Exists(directory) || currentPathsByMediaId.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*.thumb", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                var separator = name.IndexOf('_');
+                var mediaId = separator > 0 ? name[..separator] : name;
+                if (!currentPathsByMediaId.TryGetValue(mediaId, out var currentPath)
+                    || string.Equals(file, currentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    File.Delete(file);
+                }
+                catch
+                {
+                    // Best-effort stale cache cleanup only.
+                }
+            }
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
         }
     }
 

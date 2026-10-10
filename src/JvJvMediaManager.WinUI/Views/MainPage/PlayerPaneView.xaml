@@ -58,8 +58,6 @@
                   x:FieldModifier="public">
                 <mainPage:PlayerInfoOverlayView x:Name="InfoOverlay"
                                                 x:FieldModifier="public" />
-                <mainPage:PlayerNavigationOverlayView x:Name="NavigationOverlay"
-                                                      x:FieldModifier="public" />
 
                 <Border x:Name="ImageZoomBadge"
                         x:FieldModifier="public"
@@ -80,8 +78,15 @@
                                FontWeight="SemiBold" />
                 </Border>
 
+                <mainPage:PlayerNavigationOverlayView x:Name="NavigationOverlay"
+                                                      x:FieldModifier="public" />
+                <mainPage:TransportControlBarView x:Name="TransportBar"
+                                                  x:FieldModifier="public"
+                                                  DataContext="{Binding VideoPlayback}" />
+
                 <Border x:Name="ShortcutHintContainer"
                         x:FieldModifier="public"
+                        Canvas.ZIndex="20"
                         HorizontalAlignment="Left"
                         VerticalAlignment="Bottom"
                         Margin="16,16,16,84"
@@ -125,10 +130,6 @@
                         </ItemsControl>
                     </StackPanel>
                 </Border>
-
-                <mainPage:TransportControlBarView x:Name="TransportBar"
-                                                  x:FieldModifier="public"
-                                                  DataContext="{Binding VideoPlayback}" />
             </Grid>
 
             <mainPage:ClipEditorBarView x:Name="ClipBarView"

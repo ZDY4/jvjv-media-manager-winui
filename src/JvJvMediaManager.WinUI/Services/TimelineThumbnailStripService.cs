@@ -36,16 +36,21 @@ public sealed class TimelineThumbnailStripService
     private readonly string _cacheDir;
     private readonly string? _ffmpegPath;
     private readonly DiskCacheTrimmer _diskTrimmer;
+    private readonly PlaybackResourceCoordinator? _playbackResources;
     private int _writesSinceTrim;
     private int _trimScheduled;
     private int _startupTrimDone;
 
-    public TimelineThumbnailStripService(string? cacheDir = null, string? ffmpegPath = null)
+    public TimelineThumbnailStripService(
+        string? cacheDir = null,
+        string? ffmpegPath = null,
+        PlaybackResourceCoordinator? playbackResources = null)
     {
         _cacheDir = string.IsNullOrWhiteSpace(cacheDir)
             ? new SettingsService().GetTimelineThumbnailCacheDir()
             : cacheDir;
         _ffmpegPath = ResolveToolPath("ffmpeg.exe", ffmpegPath);
+        _playbackResources = playbackResources;
         Directory.CreateDirectory(_cacheDir);
         _diskTrimmer = new DiskCacheTrimmer(_cacheDir, "timeline");
     }
@@ -155,31 +160,42 @@ public sealed class TimelineThumbnailStripService
             return;
         }
 
-        foreach (var file in Directory.EnumerateFiles(_cacheDir, "*", SearchOption.TopDirectoryOnly))
+        var cacheDir = _cacheDir;
+        _ = Task.Run(() =>
         {
-            TryDelete(file);
-        }
+            foreach (var file in Directory.EnumerateFiles(cacheDir, "*", SearchOption.TopDirectoryOnly))
+            {
+                TryDelete(file);
+            }
+        });
     }
 
     public void ClearCacheForMediaIds(IEnumerable<string> mediaIds)
     {
-        var ids = mediaIds
+        var prefixes = mediaIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (ids.Count == 0 || !Directory.Exists(_cacheDir))
+            .Select(id => $"{SanitizeToken(id)}_")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (prefixes.Count == 0 || !Directory.Exists(_cacheDir))
         {
             return;
         }
 
-        foreach (var id in ids)
+        var cacheDir = _cacheDir;
+        _ = Task.Run(() =>
         {
-            var prefix = $"{SanitizeToken(id)}_";
-            foreach (var file in Directory.EnumerateFiles(_cacheDir, $"{prefix}*.jpg", SearchOption.TopDirectoryOnly))
+            foreach (var file in Directory.EnumerateFiles(cacheDir, "*.jpg", SearchOption.TopDirectoryOnly))
             {
+                var name = Path.GetFileName(file);
+                var separator = name.IndexOf('_');
+                if (separator <= 0 || !prefixes.Contains(name[..(separator + 1)]))
+                {
+                    continue;
+                }
+
                 TryDelete(file);
             }
-        }
+        });
     }
 
     private async Task GenerateFrameAsync(
@@ -193,7 +209,22 @@ public sealed class TimelineThumbnailStripService
             return;
         }
 
-        await _frameGate.WaitAsync(cancellationToken);
+        IDisposable? backgroundIo = null;
+        if (_playbackResources != null)
+        {
+            backgroundIo = await _playbackResources.EnterBackgroundIoAsync("timeline-frame", cancellationToken);
+        }
+
+        try
+        {
+            await _frameGate.WaitAsync(cancellationToken);
+        }
+        catch
+        {
+            backgroundIo?.Dispose();
+            throw;
+        }
+
         try
         {
             if (File.Exists(cachePath))
@@ -271,6 +302,7 @@ public sealed class TimelineThumbnailStripService
         finally
         {
             _frameGate.Release();
+            backgroundIo?.Dispose();
         }
     }
 

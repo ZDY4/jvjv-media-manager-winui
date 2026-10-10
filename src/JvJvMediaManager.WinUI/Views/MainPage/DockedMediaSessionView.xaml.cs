@@ -47,6 +47,7 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDeletingCurrentMedia;
     private bool _isDisposed;
+    private CancellationTokenSource _restoreCancellation = new();
     private int _isNavigationHotspotWheelNavigating;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
     private PlayerNavigationEdge _activePlayerNavigationEdge;
@@ -101,6 +102,9 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             return;
         }
 
+        _restoreCancellation.Cancel();
+        _restoreCancellation.Dispose();
+        _restoreCancellation = new CancellationTokenSource();
         ResetSessionState();
         _controller = new IndependentMediaWindowController(session.MediaItems, session.CurrentIndex);
         foreach (var media in _controller.MediaItems)
@@ -146,13 +150,16 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             new BossKeyController(() => { }, () => { }, () => true));
 
         OpenCurrentMedia();
-        _ = RestorePlaybackStateAsync(session.PositionSeconds, session.WasPlaying);
+        var expectedMediaId = _controller.CurrentMedia.Id;
+        _ = RestorePlaybackStateAsync(session.PositionSeconds, session.WasPlaying, expectedMediaId, _restoreCancellation.Token);
+        _ = RestoreVideoRotationAsync(session.RotationDegrees, expectedMediaId, _restoreCancellation.Token);
         NotifySessionActivated();
         FocusPlayer();
     }
 
     internal void PlayMedia(IndependentMediaWindowMedia media)
     {
+        CancelPendingRestore();
         if (_isDisposed || _controller == null)
         {
             return;
@@ -220,8 +227,13 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             return;
         }
 
+        var currentMediaId = _controller.CurrentMedia.Id;
+        var isDeletingCurrentMedia = deletedIds.Contains(currentMediaId);
         var removedAny = false;
-        foreach (var mediaId in deletedIds.ToList())
+        var orderedDeletedIds = deletedIds
+            .Where(id => !string.Equals(id, currentMediaId, StringComparison.Ordinal))
+            .Concat(deletedIds.Contains(currentMediaId) ? new[] { currentMediaId } : Array.Empty<string>());
+        foreach (var mediaId in orderedDeletedIds)
         {
             var plan = _controller.BuildDeletePlan(mediaId);
             if (plan.RemovedIndex < 0)
@@ -230,7 +242,9 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             }
 
             var removed = _controller.MediaItems.ElementAtOrDefault(plan.RemovedIndex);
-            _controller.RemoveDeletedMedia(plan);
+            _controller.RemoveDeletedMedia(
+                plan,
+                preserveCurrentMedia: !string.Equals(mediaId, currentMediaId, StringComparison.Ordinal));
             if (removed != null)
             {
                 _ = _library.FilteredMediaItems.Remove(removed);
@@ -250,7 +264,16 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             return;
         }
 
-        OpenCurrentMedia();
+        if (isDeletingCurrentMedia)
+        {
+            OpenCurrentMedia();
+            FocusPlayer();
+        }
+        else
+        {
+            RefreshPlayerNavigationHotspots();
+            RefreshNumpadShortcutHint();
+        }
     }
 
     internal MediaPlayerSessionTransfer? ExportSession()
@@ -261,26 +284,20 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
         }
 
         var items = _controller.MediaItems
-            .Select(item => new IndependentMediaWindowMedia(
-                item.Id,
-                item.FileSystemPath,
-                item.FileName,
-                item.Type,
-                item.ResolutionText,
-                item.ContentHash,
-                item.FingerprintVersion,
-                item.Tags.ToList()))
+            .Select(IndependentMediaWindowService.CreateSnapshot)
             .ToList();
 
         return new MediaPlayerSessionTransfer(
             items,
             _controller.CurrentIndex,
             _videoPlaybackController?.GetCurrentPlaybackPosition().TotalSeconds ?? 0,
-            _videoPlaybackController?.IsPlaying == true);
+            _videoPlaybackController?.IsPlaying == true,
+            _videoPlaybackController?.VideoRotationDegrees ?? 0);
     }
 
     internal void ClearSession()
     {
+        _restoreCancellation.Cancel();
         ResetSessionState();
         SetEmptyState();
     }
@@ -300,37 +317,83 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
         _activePlayerNavigationEdge = PlayerNavigationEdge.None;
     }
 
-    private async Task RestorePlaybackStateAsync(double positionSeconds, bool wasPlaying)
+    private async Task RestorePlaybackStateAsync(double positionSeconds, bool wasPlaying, string expectedMediaId, CancellationToken cancellationToken)
     {
-        if (_videoPlaybackController == null || (positionSeconds <= 0 && wasPlaying))
+        try
         {
-            return;
-        }
-
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            await Task.Delay(100);
-            if (_library.SelectedMedia?.Type != MediaType.Video || _videoPlaybackController == null)
+            if (_videoPlaybackController == null || (positionSeconds <= 0 && wasPlaying))
             {
                 return;
             }
 
-            if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero)
+            for (var attempt = 0; attempt < 20; attempt++)
             {
-                continue;
+                await Task.Delay(100, cancellationToken);
+                if (!string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                    || _library.SelectedMedia?.Type != MediaType.Video || _videoPlaybackController == null)
+                {
+                    return;
+                }
+
+                if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero)
+                {
+                    continue;
+                }
+
+                if (positionSeconds > 0)
+                {
+                    _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(positionSeconds));
+                }
+
+                if (!wasPlaying && _videoPlaybackController.IsPlaying)
+                {
+                    _videoPlaybackController.TogglePlayPause();
+                }
+
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer docked session or teardown.
+        }
+    }
+
+    private async Task RestoreVideoRotationAsync(double rotationDegrees, string expectedMediaId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_videoPlaybackController == null || rotationDegrees <= 0)
+            {
+                return;
             }
 
-            if (positionSeconds > 0)
+            // ShowVideo resets rotation per media switch, so wait until the source
+            // is actually open before applying the transferred rotation.
+            for (var attempt = 0; attempt < 20; attempt++)
             {
-                _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(positionSeconds));
-            }
+                await Task.Delay(100, cancellationToken);
+                if (_videoPlaybackController == null)
+                {
+                    return;
+                }
 
-            if (!wasPlaying && _videoPlaybackController.IsPlaying)
-            {
-                _videoPlaybackController.TogglePlayPause();
-            }
+                if (!string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                    || _library.SelectedMedia?.Type != MediaType.Video)
+                {
+                    return;
+                }
 
-            return;
+                if (_videoPlaybackController.GetCurrentVideoDuration() > TimeSpan.Zero)
+                {
+                    _videoPlaybackController.SetVideoRotation(rotationDegrees);
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer docked session or teardown.
         }
     }
 
@@ -433,6 +496,7 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
 
     private Task NavigateRelativeAsync(int offset)
     {
+        CancelPendingRestore();
         if (_controller == null)
         {
             return Task.CompletedTask;
@@ -519,7 +583,10 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
                 e.GetPosition(PlayerRoot),
                 media,
                 ToggleNumpadShortcutHint,
-                GetNumpadShortcutHintMenuText()));
+                GetNumpadShortcutHintMenuText(),
+                media.Type == MediaType.Video && _videoPlaybackController is { } playback
+                    ? angle => playback.RotateVideoBy(angle)
+                    : null));
         e.Handled = true;
     }
 
@@ -721,8 +788,8 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             _activePlayerNavigationEdge = PlayerNavigationEdge.None;
         }
 
-        PreviousMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0;
-        NextMediaCue.Opacity = canShow && _activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0;
+        PreviousMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Left ? 1 : 0.55) : 0;
+        NextMediaCue.Opacity = canShow ? (_activePlayerNavigationEdge == PlayerNavigationEdge.Right ? 1 : 0.55) : 0;
     }
 
     private void UpdatePlayerNavigationCue(Windows.Foundation.Point pointerPosition)
@@ -991,26 +1058,44 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
 
         var deletePlan = _controller.BuildDeletePlan(media.Id);
         var replacement = deletePlan.Replacement;
+        var deletedPath = media.FileSystemPath;
         AppTraceLogger.Log(
             "DockedMediaSession",
-            $"DeleteCurrentMediaAsync start. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}', ReplacementId='{replacement?.Id ?? "<null>"}'.");
+            $"DeleteCurrentMediaAsync start. MediaId='{media.Id}', File='{media.FileName}', Path='{deletedPath}', ReplacementId='{replacement?.Id ?? "<null>"}'.");
 
-        _videoPlaybackController?.PauseAndClearSource();
-        _imagePreviewController?.Clear();
+        var switchedToReplacement = replacement != null && _controller.TrySelect(replacement.Id);
+        if (switchedToReplacement)
+        {
+            AppTraceLogger.Log(
+                "DockedMediaSession",
+                $"Selected replacement before file delete. CurrentMediaId='{media.Id}', ReplacementId='{replacement!.Id}'.");
+            OpenCurrentMedia();
+            FocusPlayer();
+            await UiThreadYield.NextPassAsync();
+        }
+        else
+        {
+            _videoPlaybackController?.PauseAndClearSource();
+            _imagePreviewController?.Clear();
+        }
 
         try
         {
             await Task.Run(() =>
             {
-                if (File.Exists(media.FileSystemPath))
+                if (File.Exists(deletedPath))
                 {
-                    RecycleBinHelper.SendToRecycleBin(media.FileSystemPath);
+                    RecycleBinHelper.SendToRecycleBin(deletedPath);
                 }
             });
         }
         catch
         {
-            OpenCurrentMedia();
+            if (_controller.TrySelect(media.Id))
+            {
+                OpenCurrentMedia();
+            }
+
             FocusPlayer();
             throw;
         }
@@ -1025,7 +1110,12 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
             return;
         }
 
-        OpenCurrentMedia();
+        if (!switchedToReplacement
+            || !string.Equals(_controller.CurrentMedia.Id, replacement?.Id, StringComparison.Ordinal))
+        {
+            OpenCurrentMedia();
+        }
+
         FocusPlayer();
     }
 
@@ -1129,9 +1219,25 @@ public sealed partial class DockedMediaSessionView : UserControl, IDisposable
         }
 
         _isDisposed = true;
+        _restoreCancellation.Cancel();
+        _restoreCancellation.Dispose();
         DetachPlayerEvents();
         ResetSessionState();
         _library.Dispose();
+    }
+
+    private void CancelPendingRestore()
+    {
+        if (_restoreCancellation.IsCancellationRequested)
+        {
+            _restoreCancellation.Dispose();
+            _restoreCancellation = new CancellationTokenSource();
+            return;
+        }
+
+        _restoreCancellation.Cancel();
+        _restoreCancellation.Dispose();
+        _restoreCancellation = new CancellationTokenSource();
     }
 }
 
@@ -1140,4 +1246,5 @@ internal sealed record DockedSessionContextMenuRequestedEventArgs(
     Windows.Foundation.Point Position,
     MediaItemViewModel Media,
     Action ToggleShortcutHint,
-    string ShortcutHintMenuText);
+    string ShortcutHintMenuText,
+    Action<double>? RotateVideo);

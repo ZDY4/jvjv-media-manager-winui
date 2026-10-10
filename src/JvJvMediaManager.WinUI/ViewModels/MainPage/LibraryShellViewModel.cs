@@ -515,14 +515,31 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     {
         AppTraceLogger.Log("LibraryShell", "InitializeAsync start.");
         _isDisposed = false;
-        // WP-A: wait for background DB startup maintenance (dedup, FTS rebuild,
-        // sort indexes) before querying so results are stable and indexes exist.
-        // Keep the UI synchronization context for the collection updates below.
-        // Folder watchers stay unarmed until this completes so they cannot write
-        // the DB while CREATE INDEX / FTS rebuild / duplicate merge still hold locks.
-        await _db.StartupMaintenanceTask;
+        // First paint should not wait for duplicate-merge / FTS / CREATE INDEX.
+        // Folder watchers stay unarmed until maintenance finishes so they cannot
+        // write the DB while those jobs still hold locks.
+        var maintenancePending = !_db.StartupMaintenanceTask.IsCompleted;
         await ReloadPlaylistsAsync();
         await RefreshMediaAsync(false);
+        if (maintenancePending)
+        {
+            AppTraceLogger.Log("LibraryShell", "First library page shown before startup maintenance completed.");
+            await _db.StartupMaintenanceTask;
+            if (!_isDisposed)
+            {
+                await RefreshMediaAsync(true, updateLoadingState: false);
+            }
+        }
+        else
+        {
+            await _db.StartupMaintenanceTask;
+        }
+
+        if (_isDisposed)
+        {
+            return;
+        }
+
         ArmFolderWatchers();
         ReportInterruptedScanIfNeeded();
         QueueStartupCacheValidation();
@@ -632,8 +649,6 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         var currentFolderPaths = _watchedFolderManager.GetFolderPaths(normalized);
         AppTraceLogger.Log("LibraryShell", $"UpdateWatchedFolders normalized. CurrentCount={currentFolderPaths.Count}, Current=[{string.Join(", ", currentFolderPaths)}].");
 
-        await RemoveMediaOutsideWatchedFoldersAsync(previousFolderPaths, currentFolderPaths);
-
         WatchedFolders.Clear();
         foreach (var folder in normalized)
         {
@@ -649,6 +664,8 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             AppTraceLogger.Log("LibraryShell", "UpdateWatchedFolders queueing media refresh.");
             QueueRefreshMedia(false, LibraryRefreshSource.WatchedFolderSettings);
         }
+
+        await RemoveMediaOutsideWatchedFoldersAsync(previousFolderPaths, currentFolderPaths);
     }
 
     public async Task UpdateWatchedFoldersAndImportNewAsync(IEnumerable<WatchedFolder> folders)
@@ -697,21 +714,15 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             return;
         }
 
-        var staleIds = (await _db.GetMediaEntriesUnderFoldersAsync(removedFolderPaths))
-            .Where(entry => currentFolderPaths.All(folder => !PathHelpers.IsPathUnderFolder(entry.Path, folder)))
-            .Select(entry => entry.Id)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders removedFolders=[{string.Join(", ", removedFolderPaths)}], staleMediaCount={staleIds.Count}.");
-        if (staleIds.Count == 0)
+        AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders removedFolders=[{string.Join(", ", removedFolderPaths)}].");
+        if (currentFolderPaths.Count == 0)
         {
-            return;
+            _thumbnails.ClearCache();
+            _timelineThumbnails.ClearCache();
         }
 
-        _thumbnails.ClearCacheForMediaIds(staleIds);
-        _timelineThumbnails.ClearCacheForMediaIds(staleIds);
-        await _db.DeleteMediaAsync(staleIds);
-        AppTraceLogger.Log("LibraryShell", $"RemoveMediaOutsideWatchedFolders deleted stale media records and caches. DeletedCount={staleIds.Count}.");
+        await Task.Run(() => _db.DeleteMediaUnderFoldersAsync(removedFolderPaths, currentFolderPaths));
+        AppTraceLogger.Log("LibraryShell", "RemoveMediaOutsideWatchedFolders deleted stale media records.");
     }
 
     private void ArmFolderWatchers()
@@ -1468,21 +1479,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             }
 
             var summariesTimestamp = Stopwatch.GetTimestamp();
-            _mediaFolderSummaries = await QueryMediaFolderSummariesAsync();
-            var summariesElapsedMs = Stopwatch.GetElapsedTime(summariesTimestamp).TotalMilliseconds;
-            if (refreshVersion != Volatile.Read(ref _refreshVersion))
-            {
-                AppTraceLogger.LogSampled(
-                    "LibraryShell",
-                    "refresh-media-skip-stale",
-                    $"RefreshMediaAsync skipped stale request after summaries. Version={refreshVersion}, CurrentVersion={Volatile.Read(ref _refreshVersion)}.",
-                    TimeSpan.FromSeconds(1));
-                return;
-            }
-
-            var firstGroupTimestamp = Stopwatch.GetTimestamp();
-            await RunOnUiThreadAsync(() => RebuildMediaFolderGroups(allowLoadedMediaVisibilityRecovery: false));
-            var firstGroupElapsedMs = Stopwatch.GetElapsedTime(firstGroupTimestamp).TotalMilliseconds;
+            var summariesTask = QueryMediaFolderSummariesAsync();
             var pageRefreshTimestamp = Stopwatch.GetTimestamp();
             Interlocked.Increment(ref _suppressMediaFolderGroupRebuildSchedule);
             try
@@ -1502,12 +1499,33 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                     "refresh-media-skip-stale",
                     $"RefreshMediaAsync skipped stale request after item refresh. Version={refreshVersion}, CurrentVersion={Volatile.Read(ref _refreshVersion)}.",
                     TimeSpan.FromSeconds(1));
+                try
+                {
+                    await summariesTask;
+                }
+                catch (Exception ex)
+                {
+                    AppTraceLogger.LogException("LibraryShell", "Stale refresh discarded folder summaries.", ex);
+                }
+
                 return;
             }
 
-            var secondGroupTimestamp = Stopwatch.GetTimestamp();
+            _mediaFolderSummaries = await summariesTask;
+            var summariesElapsedMs = Stopwatch.GetElapsedTime(summariesTimestamp).TotalMilliseconds;
+            if (refreshVersion != Volatile.Read(ref _refreshVersion))
+            {
+                AppTraceLogger.LogSampled(
+                    "LibraryShell",
+                    "refresh-media-skip-stale",
+                    $"RefreshMediaAsync skipped stale request after summaries. Version={refreshVersion}, CurrentVersion={Volatile.Read(ref _refreshVersion)}.",
+                    TimeSpan.FromSeconds(1));
+                return;
+            }
+
+            var groupTimestamp = Stopwatch.GetTimestamp();
             await RunOnUiThreadAsync(() => RebuildMediaFolderGroups(allowLoadedMediaVisibilityRecovery: false));
-            var secondGroupElapsedMs = Stopwatch.GetElapsedTime(secondGroupTimestamp).TotalMilliseconds;
+            var groupElapsedMs = Stopwatch.GetElapsedTime(groupTimestamp).TotalMilliseconds;
             var restoreSelectionElapsedMs = 0d;
             if (refreshVersion == _refreshVersion)
             {
@@ -1528,7 +1546,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             AppTraceLogger.LogSampled(
                 "LibraryShell",
                 "refresh-media-complete",
-                $"RefreshMediaAsync completed. Version={refreshVersion}, ItemCount={FilteredMediaItems.Count}, SelectedId='{SelectedMedia?.Id ?? "<null>"}', SummariesMs={summariesElapsedMs:0}, FirstGroupMs={firstGroupElapsedMs:0}, PageRefreshMs={pageRefreshElapsedMs:0}, SecondGroupMs={secondGroupElapsedMs:0}, RestoreSelectionMs={restoreSelectionElapsedMs:0}, PrunedStoreItems={prunedStoreItems}, PruneStoreMs={pruneStoreElapsedMs:0}, TotalMs={stopwatch.ElapsedMilliseconds}.",
+                $"RefreshMediaAsync completed. Version={refreshVersion}, ItemCount={FilteredMediaItems.Count}, SelectedId='{SelectedMedia?.Id ?? "<null>"}', SummariesMs={summariesElapsedMs:0}, FirstGroupMs=0, PageRefreshMs={pageRefreshElapsedMs:0}, SecondGroupMs={groupElapsedMs:0}, RestoreSelectionMs={restoreSelectionElapsedMs:0}, PrunedStoreItems={prunedStoreItems}, PruneStoreMs={pruneStoreElapsedMs:0}, TotalMs={stopwatch.ElapsedMilliseconds}.",
                 TimeSpan.FromSeconds(1));
         }
         catch (Exception ex)
@@ -1828,24 +1846,59 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             TimeSpan.FromSeconds(1));
     }
 
+    public bool TryApplyCachedThumbnail(MediaItemViewModel item)
+    {
+        if (item.Thumbnail != null)
+        {
+            return true;
+        }
+
+        if (_thumbnails.TryGetCachedThumbnail(item.Media, out var source) && source != null)
+        {
+            item.Thumbnail = source;
+            return true;
+        }
+
+        return false;
+    }
+
     public async Task EnsureThumbnailAsync(MediaItemViewModel item, CancellationToken cancellationToken = default)
     {
+        if (item.Thumbnail != null)
+        {
+            return;
+        }
+
+        if (_thumbnails.TryGetCachedThumbnail(item.Media, out var cached) && cached != null)
+        {
+            SetThumbnailSafe(item, cached, item.ThumbnailIdentityVersion);
+            return;
+        }
+
         if (!item.TryBeginThumbnailLoad())
         {
             return;
         }
 
+        var thumbnailIdentityVersion = item.ThumbnailIdentityVersion;
         try
         {
             var source = await _thumbnails.GetThumbnailAsync(item.Media, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            if (source != null)
+            if (source != null
+                && item.ThumbnailIdentityVersion == thumbnailIdentityVersion)
             {
-                SetThumbnailSafe(item, source);
+                SetThumbnailSafe(item, source, thumbnailIdentityVersion);
                 return;
             }
 
-            item.RecordThumbnailLoadFailure();
+            // A refresh may have replaced the media metadata while the old
+            // request was still running. Its result is stale and must not be
+            // treated as a generation failure or written into the new item.
+            if (item.ThumbnailIdentityVersion == thumbnailIdentityVersion)
+            {
+                item.RecordThumbnailLoadFailure();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -2072,7 +2125,9 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     public async Task ClearInvalidThumbnailCacheAsync()
     {
         AppTraceLogger.Log("LibraryShell", $"ClearInvalidThumbnailCache start. LoadedCount={FilteredMediaItems.Count}.");
-        var deleted = _thumbnails.ClearInvalidCache(await _db.GetAllMediaAsync());
+        // H2: stream the library in bounded pages and sweep the cache directory
+        // on background threads instead of loading all media into memory.
+        var deleted = await _thumbnails.ClearInvalidCacheAsync(_db.StreamAllMediaAsync());
         StatusMessage = deleted == 0
             ? "没有发现失效的缩略图缓存。"
             : $"已清理 {deleted} 个失效的缩略图缓存。";
@@ -2082,6 +2137,33 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     public Task<IReadOnlyList<string>> GetAllTagsAsync()
     {
         return _db.GetAllTagsAsync();
+    }
+
+    /// <summary>
+    /// P-rotation: persists the per-media display rotation and keeps the
+    /// in-memory view model in sync so later refreshes do not clobber it.
+    /// </summary>
+    public async Task SaveMediaRotationAsync(string mediaId, int rotation)
+    {
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            return;
+        }
+
+        var normalized = (int)Math.Round(rotation / 90.0) * 90 % 360;
+        if (normalized < 0)
+        {
+            normalized += 360;
+        }
+
+        await _db.SetMediaRotationAsync(mediaId, normalized);
+        var item = FilteredMediaItems.FirstOrDefault(media => string.Equals(media.Id, mediaId, StringComparison.Ordinal));
+        if (item != null)
+        {
+            item.Media.Rotation = normalized;
+        }
+
+        AppTraceLogger.Log("LibraryShell", $"SaveMediaRotationAsync completed. MediaId='{mediaId}', Rotation={normalized}.");
     }
 
     private async Task<bool> AddMediaInternalAsync(Func<CancellationToken, Task<int>> loader, string successMessage)
@@ -2473,7 +2555,11 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             group.SetTreeDisplay(node.DisplayName, node.TreePath, node.Depth);
             group.SetTotalCount(node.TotalCount, hasDirectMedia);
             group.SetCollapsedFromProjection(isCollapsed);
-            group.SetItems(loadedItems ?? Enumerable.Empty<MediaItemViewModel>());
+            if (loadedItems is { Count: > 0 } || !group.HasLoadedItems)
+            {
+                group.SetItems(loadedItems ?? Enumerable.Empty<MediaItemViewModel>());
+            }
+
             nextGroups.Add(group);
         }
 
@@ -2562,7 +2648,65 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             return;
         }
 
+        // H5: page appends are the hot path while scrolling; append the new
+        // items straight into their existing folder groups instead of
+        // re-grouping the whole loaded window (O(loaded)) per page. Any shape
+        // change (new folder, removal, move, reset) still takes the full
+        // rebuild, which also reconciles any fast-path state.
+        if (e.Action == NotifyCollectionChangedAction.Add
+            && e.NewItems != null
+            && TryAppendToExistingFolderGroups(e.NewItems))
+        {
+            return;
+        }
+
         ScheduleRebuildMediaFolderGroups();
+    }
+
+    private bool TryAppendToExistingFolderGroups(System.Collections.IList newItems)
+    {
+        var additionsByPath = new Dictionary<string, List<MediaItemViewModel>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in newItems)
+        {
+            if (entry is not MediaItemViewModel item
+                || string.IsNullOrWhiteSpace(item.FolderPath))
+            {
+                return false;
+            }
+
+            // Group keys are normalized folder paths, same as the lookups used
+            // by folder-group navigation elsewhere.
+            var normalizedPath = PathHelpers.NormalizeFolderPath(item.FolderPath);
+            if (!additionsByPath.TryGetValue(normalizedPath, out var items))
+            {
+                items = new List<MediaItemViewModel>();
+                additionsByPath[normalizedPath] = items;
+            }
+
+            items.Add(item);
+        }
+
+        // Every folder must already have a group; otherwise a new folder
+        // appeared and the hierarchy projection needs a full rebuild.
+        foreach (var folderPath in additionsByPath.Keys)
+        {
+            if (!_mediaFolderGroupsByPath.ContainsKey(folderPath))
+            {
+                return false;
+            }
+        }
+
+        foreach (var (folderPath, items) in additionsByPath)
+        {
+            _mediaFolderGroupsByPath[folderPath].AppendLoadedItems(items);
+        }
+
+        AppTraceLogger.LogSampled(
+            "LibraryShell",
+            "media-folder-groups-incremental-append",
+            $"Appended loaded media to existing folder groups incrementally. ItemCount={newItems.Count}, AffectedFolderCount={additionsByPath.Count}, LoadedCount={FilteredMediaItems.Count}.",
+            TimeSpan.FromSeconds(1));
+        return true;
     }
 
     private void ScheduleRebuildMediaFolderGroups()
@@ -2771,14 +2915,16 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                 Limit = _mediaPageStore.PageSize
             };
             var result = await _library.QueryPageAsync(query);
-            var loadedItems = await RunOnUiThreadAsync(() => _mediaItemStore.GetOrUpdateRange(result.Items));
-            _folderGroupDirectItemsByPath[normalizedFolderPath] = loadedItems;
-            await RunOnUiThreadAsync(() =>
+            var loadedItems = await RunOnUiThreadAsync(() =>
             {
+                var items = _mediaItemStore.GetOrUpdateRange(result.Items);
+                _folderGroupDirectItemsByPath[normalizedFolderPath] = items;
                 if (_mediaFolderGroupsByPath.TryGetValue(normalizedFolderPath, out var group))
                 {
-                    group.SetItems(loadedItems);
+                    group.SetItems(items);
                 }
+
+                return items;
             });
 
             AppTraceLogger.LogSampled(
@@ -2872,9 +3018,17 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
     }
 
-    private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source)
+    private void SetThumbnailSafe(MediaItemViewModel item, ImageSource source, int expectedIdentityVersion)
     {
-        _dispatcher.Enqueue(() => item.Thumbnail = source, failureContext: "SetThumbnailSafe failed.");
+        _dispatcher.Enqueue(
+            () =>
+            {
+                if (item.ThumbnailIdentityVersion == expectedIdentityVersion)
+                {
+                    item.Thumbnail = source;
+                }
+            },
+            failureContext: "SetThumbnailSafe failed.");
     }
 
     private void QueueRefreshMedia(

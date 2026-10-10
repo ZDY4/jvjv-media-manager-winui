@@ -13,6 +13,7 @@ var registry = new TestRegistry();
 MediaTransactionTests.Register(registry);
 ConnectionConfigTests.Register(registry);
 MediaPagingContractTests.Register(registry);
+MediaPositionContractTests.Register(registry);
 KeysetPaginationTests.Register(registry);
 KeysetScaleContractTests.Register(registry);
 FingerprintCancellationTests.Register(registry);
@@ -20,6 +21,7 @@ DiskCacheTrimmerTests.Register(registry);
 LogGovernanceTests.Register(registry);
 SettingsFlushTests.Register(registry);
 PlaybackLeaseTests.Register(registry);
+PlayerNavigationWindowTests.Register(registry);
 
 string? suiteFilter = null;
 for (var i = 0; i < args.Length; i++)

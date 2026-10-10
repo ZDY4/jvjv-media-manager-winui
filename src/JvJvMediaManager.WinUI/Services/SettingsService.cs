@@ -51,7 +51,10 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
 
     public string PlaybackMode => ReadSettings(settings => settings.PlaybackMode ?? string.Empty);
 
-    public bool PlaybackAutoAdvanceEnabled => ReadSettings(settings => settings.PlaybackAutoAdvanceEnabled ?? false);
+    // Auto-advance was the original playback default. Keep old settings files
+    // (which do not contain this nullable property) on that behavior while
+    // still honoring an explicit opt-out persisted by the user.
+    public bool PlaybackAutoAdvanceEnabled => ReadSettings(settings => settings.PlaybackAutoAdvanceEnabled ?? true);
 
     public bool ShuffleVideoOnly => ReadSettings(settings => settings.ShuffleVideoOnly ?? false);
 

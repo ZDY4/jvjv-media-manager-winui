@@ -31,6 +31,11 @@ public sealed class MediaBrowserController : IDisposable
     private static readonly TimeSpan PostMutationSelectionSuppressionWindow = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ViewModelSelectionSettleWindow = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan VisibleThumbnailLoadDelay = TimeSpan.FromMilliseconds(140);
+    private static readonly TimeSpan ThumbnailPrefetchDelay = TimeSpan.FromMilliseconds(600);
+    // Keep prefetch bounded. Prefetch work shares the thumbnail generation
+    // gate with visible items and must not build an unbounded queue while the
+    // user is scrolling through a large library.
+    private const int MaxThumbnailPrefetchItems = 8;
     private static readonly TimeSpan ContextMenuDuplicateSuppression = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan ProgrammaticScrollIncrementalLoadSuppression = TimeSpan.FromMilliseconds(800);
     private const int MaxMediaScrollAttempts = 3;
@@ -51,11 +56,13 @@ public sealed class MediaBrowserController : IDisposable
     private readonly MediaContextMenuCoordinator _contextMenuCoordinator;
     private readonly Func<IEnumerable<string>, bool, Task> _updateWatchedFoldersAsync;
     private readonly Func<string, string, Task> _showInfoAsync;
-    private readonly DebounceDispatcher _debouncer = new();
     private readonly MediaSelectionSyncController _selectionSync = new();
     private readonly DispatcherTimer _dragSelectionAutoScrollTimer = new();
     private readonly DispatcherTimer _visibleThumbnailLoadTimer = new();
+    private readonly DispatcherTimer _thumbnailPrefetchTimer = new();
     private readonly Dictionary<string, CancellationTokenSource> _thumbnailLoadCancellations = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _thumbnailPrefetchIds = new(StringComparer.Ordinal);
+    private readonly object _thumbnailLoadSync = new();
     private int _itemsChangedVisibilityVersion;
     private int _itemsChangedVisibilityVerificationScheduled;
     private int _isLoadingMoreMedia;
@@ -110,6 +117,8 @@ public sealed class MediaBrowserController : IDisposable
         _dragSelectionAutoScrollTimer.Tick += DragSelectionAutoScrollTimer_Tick;
         _visibleThumbnailLoadTimer.Interval = VisibleThumbnailLoadDelay;
         _visibleThumbnailLoadTimer.Tick += VisibleThumbnailLoadTimer_Tick;
+        _thumbnailPrefetchTimer.Interval = ThumbnailPrefetchDelay;
+        _thumbnailPrefetchTimer.Tick += ThumbnailPrefetchTimer_Tick;
 
         _libraryPane.HeaderView.RefreshButton.Click += Refresh_Click;
         _libraryPane.HeaderView.CancelScanButton.Click += CancelScan_Click;
@@ -221,6 +230,8 @@ public sealed class MediaBrowserController : IDisposable
         _dragSelectionAutoScrollTimer.Stop();
         _visibleThumbnailLoadTimer.Tick -= VisibleThumbnailLoadTimer_Tick;
         _visibleThumbnailLoadTimer.Stop();
+        _thumbnailPrefetchTimer.Tick -= ThumbnailPrefetchTimer_Tick;
+        _thumbnailPrefetchTimer.Stop();
         CancelAllThumbnailLoads();
         EndDragSelection();
     }
@@ -541,10 +552,15 @@ public sealed class MediaBrowserController : IDisposable
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         var query = SearchBox.Text ?? string.Empty;
-        _debouncer.Debounce(TimeSpan.FromMilliseconds(250), () =>
-        {
-            _page.DispatcherQueue.TryEnqueue(() => _viewModel.SearchQuery = query);
-        });
+        _page.DispatcherQueue.TryEnqueue(
+            DispatcherQueuePriority.Low,
+            () =>
+            {
+                if (string.Equals(SearchBox.Text ?? string.Empty, query, StringComparison.Ordinal))
+                {
+                    _viewModel.SearchQuery = query;
+                }
+            });
     }
 
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -1035,11 +1051,10 @@ public sealed class MediaBrowserController : IDisposable
             if (!isStillRealizedInActiveView)
             {
                 CancelThumbnailLoad(media);
-                if (!media.IsSelected && !media.IsNowPlaying)
-                {
-                    media.Thumbnail = null;
-                    media.CancelThumbnailLoad();
-                }
+                // Keep an already-decoded bitmap on the view-model so
+                // scrolling back is instant. Clearing it here is what made
+                // the library look empty after a short fling.
+                media.CancelThumbnailLoad();
             }
 
             AppTraceLogger.LogSampled(
@@ -1049,6 +1064,8 @@ public sealed class MediaBrowserController : IDisposable
                 TimeSpan.FromSeconds(3));
             return;
         }
+
+        _viewModel.TryApplyCachedThumbnail(media);
 
         if (args.Phase == 0)
         {
@@ -1530,6 +1547,15 @@ public sealed class MediaBrowserController : IDisposable
     private async void MediaScrollViewer_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         _isMediaViewScrolling = e.IsIntermediate;
+        if (e.IsIntermediate)
+        {
+            // A new scroll invalidates the look-ahead window. Stop prefetch
+            // immediately instead of waiting for the settle timer, otherwise
+            // stale work can occupy the generation gate while visible items
+            // are being realized.
+            _thumbnailPrefetchTimer.Stop();
+            CancelThumbnailPrefetchLoads();
+        }
         ScheduleVisibleThumbnailLoad();
 
         if (IsIncrementalLoadSuppressedForProgrammaticScroll())
@@ -1565,7 +1591,20 @@ public sealed class MediaBrowserController : IDisposable
 
     private void ScheduleVisibleThumbnailLoad()
     {
+        ScheduleVisibleThumbnailLoad(VisibleThumbnailLoadDelay);
+    }
+
+    private void ScheduleVisibleThumbnailLoad(TimeSpan delay)
+    {
+        var queue = _page.DispatcherQueue;
+        if (queue != null && !queue.HasThreadAccess)
+        {
+            queue.TryEnqueue(() => ScheduleVisibleThumbnailLoad(delay));
+            return;
+        }
+
         _visibleThumbnailLoadTimer.Stop();
+        _visibleThumbnailLoadTimer.Interval = delay > TimeSpan.Zero ? delay : VisibleThumbnailLoadDelay;
         _visibleThumbnailLoadTimer.Start();
     }
 
@@ -1577,15 +1616,110 @@ public sealed class MediaBrowserController : IDisposable
 
     private void LoadRealizedThumbnails(ListViewBase listViewBase)
     {
+        // Any outstanding prefetch work is stale once the realized window has
+        // changed. Cancel it before queuing visible items so visible work can
+        // acquire the generation gate promptly.
+        CancelThumbnailPrefetchLoads();
+
         // WP-B: iterate realized containers only. The previous loop over all
         // loaded items with ContainerFromItem per item was O(loaded) per scroll
         // settle and janked with large libraries.
+        var earliestRetry = TimeSpan.Zero;
         foreach (var container in EnumerateRealizedContainers(listViewBase))
         {
-            if (container.Content is MediaItemViewModel item && item.Thumbnail == null)
+            if (container.Content is not MediaItemViewModel item
+                || item.Thumbnail != null
+                || _viewModel.TryApplyCachedThumbnail(item))
             {
-                StartThumbnailLoad(item);
+                continue;
             }
+
+            if (IsThumbnailLoadInProgress(item.Id))
+            {
+                continue;
+            }
+
+            var retryRemaining = item.GetThumbnailRetryRemaining();
+            if (retryRemaining > TimeSpan.Zero)
+            {
+                if (earliestRetry == TimeSpan.Zero || retryRemaining < earliestRetry)
+                {
+                    earliestRetry = retryRemaining;
+                }
+
+                continue;
+            }
+
+            StartThumbnailLoad(item);
+        }
+
+        if (earliestRetry > TimeSpan.Zero)
+        {
+            ScheduleVisibleThumbnailLoad(earliestRetry + TimeSpan.FromMilliseconds(30));
+        }
+
+        // H4: once the visible set is satisfied, warm up the next items so the
+        // next scroll step hits memory/disk cache instead of paying ffmpeg or
+        // shell-thumbnail cost interactively.
+        _thumbnailPrefetchTimer.Stop();
+        _thumbnailPrefetchTimer.Start();
+    }
+
+    private void ThumbnailPrefetchTimer_Tick(object? sender, object e)
+    {
+        _thumbnailPrefetchTimer.Stop();
+
+        // Visible loads take priority; skip while scrolling or marquee-selecting.
+        if (_isMediaViewScrolling || _dragSelection.IsSelecting)
+        {
+            CancelThumbnailPrefetchLoads();
+            return;
+        }
+
+        var listViewBase = GetActiveMediaView();
+        if (listViewBase == null)
+        {
+            return;
+        }
+
+        var lastRealizedIndex = -1;
+        foreach (var container in EnumerateRealizedContainers(listViewBase))
+        {
+            var index = listViewBase.IndexFromContainer(container);
+            if (index > lastRealizedIndex)
+            {
+                lastRealizedIndex = index;
+            }
+        }
+
+        if (lastRealizedIndex < 0)
+        {
+            return;
+        }
+
+        var loaded = _viewModel.FilteredMediaItems;
+        var prefetched = 0;
+        for (var index = lastRealizedIndex + 1;
+             index < loaded.Count && prefetched < MaxThumbnailPrefetchItems;
+             index++)
+        {
+            var item = loaded[index];
+            if (item.Thumbnail != null || IsThumbnailLoadInProgress(item.Id))
+            {
+                continue;
+            }
+
+            StartThumbnailLoad(item, isPrefetch: true);
+            prefetched++;
+        }
+
+        if (prefetched > 0)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaBrowser",
+                "thumbnail-prefetch",
+                $"Prefetched thumbnails ahead of the visible window. Prefetched={prefetched}, LastRealizedIndex={lastRealizedIndex}, LoadedCount={loaded.Count}.",
+                TimeSpan.FromSeconds(2));
         }
     }
 
@@ -1636,15 +1770,29 @@ public sealed class MediaBrowserController : IDisposable
         }
     }
 
-    private void StartThumbnailLoad(MediaItemViewModel item)
+    private void StartThumbnailLoad(MediaItemViewModel item, bool isPrefetch = false)
     {
-        if (_thumbnailLoadCancellations.ContainsKey(item.Id))
+        if (_viewModel.TryApplyCachedThumbnail(item))
         {
             return;
         }
 
         var cancellation = new CancellationTokenSource();
-        _thumbnailLoadCancellations[item.Id] = cancellation;
+        lock (_thumbnailLoadSync)
+        {
+            if (_thumbnailLoadCancellations.ContainsKey(item.Id))
+            {
+                cancellation.Dispose();
+                return;
+            }
+
+            _thumbnailLoadCancellations.Add(item.Id, cancellation);
+            if (isPrefetch)
+            {
+                _thumbnailPrefetchIds.Add(item.Id);
+            }
+        }
+
         _ = LoadThumbnailAsync(item, cancellation);
     }
 
@@ -1656,31 +1804,108 @@ public sealed class MediaBrowserController : IDisposable
         }
         finally
         {
-            if (_thumbnailLoadCancellations.TryGetValue(item.Id, out var current)
-                && ReferenceEquals(current, cancellation))
+            lock (_thumbnailLoadSync)
             {
-                _thumbnailLoadCancellations.Remove(item.Id);
+                if (_thumbnailLoadCancellations.TryGetValue(item.Id, out var current)
+                    && ReferenceEquals(current, cancellation))
+                {
+                    _thumbnailLoadCancellations.Remove(item.Id);
+                    _thumbnailPrefetchIds.Remove(item.Id);
+                }
+
+                // A cancelled request may have been removed already. In that
+                // case a newer request owns the id and must keep its marker.
             }
 
             cancellation.Dispose();
+
+            if (item.Thumbnail == null)
+            {
+                var retryRemaining = item.GetThumbnailRetryRemaining();
+                ScheduleVisibleThumbnailLoad(
+                    retryRemaining > TimeSpan.Zero
+                        ? retryRemaining + TimeSpan.FromMilliseconds(30)
+                        : VisibleThumbnailLoadDelay);
+            }
         }
     }
 
     private void CancelThumbnailLoad(MediaItemViewModel item)
     {
-        if (_thumbnailLoadCancellations.Remove(item.Id, out var cancellation))
+        CancellationTokenSource? cancellation = null;
+        lock (_thumbnailLoadSync)
+        {
+            _thumbnailPrefetchIds.Remove(item.Id);
+            _thumbnailLoadCancellations.Remove(item.Id, out cancellation);
+        }
+
+        if (cancellation != null)
+        {
+            CancelThumbnailRequest(cancellation);
+        }
+    }
+
+    private void CancelThumbnailPrefetchLoads()
+    {
+        List<CancellationTokenSource> cancellations;
+        lock (_thumbnailLoadSync)
+        {
+            if (_thumbnailPrefetchIds.Count == 0)
+            {
+                return;
+            }
+
+            cancellations = new List<CancellationTokenSource>(_thumbnailPrefetchIds.Count);
+            foreach (var mediaId in _thumbnailPrefetchIds)
+            {
+                if (_thumbnailLoadCancellations.Remove(mediaId, out var cancellation))
+                {
+                    cancellations.Add(cancellation);
+                }
+            }
+
+            _thumbnailPrefetchIds.Clear();
+        }
+
+        foreach (var cancellation in cancellations)
+        {
+            CancelThumbnailRequest(cancellation);
+        }
+    }
+
+    private bool IsThumbnailLoadInProgress(string mediaId)
+    {
+        lock (_thumbnailLoadSync)
+        {
+            return _thumbnailLoadCancellations.ContainsKey(mediaId);
+        }
+    }
+
+    private static void CancelThumbnailRequest(CancellationTokenSource cancellation)
+    {
+        try
         {
             cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The request completed and disposed its source concurrently.
         }
     }
 
     private void CancelAllThumbnailLoads()
     {
-        var cancellations = _thumbnailLoadCancellations.Values.ToList();
-        _thumbnailLoadCancellations.Clear();
+        List<CancellationTokenSource> cancellations;
+        lock (_thumbnailLoadSync)
+        {
+            cancellations = _thumbnailLoadCancellations.Values.ToList();
+            _thumbnailLoadCancellations.Clear();
+            _thumbnailPrefetchIds.Clear();
+        }
+
         foreach (var cancellation in cancellations)
         {
-            cancellation.Cancel();
+            CancelThumbnailRequest(cancellation);
         }
     }
 

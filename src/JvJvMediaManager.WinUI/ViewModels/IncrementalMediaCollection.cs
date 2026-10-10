@@ -489,6 +489,11 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
         return -1;
     }
 
+    public int IndexOfMediaId(string mediaId)
+    {
+        return IndexOfMediaId(mediaId, 0);
+    }
+
     private void RebuildIndex()
     {
         _indexByMediaId.Clear();

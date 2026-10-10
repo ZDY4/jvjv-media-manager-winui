@@ -132,6 +132,15 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
         // Folder groups are a projection of the loaded media list. Keep these references intact
         // so selection, navigation, and deletion can use object identity safely.
         var nextItems = items.ToList();
+        if (nextItems.Count == 0 && _items.Count > 0)
+        {
+            // A projection rebuild can race a folder-group load and pass an
+            // empty list. Keep the items already shown rather than dumping
+            // the GridView and immediately re-inserting them.
+            ApplyVisibleItems();
+            return;
+        }
+
         if (_items.Count == nextItems.Count
             && _items.Select(item => item.Id).SequenceEqual(nextItems.Select(item => item.Id), StringComparer.Ordinal))
         {
@@ -153,6 +162,35 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
         foreach (var item in nextItems)
         {
             _itemIds.Add(item.Id);
+        }
+
+        OnPropertyChanged(nameof(TotalCount));
+        OnPropertyChanged(nameof(CountText));
+        ApplyVisibleItems();
+    }
+
+    // H5: appends newly loaded items to an existing group without a full
+    // re-group of the loaded window. Duplicates are skipped by id, so a later
+    // full rebuild (which dedupes the same way) always converges to the same
+    // state; order follows the collection-change order, which is the filtered
+    // list order that a full rebuild's GroupBy would produce too.
+    public void AppendLoadedItems(IReadOnlyList<MediaItemViewModel> items)
+    {
+        var added = false;
+        foreach (var item in items)
+        {
+            if (!_itemIds.Add(item.Id))
+            {
+                continue;
+            }
+
+            _items.Add(item);
+            added = true;
+        }
+
+        if (!added)
+        {
+            return;
         }
 
         OnPropertyChanged(nameof(TotalCount));
@@ -215,6 +253,15 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
                 return;
             }
 
+            // Grouped GridView fail-fasts (StackHash / E_UNEXPECTED) when a
+            // folder expand/collapse fires one Add/Remove per tile. One Reset
+            // replaces the window in a single layout pass.
+            if (desiredItems.Count == 0 || Items.Count == 0 || Math.Abs(Items.Count - desiredItems.Count) > 16)
+            {
+                ResetTo(desiredItems);
+                return;
+            }
+
             var diff = CollectionDiffApplier.Apply(
                 Items,
                 desiredItems,
@@ -235,6 +282,29 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
                 "MediaFolderGroup",
                 "visible-items-diff",
                 $"Applied visible media diff. Count={Items.Count}, Inserted={diff.Inserted}, Removed={diff.Removed}, Moved={diff.Moved}, Replaced={diff.Updated}.",
+                TimeSpan.FromSeconds(1));
+        }
+
+        private void ResetTo(IReadOnlyList<MediaItemViewModel> desiredItems)
+        {
+            var previousCount = Items.Count;
+            CheckReentrancy();
+            using (BlockReentrancy())
+            {
+                Items.Clear();
+                foreach (var item in desiredItems)
+                {
+                    Items.Add(item);
+                }
+            }
+
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+            AppTraceLogger.LogSampled(
+                "MediaFolderGroup",
+                "visible-items-reset",
+                $"Reset visible media. PreviousCount={previousCount}, Count={Items.Count}.",
                 TimeSpan.FromSeconds(1));
         }
     }

@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <!-- Keep the smoke-test SQLite provider aligned with the WinUI app's patched native SQLite. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
   <!-- Link the WinUI-free production source under test (single source of truth). -->
@@ -40,6 +42,8 @@
 
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\SettingsService.cs" Link="Linked\Services\SettingsService.cs" />
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\PlaybackResourceCoordinator.cs" Link="Linked\Services\PlaybackResourceCoordinator.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\IndependentMediaWindowMedia.cs" Link="Linked\Services\IndependentMediaWindowMedia.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Services\PlayerNavigationWindow.cs" Link="Linked\Services\PlayerNavigationWindow.cs" />
   </ItemGroup>
 
   <!-- Harness sources. -->

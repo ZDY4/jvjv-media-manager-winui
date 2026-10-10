@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.Data.Sqlite;
 using JvJvMediaManager.Models;
+using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Data;
 
@@ -29,10 +30,100 @@ internal sealed partial class MediaRepository
         int limit)
     {
         var sql = new StringBuilder(@"
-SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion
+SELECT id, path, filename, type, size, width, height, duration, thumbnail, createdAt, modifiedAt, lastPlayed, playCount, contentHash, fingerprintVersion, rotation
 FROM media m
 ");
 
+        AppendQueryFilters(
+            cmd,
+            sql,
+            searchText,
+            selectedTags,
+            includedFolders,
+            exactFolders,
+            excludedFolders,
+            playlistId,
+            typeFilter,
+            excludedMediaIds,
+            ftsSearch);
+
+        // WP-08: only apply a cursor that belongs to this exact query. A stale
+        // cursor can otherwise silently skip or duplicate rows after a sort or
+        // filter change.
+        var effectiveCursor = cursor != null && IsCursorCompatible(
+            new MediaQuery
+            {
+                SearchText = searchText,
+                SelectedTags = selectedTags,
+                IncludedFolderPaths = includedFolders,
+                ExactFolderPaths = exactFolders,
+                ExcludedFolderPaths = excludedFolders,
+                PlaylistId = playlistId,
+                TypeFilter = typeFilter,
+                ExcludedMediaIds = excludedMediaIds,
+                RandomOrder = randomOrder,
+                SortField = sortField,
+                SortOrder = sortOrder
+            },
+            cursor)
+            ? cursor
+            : null;
+
+        // WP-08: keyset predicate takes precedence over the legacy afterMediaId
+        // hack. It reproduces the exact ORDER BY tuple comparison so the next
+        // page has no gaps or duplicates.
+        if (!randomOrder && effectiveCursor != null && IsKeysetSupported(sortField))
+        {
+            AppendKeysetPredicate(cmd, sql, sortField, sortOrder, effectiveCursor);
+        }
+        else if (!randomOrder && !string.IsNullOrWhiteSpace(afterMediaId))
+        {
+            sql.Append("\n  AND m.id > $afterMediaId\n");
+            cmd.Parameters.AddWithValue("$afterMediaId", afterMediaId);
+        }
+
+        if (randomOrder)
+        {
+            sql.Append("ORDER BY RANDOM(), m.id ASC ");
+        }
+        else
+        {
+            var orderDirection = sortOrder == MediaSortOrder.Asc ? "ASC" : "DESC";
+            sql.Append("ORDER BY ");
+            sql.Append("m.folderPath COLLATE NOCASE ASC, ");
+            sql.Append(GetSortOrderByClause(sortField, orderDirection));
+            sql.Append(", m.id ASC ");
+        }
+
+        var useKeyset = !randomOrder && effectiveCursor != null && IsKeysetSupported(sortField);
+        sql.Append("LIMIT $limit");
+        if (!useKeyset && string.IsNullOrWhiteSpace(afterMediaId))
+        {
+            sql.Append(" OFFSET $offset");
+            cmd.Parameters.AddWithValue("$offset", Math.Max(0, offset));
+        }
+
+        sql.Append(';');
+
+        cmd.Parameters.AddWithValue("$limit", limit);
+        cmd.CommandText = sql.ToString();
+    }
+
+    // Shared filter/join construction for page, folder-summary, and position
+    // queries so their WHERE clauses can never drift apart.
+    private static void AppendQueryFilters(
+        SqliteCommand cmd,
+        StringBuilder sql,
+        string searchText,
+        IReadOnlyList<string> selectedTags,
+        IReadOnlyList<string>? includedFolders,
+        IReadOnlyList<string>? exactFolders,
+        IReadOnlyList<string> excludedFolders,
+        string? playlistId,
+        MediaType? typeFilter,
+        IReadOnlyList<string> excludedMediaIds,
+        string? ftsSearch)
+    {
         if (!string.IsNullOrWhiteSpace(ftsSearch))
         {
             sql.Append(@"
@@ -62,15 +153,13 @@ INNER JOIN playlist_media pm
             sql.Append("  AND (\n");
             for (var i = 0; i < includedFolders.Count; i++)
             {
-                var parameterName = $"$includedFolder{i}";
                 if (i > 0)
                 {
                     sql.Append("   OR\n");
                 }
 
-                sql.Append($"    (m.folderPath = {parameterName}Exact COLLATE NOCASE OR m.folderPath LIKE {parameterName} ESCAPE '\\' COLLATE NOCASE)\n");
-                cmd.Parameters.AddWithValue($"{parameterName}Exact", includedFolders[i]);
-                cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(includedFolders[i]));
+                AppendFolderFilterTerm(cmd, sql, $"$includedFolder{i}", includedFolders[i]);
+                sql.Append('\n');
             }
 
             sql.Append("  )\n");
@@ -130,7 +219,7 @@ INNER JOIN playlist_media pm
             sql.Append($@"
   AND m.path NOT LIKE {parameterName} ESCAPE '\' COLLATE NOCASE
 ");
-            cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(excludedFolders[i]));
+            cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(excludedFolders[i]).Pattern);
         }
 
         if (typeFilter.HasValue)
@@ -143,45 +232,119 @@ INNER JOIN playlist_media pm
         {
             AppendNotInIds(cmd, sql, excludedMediaIds, "excludedMediaId");
         }
+    }
 
-        // WP-08: keyset predicate takes precedence over the legacy afterMediaId
-        // hack. It reproduces the exact ORDER BY tuple comparison so the next
-        // page has no gaps or duplicates.
-        if (!randomOrder && cursor != null && IsKeysetSupported(sortField))
+    // H3: returns the 0-based position of the target row within the filtered
+    // result ordered by the query's sort tuple, or null when the sort is not
+    // positionable (random order / multi-column resolution sort).
+    public async Task<int?> QueryMediaPositionAsync(MediaQuery query, MediaFile target, CancellationToken cancellationToken = default)
+    {
+        if (query.RandomOrder || !IsKeysetSupported(query.SortField) || string.IsNullOrWhiteSpace(target.Id))
         {
-            AppendKeysetPredicate(cmd, sql, sortField, sortOrder, cursor);
-        }
-        else if (!randomOrder && !string.IsNullOrWhiteSpace(afterMediaId))
-        {
-            sql.Append("\n  AND m.id > $afterMediaId\n");
-            cmd.Parameters.AddWithValue("$afterMediaId", afterMediaId);
+            return null;
         }
 
-        if (randomOrder)
+        await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
+
+        var normalized = NormalizeQuery(query);
+        var useFtsSearch = !string.IsNullOrWhiteSpace(normalized.FtsSearch)
+            && await IsSearchIndexAvailableAsync(connection, null, cancellationToken);
+
+        if (normalized.IncludedFolders is { Count: 0 })
         {
-            sql.Append("ORDER BY RANDOM(), m.id ASC ");
+            return null;
+        }
+
+        await using var cmd = connection.CreateCommand();
+        var sql = new StringBuilder("SELECT COUNT(*) FROM media m\n");
+        AppendQueryFilters(
+            cmd,
+            sql,
+            normalized.SearchText,
+            normalized.SelectedTags,
+            normalized.IncludedFolders,
+            normalized.ExactFolders,
+            normalized.ExcludedFolders,
+            query.PlaylistId,
+            query.TypeFilter,
+            normalized.ExcludedMediaIds,
+            useFtsSearch ? normalized.FtsSearch : null);
+        AppendBeforePredicate(cmd, sql, query.SortField, query.SortOrder, target);
+        cmd.CommandText = sql.ToString();
+
+        try
+        {
+            return Convert.ToInt32(await cmd.ExecuteScalarAsync(cancellationToken));
+        }
+        catch (SqliteException ex) when (useFtsSearch)
+        {
+            // FTS failure falls back to the LIKE filter, same as page queries.
+            AppTraceLogger.LogException(
+                "MediaRepository",
+                "QueryMediaPositionAsync FTS search failed; retrying with LIKE fallback.",
+                ex);
+            await using var fallbackCmd = connection.CreateCommand();
+            var sql2 = new StringBuilder("SELECT COUNT(*) FROM media m\n");
+            AppendQueryFilters(
+                fallbackCmd,
+                sql2,
+                normalized.SearchText,
+                normalized.SelectedTags,
+                normalized.IncludedFolders,
+                normalized.ExactFolders,
+                normalized.ExcludedFolders,
+                query.PlaylistId,
+                query.TypeFilter,
+                normalized.ExcludedMediaIds,
+                ftsSearch: null);
+            AppendBeforePredicate(fallbackCmd, sql2, query.SortField, query.SortOrder, target);
+            fallbackCmd.CommandText = sql2.ToString();
+            return Convert.ToInt32(await fallbackCmd.ExecuteScalarAsync(cancellationToken));
+        }
+    }
+
+    // Strictly-before comparison for the sort tuple
+    // (folderPath COLLATE NOCASE ASC, sortValue DIR, id ASC); the mirror image
+    // of AppendKeysetPredicate's "strictly after".
+    private static void AppendBeforePredicate(
+        SqliteCommand cmd,
+        StringBuilder sql,
+        MediaSortField sortField,
+        MediaSortOrder sortOrder,
+        MediaFile target)
+    {
+        var sortExpr = GetSortValueExpression(sortField);
+        var isText = IsTextSortField(sortField);
+        var sortComparand = isText ? "$beforeSort COLLATE NOCASE" : "$beforeSort";
+        var dirCmp = sortOrder == MediaSortOrder.Asc ? "<" : ">";
+
+        sql.Append(
+            "\n  AND (\n" +
+            "    m.folderPath COLLATE NOCASE < $beforeFolder COLLATE NOCASE\n" +
+            "    OR (m.folderPath = $beforeFolder COLLATE NOCASE AND " + sortExpr + " " + dirCmp + " " + sortComparand + ")\n" +
+            "    OR (m.folderPath = $beforeFolder COLLATE NOCASE AND " + sortExpr + " = " + sortComparand + " AND m.id < $beforeId)\n" +
+            "  )\n");
+
+        cmd.Parameters.AddWithValue("$beforeFolder", GetFolderPath(target));
+        cmd.Parameters.AddWithValue("$beforeId", target.Id);
+        if (isText)
+        {
+            cmd.Parameters.AddWithValue(
+                "$beforeSort",
+                sortField == MediaSortField.Type
+                    ? target.Type.ToString().ToLowerInvariant()
+                    : target.FileName);
+        }
+        else if (sortField == MediaSortField.Duration)
+        {
+            cmd.Parameters.AddWithValue("$beforeSort", target.Duration ?? 0d);
         }
         else
         {
-            var orderDirection = sortOrder == MediaSortOrder.Asc ? "ASC" : "DESC";
-            sql.Append("ORDER BY ");
-            sql.Append("m.folderPath COLLATE NOCASE ASC, ");
-            sql.Append(GetSortOrderByClause(sortField, orderDirection));
-            sql.Append(", m.id ASC ");
+            cmd.Parameters.AddWithValue(
+                "$beforeSort",
+                sortField == MediaSortField.Size ? target.Size : target.ModifiedAt);
         }
-
-        var useKeyset = !randomOrder && cursor != null && IsKeysetSupported(sortField);
-        sql.Append("LIMIT $limit");
-        if (!useKeyset && string.IsNullOrWhiteSpace(afterMediaId))
-        {
-            sql.Append(" OFFSET $offset");
-            cmd.Parameters.AddWithValue("$offset", Math.Max(0, offset));
-        }
-
-        sql.Append(';');
-
-        cmd.Parameters.AddWithValue("$limit", limit);
-        cmd.CommandText = sql.ToString();
     }
 
     // WP-08: fields whose ORDER BY value is a single comparable expression can be
@@ -311,6 +474,13 @@ INNER JOIN playlist_media pm
         return builder.ToString();
     }
 
+    internal static bool IsCursorCompatible(MediaQuery query, MediaPageCursor cursor)
+    {
+        return cursor.SortField == query.SortField
+            && cursor.SortOrder == query.SortOrder
+            && string.Equals(cursor.FilterFingerprint, BuildFilterFingerprint(query), StringComparison.Ordinal);
+    }
+
     private static string GetSortOrderByClause(MediaSortField sortField, string orderDirection)
     {
         return sortField switch
@@ -429,15 +599,13 @@ INNER JOIN playlist_media pm
             sql.Append("  AND (\n");
             for (var i = 0; i < includedFolders.Count; i++)
             {
-                var parameterName = $"$includedFolder{i}";
                 if (i > 0)
                 {
                     sql.Append("   OR\n");
                 }
 
-                sql.Append($"    (m.folderPath = {parameterName}Exact COLLATE NOCASE OR m.folderPath LIKE {parameterName} ESCAPE '\\' COLLATE NOCASE)\n");
-                cmd.Parameters.AddWithValue($"{parameterName}Exact", includedFolders[i]);
-                cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(includedFolders[i]));
+                AppendFolderFilterTerm(cmd, sql, $"$includedFolder{i}", includedFolders[i]);
+                sql.Append('\n');
             }
 
             sql.Append("  )\n");
@@ -481,7 +649,7 @@ INNER JOIN playlist_media pm
   AND m.folderPath NOT LIKE {parameterName} ESCAPE '\' COLLATE NOCASE
 ");
             cmd.Parameters.AddWithValue($"{parameterName}Exact", excludedFolders[i]);
-            cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(excludedFolders[i]));
+            cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(excludedFolders[i]).Pattern);
         }
 
         if (excludedMediaIds.Count > 0)
