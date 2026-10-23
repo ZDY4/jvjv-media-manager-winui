@@ -68,6 +68,8 @@ public sealed class MediaBrowserController : IDisposable
     private int _isLoadingMoreMedia;
     private long _incrementalLoadSuppressedUntilTick;
     private bool _isMediaViewScrolling;
+    private bool _searchUpdateQueued;
+    private bool _isDisposed;
 
     private bool _isSyncingSelection;
     private string? _nowPlayingMediaId;
@@ -174,6 +176,12 @@ public sealed class MediaBrowserController : IDisposable
 
     public void Dispose()
     {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
         _libraryPane.HeaderView.RefreshButton.Click -= Refresh_Click;
         _libraryPane.HeaderView.CancelScanButton.Click -= CancelScan_Click;
         _libraryPane.HeaderView.ViewModeToggleButton.Click -= ToggleViewMode_Click;
@@ -551,20 +559,37 @@ public sealed class MediaBrowserController : IDisposable
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        var query = SearchBox.Text ?? string.Empty;
-        _page.DispatcherQueue.TryEnqueue(
+        if (_isDisposed || _searchUpdateQueued)
+        {
+            return;
+        }
+
+        _searchUpdateQueued = true;
+        if (!_page.DispatcherQueue.TryEnqueue(
             DispatcherQueuePriority.Low,
             () =>
             {
-                if (string.Equals(SearchBox.Text ?? string.Empty, query, StringComparison.Ordinal))
+                _searchUpdateQueued = false;
+                if (!_isDisposed)
                 {
-                    _viewModel.SearchQuery = query;
+                    _viewModel.SearchQuery = SearchBox.Text ?? string.Empty;
                 }
-            });
+            }))
+        {
+            _searchUpdateQueued = false;
+        }
     }
 
     private void SearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key == Windows.System.VirtualKey.Escape && !string.IsNullOrEmpty(SearchBox.Text))
+        {
+            SearchBox.Text = string.Empty;
+            _viewModel.SearchQuery = string.Empty;
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key != Windows.System.VirtualKey.Enter)
         {
             return;

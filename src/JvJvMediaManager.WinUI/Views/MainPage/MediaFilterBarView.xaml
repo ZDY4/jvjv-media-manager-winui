@@ -12,6 +12,9 @@
         <TextBox x:Name="SearchBox"
                  x:FieldModifier="public"
                  PlaceholderText="搜索媒体或输入 #标签"
+                 AutomationProperties.Name="搜索媒体或标签"
+                 AutomationProperties.HelpText="输入文字搜索；输入 #标签 后按 Enter 添加筛选；按 Esc 清除搜索文字。"
+                 ToolTipService.ToolTip="输入 #标签 后按 Enter 添加筛选；Esc 清除搜索文字"
                  Style="{StaticResource GlassTextBoxStyle}" />
 
         <ItemsControl x:Name="SelectedTagsControl"
