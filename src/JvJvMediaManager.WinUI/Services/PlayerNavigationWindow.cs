@@ -29,53 +29,49 @@ internal static class PlayerNavigationWindow
             return DedupPreserveOrder(focusItems, getId);
         }
 
-        var indexById = new Dictionary<string, int>(navigationItems.Count, StringComparer.Ordinal);
-        for (var index = 0; index < navigationItems.Count; index++)
+        // Track only the focus IDs, not every item in a potentially huge library.
+        // Removing matches also preserves the first-occurrence behavior for duplicates.
+        var missingIds = new HashSet<string>(focusItems.Select(getId), StringComparer.Ordinal);
+        var ranges = new List<(int Start, int End)>();
+        for (var index = 0; index < navigationItems.Count && missingIds.Count > 0; index++)
         {
-            indexById.TryAdd(getId(navigationItems[index]), index);
-        }
-
-        var include = new bool[navigationItems.Count];
-        var extras = new List<T>();
-        foreach (var focus in focusItems)
-        {
-            var id = getId(focus);
-            if (indexById.TryGetValue(id, out var focusIndex))
+            if (!missingIds.Remove(getId(navigationItems[index])))
             {
-                var start = Math.Max(0, focusIndex - radius);
-                var end = Math.Min(navigationItems.Count - 1, focusIndex + radius);
-                for (var index = start; index <= end; index++)
-                {
-                    include[index] = true;
-                }
+                continue;
+            }
+
+            var start = Math.Max(0, index - radius);
+            var end = (int)Math.Min(navigationItems.Count - 1L, (long)index + radius);
+            if (ranges.Count > 0 && start <= (long)ranges[^1].End + 1)
+            {
+                ranges[^1] = (ranges[^1].Start, end);
             }
             else
             {
-                extras.Add(focus);
+                ranges.Add((start, end));
             }
         }
 
         var result = new List<T>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        for (var index = 0; index < navigationItems.Count; index++)
+        foreach (var range in ranges)
         {
-            if (!include[index])
+            for (var index = range.Start; index <= range.End; index++)
             {
-                continue;
-            }
-
-            var item = navigationItems[index];
-            if (seen.Add(getId(item)))
-            {
-                result.Add(item);
+                var item = navigationItems[index];
+                if (seen.Add(getId(item)))
+                {
+                    result.Add(item);
+                }
             }
         }
 
-        foreach (var extra in extras)
+        foreach (var focus in focusItems)
         {
-            if (seen.Add(getId(extra)))
+            var id = getId(focus);
+            if (missingIds.Contains(id) && seen.Add(id))
             {
-                result.Add(extra);
+                result.Add(focus);
             }
         }
 

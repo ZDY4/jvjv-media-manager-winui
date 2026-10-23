@@ -100,6 +100,56 @@ internal static class PlayerNavigationWindowTests
             Assert.Equal(90, file.Rotation, "Rotation");
             Assert.Equal("abc", file.ContentHash, "ContentHash");
         });
+
+        registry.Add(Suite, "overlapping windows and duplicate focus preserve first occurrence and order", () =>
+        {
+            var items = new[] { "a", "b", "c", "d", "b", "e", "f" };
+            var focus = new[] { "d", "b", "missing", "b", "missing" };
+            AssertEqualIds(PlayerNavigationWindow.SliceAround(items, focus, static id => id, radius: 1),
+                "a", "b", "c", "d", "missing");
+        });
+
+        registry.Add(Suite, "maximum radius does not overflow", () =>
+        {
+            var items = RangeIds(0, 8);
+            Assert.SequenceEqual(items,
+                PlayerNavigationWindow.SliceAround(items, new[] { "id-5" }, static id => id, int.MaxValue),
+                "An unlimited radius includes the entire library");
+        });
+
+        registry.Add(Suite, "randomized windows match the reference selection contract", () =>
+        {
+            var random = new Random(42);
+            for (var iteration = 0; iteration < 250; iteration++)
+            {
+                var items = Enumerable.Range(0, random.Next(0, 100))
+                    .Select(_ => $"id-{random.Next(0, 60)}").ToList();
+                var focus = Enumerable.Range(0, random.Next(0, 12))
+                    .Select(_ => $"id-{random.Next(0, 80)}").ToArray();
+                var radius = random.Next(-2, 15);
+                var indices = focus.Select(id => items.IndexOf(id)).Where(index => index >= 0).ToArray();
+                var expected = items.Where((_, index) => indices.Any(focusIndex => Math.Abs(index - focusIndex) <= Math.Max(0, radius)))
+                    .Concat(focus.Where(id => !items.Contains(id)))
+                    .Distinct(StringComparer.Ordinal).ToArray();
+                Assert.SequenceEqual(expected,
+                    PlayerNavigationWindow.SliceAround(items, focus, static id => id, radius),
+                    $"Reference selection, iteration {iteration}");
+            }
+        });
+
+        registry.Add(Suite, "100k library navigation allocates only for the selected window", () =>
+        {
+            var items = RangeIds(0, 100_000);
+            var focus = new[] { "id-50000" };
+            Func<string, string> getId = static id => id;
+            _ = PlayerNavigationWindow.SliceAround(items, focus, getId);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var window = PlayerNavigationWindow.SliceAround(items, focus, getId);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.Equal(129, window.Count, "Large library still returns the complete neighborhood");
+            Assert.True(allocated < 64 * 1024, $"Navigation must not allocate a full-library index; allocated {allocated:N0} bytes");
+            Console.WriteLine($"    100k navigation allocation: {allocated:N0} bytes, {window.Count} returned items");
+        });
     }
 
     private static List<string> RangeIds(int start, int count)
