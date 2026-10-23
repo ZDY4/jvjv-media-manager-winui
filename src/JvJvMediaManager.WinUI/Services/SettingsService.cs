@@ -321,9 +321,8 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
             AppTraceLogger.LogSampled(
                 "SettingsService",
                 "promote-temp-failed",
-                $"Failed to promote temp settings file; deleting temp. Path='{tempPath}', ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                $"Failed to promote temp settings file; retaining it for recovery. Path='{tempPath}', ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
                 TimeSpan.FromMinutes(5));
-            TryDeleteTempSettingsFile();
         }
     }
 
@@ -439,12 +438,14 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
         _saveDebounceCancellation?.Dispose();
         _saveDebounceCancellation = new CancellationTokenSource();
         var debounce = _saveDebounceCancellation;
+        // A subsequent update may dispose this source before the worker starts.
+        var debounceToken = debounce.Token;
 
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(SaveDebounceDelay, debounce.Token);
+                await Task.Delay(SaveDebounceDelay, debounceToken);
                 lock (_settingsSync)
                 {
                     if (debounce.IsCancellationRequested || !ReferenceEquals(_saveDebounceCancellation, debounce))
@@ -460,8 +461,6 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
 
                     _saveDebounceCancellation = null;
                 }
-
-                debounce.Dispose();
             }
             catch (OperationCanceledException)
             {
@@ -472,8 +471,13 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
             }
             finally
             {
-                if (!ReferenceEquals(_saveDebounceCancellation, debounce))
+                lock (_settingsSync)
                 {
+                    if (ReferenceEquals(_saveDebounceCancellation, debounce))
+                    {
+                        _saveDebounceCancellation = null;
+                    }
+
                     debounce.Dispose();
                 }
             }
@@ -490,19 +494,22 @@ public sealed class SettingsService : IAsyncDisposable, IDisposable
         }
 
         var tempPath = $"{_settingsPath}.tmp";
+        var verified = false;
         try
         {
             File.WriteAllText(tempPath, json);
             var persistedJson = File.ReadAllText(tempPath);
             _ = JsonSerializer.Deserialize<SettingsModel>(persistedJson)
                 ?? throw new InvalidOperationException("Settings write verification failed.");
+            verified = true;
             File.Move(tempPath, _settingsPath, overwrite: true);
         }
         finally
         {
             try
             {
-                if (File.Exists(tempPath))
+                // A complete snapshot survives a failed rename and is recovered on startup.
+                if (!verified && File.Exists(tempPath))
                 {
                     File.Delete(tempPath);
                 }

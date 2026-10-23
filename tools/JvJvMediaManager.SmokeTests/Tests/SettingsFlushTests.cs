@@ -17,7 +17,7 @@ internal static class SettingsFlushTests
         {
             await WithIsolatedStorageRoot(async settingsPath =>
             {
-                var service = new SettingsService();
+                await using var service = new SettingsService();
                 service.SetLockPassword("hunter2");
 
                 await WaitForCondition(
@@ -32,7 +32,7 @@ internal static class SettingsFlushTests
         {
             await WithIsolatedStorageRoot(async settingsPath =>
             {
-                var service = new SettingsService();
+                await using var service = new SettingsService();
                 for (var i = 0; i < 50; i++)
                 {
                     service.SetMediaBrowserIconSize(80 + i);
@@ -90,6 +90,56 @@ internal static class SettingsFlushTests
                 await service.FlushAsync();
                 Assert.False(service.PlaybackAutoAdvanceEnabled, "Explicitly disabling auto advance is reflected immediately");
                 Assert.False(ReadBooleanProperty(settingsPath, "PlaybackAutoAdvanceEnabled"), "Explicit opt-out is persisted");
+            });
+        });
+
+        registry.Add(Suite, "failed replacement and promotion retain recoverable settings", async () =>
+        {
+            await WithIsolatedStorageRoot(async settingsPath =>
+            {
+                await File.WriteAllTextAsync(settingsPath, "{\"PlaybackMode\":\"old\"}");
+                File.SetLastWriteTimeUtc(settingsPath, DateTime.UtcNow.AddMinutes(-1));
+                var tempPath = settingsPath + ".tmp";
+                using (var lockedFile = new FileStream(settingsPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    await using (var service = new SettingsService())
+                    {
+                        service.SetPlaybackMode("recovered");
+                        await service.FlushAsync();
+                        Assert.Equal("old", ReadPlaybackMode(settingsPath), "Locked destination stays intact");
+                        Assert.Equal("recovered", ReadPlaybackMode(tempPath), "Verified snapshot survives failed replacement");
+                    }
+
+                    await using var retry = new SettingsService();
+                    Assert.Equal("recovered", retry.PlaybackMode, "Startup uses the newer snapshot even while promotion is blocked");
+                    Assert.True(File.Exists(tempPath), "Failed startup promotion must retain the recovery file");
+                }
+
+                await using var recovered = new SettingsService();
+                Assert.Equal("recovered", recovered.PlaybackMode, "Next startup recovers the last change");
+                Assert.Equal("recovered", ReadPlaybackMode(settingsPath), "Recovery snapshot is promoted after unlock");
+                Assert.False(File.Exists(tempPath), "Successful promotion leaves no temp file");
+            });
+        });
+
+        registry.Add(Suite, "invalid or older temp settings never replace a valid primary", async () =>
+        {
+            await WithIsolatedStorageRoot(async settingsPath =>
+            {
+                await File.WriteAllTextAsync(settingsPath, "{\"PlaybackMode\":\"current\"}");
+                var tempPath = settingsPath + ".tmp";
+                await File.WriteAllTextAsync(tempPath, "{partial");
+                await using (var service = new SettingsService())
+                {
+                    Assert.Equal("current", service.PlaybackMode, "Partial snapshot is ignored");
+                    Assert.False(File.Exists(tempPath), "Partial snapshot is cleaned up");
+                }
+
+                await File.WriteAllTextAsync(tempPath, "{\"PlaybackMode\":\"stale\"}");
+                File.SetLastWriteTimeUtc(tempPath, DateTime.UtcNow.AddMinutes(-1));
+                await using var reloaded = new SettingsService();
+                Assert.Equal("current", reloaded.PlaybackMode, "Older snapshot cannot roll settings back");
+                Assert.False(File.Exists(tempPath), "Stale snapshot is cleaned up");
             });
         });
     }
