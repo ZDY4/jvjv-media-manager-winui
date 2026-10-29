@@ -84,13 +84,16 @@ internal sealed class PlaybackWatchdogController
                     return;
                 }
 
-                try
+                if (attempt > 1)
                 {
-                    await Task.Delay(VideoSurfaceRevealPollInterval);
-                }
-                catch
-                {
-                    return;
+                    try
+                    {
+                        await Task.Delay(VideoSurfaceRevealPollInterval);
+                    }
+                    catch
+                    {
+                        return;
+                    }
                 }
 
                 if (await _tryRevealVideoSurfaceOnUiThreadAsync(mediaSourceVersion, attempt, attempt == MaxVideoSurfaceRevealAttempts))

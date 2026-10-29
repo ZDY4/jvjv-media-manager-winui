@@ -115,6 +115,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             {
                 OnPropertyChanged(nameof(ListViewVisibility));
                 OnPropertyChanged(nameof(GridViewVisibility));
+                OnPropertyChanged(nameof(MediaBrowserVisibility));
             }
         }
     }
@@ -488,6 +489,8 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     public Visibility ListViewVisibility => IsBossMode ? Visibility.Collapsed : (ViewMode == MediaViewMode.List ? Visibility.Visible : Visibility.Collapsed);
 
     public Visibility GridViewVisibility => IsBossMode ? Visibility.Collapsed : (ViewMode == MediaViewMode.Grid ? Visibility.Visible : Visibility.Collapsed);
+
+    public Visibility MediaBrowserVisibility => IsBossMode ? Visibility.Collapsed : Visibility.Visible;
 
     public void SetDispatcher(DispatcherQueue dispatcher)
     {

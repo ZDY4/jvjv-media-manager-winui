@@ -35,7 +35,8 @@ public sealed class MediaBrowserController : IDisposable
     // Keep prefetch bounded. Prefetch work shares the thumbnail generation
     // gate with visible items and must not build an unbounded queue while the
     // user is scrolling through a large library.
-    private const int MaxThumbnailPrefetchItems = 8;
+    private const int MaxThumbnailPrefetchItems = 4;
+    private const int MaxThumbnailStartsPerPass = 4;
     private static readonly TimeSpan ContextMenuDuplicateSuppression = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan ProgrammaticScrollIncrementalLoadSuppression = TimeSpan.FromMilliseconds(800);
     private const int MaxMediaScrollAttempts = 3;
@@ -168,6 +169,22 @@ public sealed class MediaBrowserController : IDisposable
         GridView.PointerCaptureLost += MediaView_PointerCaptureLost;
         GridView.PointerCanceled += MediaView_PointerCanceled;
 
+        var browser = _libraryPane.BrowserView;
+        browser.MediaInvoked += BrowserSurface_MediaInvoked;
+        browser.MediaPrepared += BrowserSurface_MediaPrepared;
+        browser.MediaCleared += BrowserSurface_MediaCleared;
+        browser.MediaDragStarting += BrowserSurface_MediaDragStarting;
+        browser.MediaScrollViewer.ViewChanged += MediaScrollViewer_ViewChanged;
+        browser.MediaScrollViewer.PointerWheelChanged += MediaLibraryView_PointerWheelChanged;
+        browser.MediaScrollViewer.AddHandler(UIElement.PointerPressedEvent, _pointerPressedHandler, true);
+        browser.MediaScrollViewer.AddHandler(UIElement.PointerMovedEvent, _pointerMovedHandler, true);
+        browser.MediaScrollViewer.AddHandler(UIElement.PointerReleasedEvent, _pointerReleasedHandler, true);
+        browser.MediaScrollViewer.AddHandler(UIElement.RightTappedEvent, _rightTappedHandler, true);
+        browser.MediaScrollViewer.AddHandler(UIElement.ContextRequestedEvent, _contextRequestedHandler, true);
+        browser.MediaScrollViewer.AddHandler(UIElement.KeyDownEvent, _keyDownHandler, true);
+        browser.MediaScrollViewer.PointerCaptureLost += MediaView_PointerCaptureLost;
+        browser.MediaScrollViewer.PointerCanceled += MediaView_PointerCanceled;
+
         _libraryPane.DropTargetBorder.DragOver += LibraryPanel_DragOver;
         _libraryPane.DropTargetBorder.Drop += LibraryPanel_Drop;
         _libraryPane.PaneRoot.SizeChanged += LibraryPaneRoot_SizeChanged;
@@ -227,6 +244,22 @@ public sealed class MediaBrowserController : IDisposable
         GridView.RemoveHandler(UIElement.PointerReleasedEvent, _pointerReleasedHandler);
         GridView.PointerCaptureLost -= MediaView_PointerCaptureLost;
         GridView.PointerCanceled -= MediaView_PointerCanceled;
+
+        var browser = _libraryPane.BrowserView;
+        browser.MediaInvoked -= BrowserSurface_MediaInvoked;
+        browser.MediaPrepared -= BrowserSurface_MediaPrepared;
+        browser.MediaCleared -= BrowserSurface_MediaCleared;
+        browser.MediaDragStarting -= BrowserSurface_MediaDragStarting;
+        browser.MediaScrollViewer.ViewChanged -= MediaScrollViewer_ViewChanged;
+        browser.MediaScrollViewer.PointerWheelChanged -= MediaLibraryView_PointerWheelChanged;
+        browser.MediaScrollViewer.RemoveHandler(UIElement.PointerPressedEvent, _pointerPressedHandler);
+        browser.MediaScrollViewer.RemoveHandler(UIElement.PointerMovedEvent, _pointerMovedHandler);
+        browser.MediaScrollViewer.RemoveHandler(UIElement.PointerReleasedEvent, _pointerReleasedHandler);
+        browser.MediaScrollViewer.RemoveHandler(UIElement.RightTappedEvent, _rightTappedHandler);
+        browser.MediaScrollViewer.RemoveHandler(UIElement.ContextRequestedEvent, _contextRequestedHandler);
+        browser.MediaScrollViewer.RemoveHandler(UIElement.KeyDownEvent, _keyDownHandler);
+        browser.MediaScrollViewer.PointerCaptureLost -= MediaView_PointerCaptureLost;
+        browser.MediaScrollViewer.PointerCanceled -= MediaView_PointerCanceled;
 
         _libraryPane.DropTargetBorder.DragOver -= LibraryPanel_DragOver;
         _libraryPane.DropTargetBorder.Drop -= LibraryPanel_Drop;
@@ -472,7 +505,7 @@ public sealed class MediaBrowserController : IDisposable
             }
 
             SuppressIncrementalLoadForProgrammaticScroll();
-            activeView.ScrollIntoView(target);
+            ScrollMediaIntoView(activeView, target);
             AppTraceLogger.LogSampled(
                 "MediaBrowser",
                 "media-scroll-restore",
@@ -627,6 +660,84 @@ public sealed class MediaBrowserController : IDisposable
         _viewModel.RemoveSelectedTagFilter(tag);
     }
 
+    private void BrowserSurface_MediaInvoked(object? sender, MediaItemViewModel media)
+    {
+        StoreRecentUserVisibleSelection(media.Id);
+        HashSet<string> selectedIds;
+        var range = new List<MediaItemViewModel>();
+        if (IsShiftKeyDown()
+            && _viewModel.SelectedMedia != null
+            && _libraryPane.BrowserView.TryGetMediaRange(_viewModel.SelectedMedia, media, range))
+        {
+            selectedIds = range.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        }
+        else if (IsCtrlKeyDown())
+        {
+            selectedIds = _selectionCoordinator.Snapshot();
+            if (!selectedIds.Add(media.Id))
+            {
+                selectedIds.Remove(media.Id);
+            }
+        }
+        else
+        {
+            selectedIds = new HashSet<string>(StringComparer.Ordinal) { media.Id };
+        }
+
+        var primaryId = selectedIds.Contains(media.Id) ? media.Id : selectedIds.LastOrDefault();
+        ApplySelectionSnapshot(selectedIds, primaryId);
+    }
+
+    private void BrowserSurface_MediaPrepared(object? sender, MediaItemViewModel media)
+    {
+        _viewModel.TryApplyCachedThumbnail(media);
+        if (_viewModel.ViewMode == MediaViewMode.List
+            && _libraryPane.BrowserView.TryGetRealizedElement(media, out var element))
+        {
+            ApplyListItemSize(element);
+        }
+
+        if (media.Thumbnail != null || IsThumbnailLoadInProgress(media.Id))
+        {
+            return;
+        }
+
+        if (_isMediaViewScrolling)
+        {
+            ScheduleVisibleThumbnailLoad();
+            return;
+        }
+
+        StartThumbnailLoad(media);
+    }
+
+    private void BrowserSurface_MediaCleared(object? sender, MediaItemViewModel media)
+    {
+        CancelThumbnailLoad(media);
+        media.CancelThumbnailLoad();
+    }
+
+    private void BrowserSurface_MediaDragStarting(object? sender, MediaDragRequestEventArgs e)
+    {
+        var draggedItems = GetSelectedItems()
+            .Select(item => item.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (draggedItems.Count == 0 || draggedItems.All(id => !string.Equals(id, e.Media.Id, StringComparison.Ordinal)))
+        {
+            draggedItems = new List<string> { e.Media.Id };
+        }
+
+        var package = e.Drag.Data;
+        package.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
+        package.Properties.Add(InternalDragData.MediaDragMarkerProperty, true);
+        package.Properties.Add(InternalDragData.MediaIdsProperty, draggedItems);
+        if (_viewModel.SelectedPlaylist != null)
+        {
+            package.Properties.Add(InternalDragData.SourcePlaylistIdProperty, _viewModel.SelectedPlaylist.Id);
+        }
+    }
+
     private void Media_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_isSyncingSelection || sender is not ListViewBase listViewBase)
@@ -691,33 +802,37 @@ public sealed class MediaBrowserController : IDisposable
 
     private void MediaView_PointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is not ListViewBase listViewBase
-            || !ReferenceEquals(listViewBase, GetActiveMediaView()))
+        var surface = _libraryPane.BrowserView.MediaScrollViewer;
+        var onSurface = ReferenceEquals(sender, surface);
+        if (!onSurface
+            && (sender is not ListViewBase listViewBase || !ReferenceEquals(listViewBase, GetActiveMediaView())))
         {
             return;
         }
 
-        var pointerPoint = e.GetCurrentPoint(listViewBase);
+        var pointerSource = sender as UIElement ?? surface;
+        var pointerPoint = e.GetCurrentPoint(pointerSource);
         if (pointerPoint.Properties.IsLeftButtonPressed
             && TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var pressedMedia)
             && pressedMedia != null
-            && IsMediaVisible(listViewBase, pressedMedia))
+            && IsMediaVisible(GetActiveMediaView(), pressedMedia))
         {
             StoreRecentUserVisibleSelection(pressedMedia.Id);
         }
 
-        if (!CanBeginDragSelection(listViewBase, e))
+        if (!CanBeginDragSelection(pointerSource, e))
         {
             return;
         }
 
-        BeginDragSelection(listViewBase, e);
+        BeginDragSelection(GetActiveMediaView(), e);
         e.Handled = true;
     }
 
     private void MediaView_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!ReferenceEquals(sender, _dragSelection.View) || (!_dragSelection.IsPending && !_dragSelection.IsSelecting))
+        if ((!ReferenceEquals(sender, _dragSelection.View) && !ReferenceEquals(sender, _dragSelection.CaptureOwner))
+            || (!_dragSelection.IsPending && !_dragSelection.IsSelecting))
         {
             return;
         }
@@ -748,7 +863,8 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        if (!ReferenceEquals(sender, _dragSelection.View) || (!_dragSelection.IsPending && !_dragSelection.IsSelecting))
+        if ((!ReferenceEquals(sender, _dragSelection.View) && !ReferenceEquals(sender, _dragSelection.CaptureOwner))
+            || (!_dragSelection.IsPending && !_dragSelection.IsSelecting))
         {
             return;
         }
@@ -797,11 +913,10 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        if (sender is ListViewBase listViewBase
-            && TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var rightTappedMedia)
+        if (TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var rightTappedMedia)
             && rightTappedMedia != null)
         {
-            EnsureRightTappedSelection(listViewBase, rightTappedMedia);
+            EnsureRightTappedSelection(rightTappedMedia);
         }
 
         var selected = ResolveContextMenuSelection(e.OriginalSource as DependencyObject);
@@ -822,9 +937,9 @@ public sealed class MediaBrowserController : IDisposable
 
     private bool TryShowPointerReleasedContextMenu(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is not ListViewBase listViewBase
-            || sender is not FrameworkElement target
-            || !ReferenceEquals(listViewBase, GetActiveMediaView()))
+        var onSurface = ReferenceEquals(sender, _libraryPane.BrowserView.MediaScrollViewer);
+        if (sender is not FrameworkElement target
+            || (!onSurface && (sender is not ListViewBase listViewBase || !ReferenceEquals(listViewBase, GetActiveMediaView()))))
         {
             return false;
         }
@@ -838,7 +953,7 @@ public sealed class MediaBrowserController : IDisposable
         if (TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var rightClickedMedia)
             && rightClickedMedia != null)
         {
-            EnsureRightTappedSelection(listViewBase, rightClickedMedia);
+            EnsureRightTappedSelection(rightClickedMedia);
         }
 
         var selected = ResolveContextMenuSelection(e.OriginalSource as DependencyObject);
@@ -869,9 +984,9 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        if (sender is not ListViewBase listViewBase
-            || sender is not FrameworkElement target
-            || !ReferenceEquals(listViewBase, GetActiveMediaView()))
+        var onSurface = ReferenceEquals(sender, _libraryPane.BrowserView.MediaScrollViewer);
+        if (sender is not FrameworkElement target
+            || (!onSurface && (sender is not ListViewBase activeList || !ReferenceEquals(activeList, GetActiveMediaView()))))
         {
             return;
         }
@@ -879,7 +994,7 @@ public sealed class MediaBrowserController : IDisposable
         if (TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var requestedMedia)
             && requestedMedia != null)
         {
-            EnsureRightTappedSelection(listViewBase, requestedMedia);
+            EnsureRightTappedSelection(requestedMedia);
         }
 
         var selected = ResolveContextMenuSelection(e.OriginalSource as DependencyObject);
@@ -895,7 +1010,7 @@ public sealed class MediaBrowserController : IDisposable
 
         if (!e.TryGetPosition(target, out var position))
         {
-            position = GetKeyboardContextMenuPoint(listViewBase, target, selected[0]);
+            position = GetKeyboardContextMenuPoint(GetActiveMediaView(), target, selected[0]);
         }
 
         _contextMenuCoordinator.ShowForTarget(target, position, selected);
@@ -924,12 +1039,15 @@ public sealed class MediaBrowserController : IDisposable
 
     private void MediaView_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        var onSurface = ReferenceEquals(sender, _libraryPane.BrowserView.MediaScrollViewer);
         if (!IsKeyboardContextMenuRequest(e)
-            || sender is not ListViewBase listViewBase
-            || sender is not FrameworkElement target)
+            || sender is not FrameworkElement target
+            || (!onSurface && sender is not ListViewBase))
         {
             return;
         }
+
+        var listViewBase = sender as ListViewBase ?? GetActiveMediaView();
 
         var selected = GetSelectedItems();
         if (selected.Count == 0 && listViewBase.SelectedItem is MediaItemViewModel selectedItem)
@@ -1650,11 +1768,11 @@ public sealed class MediaBrowserController : IDisposable
         // loaded items with ContainerFromItem per item was O(loaded) per scroll
         // settle and janked with large libraries.
         var earliestRetry = TimeSpan.Zero;
-        foreach (var container in EnumerateRealizedContainers(listViewBase))
+        var started = 0;
+        var deferred = false;
+        foreach (var item in EnumerateThumbnailCandidates(listViewBase))
         {
-            if (container.Content is not MediaItemViewModel item
-                || item.Thumbnail != null
-                || _viewModel.TryApplyCachedThumbnail(item))
+            if (item.Thumbnail != null || _viewModel.TryApplyCachedThumbnail(item))
             {
                 continue;
             }
@@ -1676,6 +1794,19 @@ public sealed class MediaBrowserController : IDisposable
             }
 
             StartThumbnailLoad(item);
+            if (++started >= MaxThumbnailStartsPerPass)
+            {
+                deferred = true;
+                break;
+            }
+        }
+
+        if (deferred)
+        {
+            // The grid realizes every loaded tile. Starting all of those
+            // decodes at once stalls the dispatcher and delays the next switch.
+            ScheduleVisibleThumbnailLoad(TimeSpan.FromMilliseconds(40));
+            return;
         }
 
         if (earliestRetry > TimeSpan.Zero)
@@ -1708,12 +1839,25 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         var lastRealizedIndex = -1;
-        foreach (var container in EnumerateRealizedContainers(listViewBase))
+        var loadedForIndex = _viewModel.FilteredMediaItems;
+        foreach (var realized in _libraryPane.BrowserView.GetRealizedMedia())
         {
-            var index = listViewBase.IndexFromContainer(container);
+            var index = IndexOfLoadedMedia(loadedForIndex, realized.Media.Id);
             if (index > lastRealizedIndex)
             {
                 lastRealizedIndex = index;
+            }
+        }
+
+        if (lastRealizedIndex < 0)
+        {
+            foreach (var container in EnumerateRealizedContainers(listViewBase))
+            {
+                var index = listViewBase.IndexFromContainer(container);
+                if (index > lastRealizedIndex)
+                {
+                    lastRealizedIndex = index;
+                }
             }
         }
 
@@ -1745,6 +1889,41 @@ public sealed class MediaBrowserController : IDisposable
                 "thumbnail-prefetch",
                 $"Prefetched thumbnails ahead of the visible window. Prefetched={prefetched}, LastRealizedIndex={lastRealizedIndex}, LoadedCount={loaded.Count}.",
                 TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private static int IndexOfLoadedMedia(System.Collections.Generic.IReadOnlyList<MediaItemViewModel> items, string mediaId)
+    {
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (string.Equals(items[index].Id, mediaId, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private IEnumerable<MediaItemViewModel> EnumerateThumbnailCandidates(ListViewBase listViewBase)
+    {
+        var realized = _libraryPane.BrowserView.GetRealizedMedia();
+        if (realized.Count > 0)
+        {
+            foreach (var item in realized)
+            {
+                yield return item.Media;
+            }
+
+            yield break;
+        }
+
+        foreach (var container in EnumerateRealizedContainers(listViewBase))
+        {
+            if (container.Content is MediaItemViewModel media)
+            {
+                yield return media;
+            }
         }
     }
 
@@ -1946,6 +2125,8 @@ public sealed class MediaBrowserController : IDisposable
             panel.ItemWidth = slotSize;
             panel.ItemHeight = gridItemSize;
         }
+
+        _libraryPane.BrowserView.RefreshPresentation();
     }
 
     private double GetCurrentGridItemSize()
@@ -1968,7 +2149,12 @@ public sealed class MediaBrowserController : IDisposable
 
     private double GetGridViewAvailableWidth()
     {
-        var width = _gridViewScrollViewer?.ActualWidth ?? 0;
+        var width = _libraryPane.BrowserView.MediaScrollViewer.ActualWidth;
+        if (width <= 0)
+        {
+            width = _gridViewScrollViewer?.ActualWidth ?? 0;
+        }
+
         if (width <= 0)
         {
             width = GridView.ActualWidth;
@@ -1986,13 +2172,18 @@ public sealed class MediaBrowserController : IDisposable
     {
         // WP-B: realized containers only; the previous ContainerFromItem scan
         // over all filtered items stalled on large libraries during icon zoom.
+        foreach (var realized in _libraryPane.BrowserView.GetRealizedMedia())
+        {
+            ApplyListItemSize(realized.Element);
+        }
+
         foreach (var container in EnumerateRealizedContainers(ListView))
         {
             ApplyListItemSize(container);
         }
     }
 
-    private void ApplyListItemSize(SelectorItem? container)
+    private void ApplyListItemSize(FrameworkElement? container)
     {
         if (container == null)
         {
@@ -2025,7 +2216,7 @@ public sealed class MediaBrowserController : IDisposable
         return new[] { media };
     }
 
-    private void EnsureRightTappedSelection(ListViewBase listViewBase, MediaItemViewModel media)
+    private void EnsureRightTappedSelection(MediaItemViewModel media)
     {
         var selected = GetSelectedItems().Any(item => string.Equals(item.Id, media.Id, StringComparison.Ordinal));
         if (selected)
@@ -2033,8 +2224,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        listViewBase.SelectedItems.Clear();
-        listViewBase.SelectedItem = media;
+        ApplySelectionSnapshot(new[] { media.Id }, media.Id);
     }
 
     private bool TryGetMediaFromElement(DependencyObject? origin, out MediaItemViewModel? media)
@@ -2047,7 +2237,12 @@ public sealed class MediaBrowserController : IDisposable
 
         var container = MainPageVisualTreeHelpers.FindAncestor<SelectorItem>(origin);
         media = container?.Content as MediaItemViewModel;
-        return media != null;
+        if (media != null)
+        {
+            return true;
+        }
+
+        return MediaBrowserView.TryGetMedia(origin, out media);
     }
 
     private void BeginDragSelection(ListViewBase listViewBase, PointerRoutedEventArgs e)
@@ -2066,12 +2261,14 @@ public sealed class MediaBrowserController : IDisposable
             pressedMedia?.Id);
 
         HideSelectionRectangle();
-        listViewBase.CapturePointer(e.Pointer);
+        var capture = _libraryPane.BrowserView.MediaScrollViewer;
+        _dragSelection.CaptureOwner = capture;
+        capture.CapturePointer(e.Pointer);
     }
 
-    private bool CanBeginDragSelection(ListViewBase listViewBase, PointerRoutedEventArgs e)
+    private bool CanBeginDragSelection(UIElement source, PointerRoutedEventArgs e)
     {
-        var point = e.GetCurrentPoint(listViewBase);
+        var point = e.GetCurrentPoint(source);
         if (e.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse || !point.Properties.IsLeftButtonPressed)
         {
             return false;
@@ -2088,10 +2285,8 @@ public sealed class MediaBrowserController : IDisposable
             return false;
         }
 
-        // Let the native ListView/GridView item interaction handle single-click selection
-        // and drag initiation for actual media items. Custom rectangle selection only needs
-        // to start from blank space.
-        if (TryGetMediaFromElement(origin, out _))
+        // Tile clicks select. Header clicks collapse. Marquee selection starts on blank space.
+        if (TryGetMediaFromElement(origin, out _) || MediaBrowserView.IsFolderChrome(origin))
         {
             return false;
         }
@@ -2192,7 +2387,7 @@ public sealed class MediaBrowserController : IDisposable
         scrollViewer.ChangeView(null, nextOffset, null, true);
         // WP-B: only refresh the small selection overlay; forcing a full
         // BrowserRoot.UpdateLayout() every 16ms tick stalled the whole pane.
-        _dragSelection.View.UpdateLayout();
+        _libraryPane.BrowserView.MediaRepeater.UpdateLayout();
         UpdateDragSelection(ClampToBrowserBounds(_dragSelection.CurrentPointerPoint));
     }
 
@@ -2237,6 +2432,12 @@ public sealed class MediaBrowserController : IDisposable
 
     private ScrollViewer? GetScrollViewer(ListViewBase listViewBase)
     {
+        var surface = _libraryPane.BrowserView.MediaScrollViewer;
+        if (surface != null)
+        {
+            return surface;
+        }
+
         if (ReferenceEquals(listViewBase, GridView))
         {
             if (_gridViewScrollViewer == null)
@@ -2263,6 +2464,41 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         var result = new List<MediaItemViewModel>();
+        var realizedMedia = _libraryPane.BrowserView.GetRealizedMedia();
+        if (realizedMedia.Count > 0)
+        {
+            foreach (var realized in realizedMedia)
+            {
+                try
+                {
+                    if (realized.Element.Visibility != Visibility.Visible
+                        || realized.Element.ActualWidth <= 0
+                        || realized.Element.ActualHeight <= 0)
+                    {
+                        continue;
+                    }
+
+                    var bounds = GetElementBounds(realized.Element, BrowserRoot);
+                    if (bounds.Width <= 0 || bounds.Height <= 0 || !DoRectsIntersect(selectionRect, bounds))
+                    {
+                        continue;
+                    }
+
+                    result.Add(realized.Media);
+                }
+                catch (Exception ex)
+                {
+                    AppTraceLogger.LogSampled(
+                        "MediaBrowser",
+                        "drag-intersect-skipped",
+                        $"Skipped a realized tile during marquee selection. {ex.GetType().Name}: {ex.Message}",
+                        TimeSpan.FromSeconds(2));
+                }
+            }
+
+            return result;
+        }
+
         // WP-B: iterate realized containers instead of the full filtered
         // collection; the previous per-pointer-move ContainerFromItem scan was
         // O(loaded) per frame during marquee selection.
@@ -2503,7 +2739,7 @@ public sealed class MediaBrowserController : IDisposable
         var containerState = DescribeMediaContainer(activeView, target);
         var targetIndex = _viewModel.FilteredMediaItems.IndexOf(target);
         SuppressIncrementalLoadForProgrammaticScroll();
-        activeView.ScrollIntoView(target);
+        ScrollMediaIntoView(activeView, target);
         AppTraceLogger.Log(
             "MediaBrowser",
             $"{operationName} applied. RequestId={requestId}, Attempt={attempt}, ViewMode={_viewModel.ViewMode}, MediaId='{target.Id}', TargetIndex={targetIndex}, LoadedCount={_selectionSync.LoadedCount}, ViewItemCount={_viewModel.FilteredMediaItems.Count}, Before=({beforeMetrics}), Container=({containerState}).");
@@ -2755,7 +2991,7 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         SuppressIncrementalLoadForProgrammaticScroll();
-        activeView.ScrollIntoView(target);
+        ScrollMediaIntoView(activeView, target);
         AppTraceLogger.LogSampled(
             "MediaBrowser",
             "selected-media-visibility-check-applied",
@@ -2883,22 +3119,27 @@ public sealed class MediaBrowserController : IDisposable
 
     private bool IsMediaVisible(ListViewBase listViewBase, MediaItemViewModel media)
     {
-        if (listViewBase.ContainerFromItem(media) is not FrameworkElement container
-            || container.ActualWidth <= 0
-            || container.ActualHeight <= 0)
+        var scrollViewer = GetScrollViewer(listViewBase);
+        if (_libraryPane.BrowserView.TryGetRealizedElement(media, out var realized) && realized != null)
         {
-            return false;
+            return IsElementMostlyVisible(realized, scrollViewer);
         }
 
-        var scrollViewer = GetScrollViewer(listViewBase);
-        if (scrollViewer == null || scrollViewer.ActualWidth <= 0 || scrollViewer.ActualHeight <= 0)
+        return listViewBase.ContainerFromItem(media) is FrameworkElement container
+            && IsElementMostlyVisible(container, scrollViewer);
+    }
+
+    private static bool IsElementMostlyVisible(FrameworkElement element, ScrollViewer? scrollViewer)
+    {
+        if (element.ActualWidth <= 0 || element.ActualHeight <= 0 || scrollViewer == null
+            || scrollViewer.ActualWidth <= 0 || scrollViewer.ActualHeight <= 0)
         {
             return false;
         }
 
         try
         {
-            var bounds = GetElementBounds(container, scrollViewer);
+            var bounds = GetElementBounds(element, scrollViewer);
             var visibleWidth = Math.Max(0, Math.Min(bounds.Right, scrollViewer.ActualWidth) - Math.Max(bounds.Left, 0));
             var visibleHeight = Math.Max(0, Math.Min(bounds.Bottom, scrollViewer.ActualHeight) - Math.Max(bounds.Top, 0));
             var visibleArea = visibleWidth * visibleHeight;
@@ -3033,6 +3274,15 @@ public sealed class MediaBrowserController : IDisposable
         return (InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift) & Windows.UI.Core.CoreVirtualKeyStates.Down) != 0;
     }
 
+    private void ScrollMediaIntoView(ListViewBase? activeView, MediaItemViewModel target)
+    {
+        _libraryPane.BrowserView.BringMediaIntoView(target);
+        if (activeView?.Items.Contains(target) == true)
+        {
+            activeView.ScrollIntoView(target);
+        }
+    }
+
     private ListViewBase GetActiveMediaView()
     {
         return _viewModel.ViewMode == MediaViewMode.Grid ? GridView : ListView;
@@ -3040,6 +3290,14 @@ public sealed class MediaBrowserController : IDisposable
 
     private void ApplySelectionToView(ListViewBase listViewBase, MediaItemViewModel? selectedMedia)
     {
+        // Selection lives on the item view models. These hosts are unbound
+        // (SelectionMode.None); SelectedItems.Clear throws E_UNEXPECTED and
+        // WinUI fail-fasts with 0xc000027b.
+        if (listViewBase.SelectionMode == ListViewSelectionMode.None || listViewBase.ItemsSource == null)
+        {
+            return;
+        }
+
         if (_selectionCoordinator.SelectedItemIds.Count <= 1)
         {
             if (IsSingleSelectionAppliedToView(listViewBase, selectedMedia))

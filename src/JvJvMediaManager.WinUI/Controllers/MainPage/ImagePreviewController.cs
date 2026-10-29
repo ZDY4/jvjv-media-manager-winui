@@ -26,6 +26,9 @@ public sealed class ImagePreviewController
     private readonly UIElement _playerOverlay;
     private readonly Action _refreshNavigationHotspots;
     private readonly VideoHoverPreviewFrameService _imageTranscoder = new(maxConcurrentFrames: 1);
+    private readonly Dictionary<string, LinkedListNode<PreviewCacheEntry>> _previewCacheNodes = new(StringComparer.Ordinal);
+    private readonly LinkedList<PreviewCacheEntry> _previewCacheLru = new();
+    private long _previewCacheBytes;
     private CancellationTokenSource _previewCancellation = new();
     private readonly PointerEventHandler _pointerPressedHandler;
     private readonly PointerEventHandler _pointerMovedHandler;
@@ -117,18 +120,24 @@ public sealed class ImagePreviewController
         }
 
         _imageViewportView.ImageScrollViewer.Visibility = Visibility.Visible;
-        SetPreviewImageVisible(false);
+        EndImageDrag();
         Interlocked.Increment(ref _imageLoadVersion);
-        try
+        _pendingImageFitMediaId = media.Id;
+
+        // Keep the current picture up until the next decode finishes. A blank
+        // frame is what made each switch feel like a stall. If nothing is
+        // showing yet, the grid thumbnail is an immediate stand-in.
+        var preview = _imageViewportView.PreviewImageElement;
+        if (preview.Source == null && media.Thumbnail != null)
         {
-            _imageViewportView.PreviewImageElement.Source = null;
+            preview.Source = media.Thumbnail;
+            SetPreviewImageVisible(true);
         }
-        catch (Exception ex)
+        else if (preview.Source == null)
         {
-            AppTraceLogger.LogException("ImagePreview", "Failed to clear preview image source.", ex);
+            SetPreviewImageVisible(false);
         }
 
-        BeginImagePreviewSession(media);
         var loadVersion = Volatile.Read(ref _imageLoadVersion);
         var cancellationToken = ResetPreviewCancellation();
         _ = LoadImagePreviewAsync(media, loadVersion, cancellationToken);
@@ -191,18 +200,6 @@ public sealed class ImagePreviewController
         EndImageDrag();
     }
 
-    private void BeginImagePreviewSession(MediaItemViewModel media)
-    {
-        EndImageDrag();
-        _pendingImageFitMediaId = media.Id;
-        SetPreviewImageVisible(false);
-        _imageViewportView.PreviewImageElement.Width = double.NaN;
-        _imageViewportView.PreviewImageElement.Height = double.NaN;
-        UpdatePreviewImageSourceSize(null, null);
-        ResetImageViewTransform();
-        UpdateImageZoomUi(MinImageZoomFactor);
-    }
-
     private async Task LoadImagePreviewAsync(
         MediaItemViewModel media,
         int loadVersion,
@@ -216,32 +213,35 @@ public sealed class ImagePreviewController
             }
 
             var path = media.FileSystemPath;
+            var cacheKey = $"{media.Id}:{media.Size}:{MaxPreviewDecodeLongEdge}";
+            var fromCache = TryTakePreviewCache(cacheKey, out var jpeg);
             AppTraceLogger.Log(
                 "ImagePreview",
-                $"LoadImagePreviewAsync start. MediaId='{media.Id}', File='{media.FileName}'.");
+                $"LoadImagePreviewAsync start. MediaId='{media.Id}', File='{media.FileName}', CacheHit={fromCache}.");
 
-            // Decode with ffmpeg (libjpeg/libavcodec), not WIC. Some JFIF/JPEG
-            // files fail-fast inside combase when BitmapImage/BitmapDecoder
-            // touches them; that cannot be caught in managed code.
-            var jpeg = await _imageTranscoder.TranscodeStillImageAsync(
-                path,
-                MaxPreviewDecodeLongEdge,
-                cancellationToken);
-            if (jpeg == null || jpeg.Length == 0)
+            if (!fromCache)
             {
-                throw new InvalidOperationException("ffmpeg produced no preview image.");
+                // Decode with ffmpeg (libjpeg/libavcodec), not WIC. Some JFIF/JPEG
+                // files fail-fast inside combase when BitmapImage/BitmapDecoder
+                // touches them; that cannot be caught in managed code.
+                jpeg = await _imageTranscoder.TranscodeStillImageAsync(
+                    path,
+                    MaxPreviewDecodeLongEdge,
+                    cancellationToken);
+                if (jpeg == null || jpeg.Length == 0)
+                {
+                    throw new InvalidOperationException("ffmpeg produced no preview image.");
+                }
+
+                if (!IsCurrentImageLoad(media, loadVersion))
+                {
+                    return;
+                }
+
+                RememberPreviewCache(cacheKey, jpeg);
             }
 
-            if (!IsCurrentImageLoad(media, loadVersion))
-            {
-                return;
-            }
-
-            using var stream = new InMemoryRandomAccessStream();
-            await stream.WriteAsync(jpeg.AsBuffer());
-            stream.Seek(0);
-            var bitmap = new BitmapImage();
-            await bitmap.SetSourceAsync(stream);
+            var bitmap = await CreatePreviewBitmapAsync(jpeg!, cancellationToken);
             if (!IsCurrentImageLoad(media, loadVersion))
             {
                 return;
@@ -255,7 +255,7 @@ public sealed class ImagePreviewController
             TryApplyPendingImageFit();
             AppTraceLogger.Log(
                 "ImagePreview",
-                $"LoadImagePreviewAsync completed. MediaId='{media.Id}', PixelSize={bitmap.PixelWidth}x{bitmap.PixelHeight}, JpegBytes={jpeg.Length}.");
+                $"LoadImagePreviewAsync completed. MediaId='{media.Id}', PixelSize={bitmap.PixelWidth}x{bitmap.PixelHeight}, JpegBytes={jpeg!.Length}, CacheHit={fromCache}.");
         }
         catch (OperationCanceledException)
         {
@@ -304,8 +304,66 @@ public sealed class ImagePreviewController
             && string.Equals(_libraryViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal);
     }
 
-    // WP-F: decode at most this width so a 50MP photo cannot spike memory.
-    private const int MaxPreviewDecodeLongEdge = 2048;
+    // WP-F: decode at most this edge so a 50MP photo cannot spike memory.
+    // 1600 is enough for the player pane and is cheaper to transcode than 2048.
+    private const int MaxPreviewDecodeLongEdge = 1600;
+    private const int PreviewCacheCapacity = 12;
+    private const long PreviewCacheMaxBytes = 24L * 1024 * 1024;
+
+    private async Task<BitmapImage> CreatePreviewBitmapAsync(byte[] jpeg, CancellationToken cancellationToken)
+    {
+        using var stream = new InMemoryRandomAccessStream();
+        await stream.WriteAsync(jpeg.AsBuffer());
+        cancellationToken.ThrowIfCancellationRequested();
+        stream.Seek(0);
+        var bitmap = new BitmapImage();
+        await bitmap.SetSourceAsync(stream);
+        return bitmap;
+    }
+
+    private bool TryTakePreviewCache(string key, out byte[] jpeg)
+    {
+        if (_previewCacheNodes.TryGetValue(key, out var node))
+        {
+            _previewCacheLru.Remove(node);
+            _previewCacheLru.AddFirst(node);
+            jpeg = node.Value.Jpeg;
+            return true;
+        }
+
+        jpeg = Array.Empty<byte>();
+        return false;
+    }
+
+    private void RememberPreviewCache(string key, byte[] jpeg)
+    {
+        if (_previewCacheNodes.TryGetValue(key, out var existing))
+        {
+            _previewCacheBytes -= existing.Value.Jpeg.Length;
+            _previewCacheLru.Remove(existing);
+            _previewCacheNodes.Remove(key);
+        }
+
+        var entry = new PreviewCacheEntry(key, jpeg);
+        var node = _previewCacheLru.AddFirst(entry);
+        _previewCacheNodes[key] = node;
+        _previewCacheBytes += jpeg.Length;
+
+        while (_previewCacheLru.Count > PreviewCacheCapacity || _previewCacheBytes > PreviewCacheMaxBytes)
+        {
+            var last = _previewCacheLru.Last;
+            if (last == null)
+            {
+                break;
+            }
+
+            _previewCacheLru.RemoveLast();
+            _previewCacheNodes.Remove(last.Value.Key);
+            _previewCacheBytes -= last.Value.Jpeg.Length;
+        }
+    }
+
+    private sealed record PreviewCacheEntry(string Key, byte[] Jpeg);
 
     private void UpdatePreviewImageSourceSize(int? width, int? height)
     {

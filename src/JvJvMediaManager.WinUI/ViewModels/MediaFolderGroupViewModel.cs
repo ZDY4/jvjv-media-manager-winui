@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using Microsoft.UI.Dispatching;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.ViewModels;
@@ -236,27 +237,51 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
 
     private sealed class MediaItemCollection : ObservableCollection<MediaItemViewModel>
     {
+        // Grouped GridView fail-fasts (StackHash / 0xc000027b / E_UNEXPECTED)
+        // when one layout pass applies more notifications than this. Expand
+        // and collapse stay on a single Reset: one side of that change is an
+        // empty group, so there are no realized item containers to recycle.
+        // A scroll page append is the opposite case. Resetting a group that
+        // already has containers crashes inside Microsoft.UI.Xaml.dll, so the
+        // suffix is applied as ItemInserted notifications, off the current
+        // layout pass, and never more than this many per dispatcher turn.
+        private const int VisibleItemNotificationBudget = 16;
+
+        private readonly List<MediaItemViewModel> _pendingAppend = new();
+        private int _pendingAppendIndex;
+        private int _appendGeneration;
+        private bool _appendPumpScheduled;
+
         public void ReplaceAll(IEnumerable<MediaItemViewModel> items)
         {
             var desiredItems = items.ToList();
-            if (Items.Count == desiredItems.Count
-                && Items.Select(item => item.Id).SequenceEqual(desiredItems.Select(item => item.Id), StringComparer.Ordinal))
+            if (Items.Count > 0
+                && desiredItems.Count > Items.Count
+                && HasIdPrefix(desiredItems, Items))
             {
-                for (var index = 0; index < desiredItems.Count; index++)
-                {
-                    if (!ReferenceEquals(Items[index], desiredItems[index]))
-                    {
-                        SetItem(index, desiredItems[index]);
-                    }
-                }
-
+                ReplaceMaterializedReferences(desiredItems);
+                SetPendingAppend(desiredItems);
+                var materializedCount = Items.Count;
+                var appendCount = PendingAppendCount;
+                AppTraceLogger.LogSampled(
+                    "MediaFolderGroup",
+                    "visible-items-append",
+                    () => $"Queued visible media append. Materialized={materializedCount}, AppendCount={appendCount}.",
+                    TimeSpan.FromSeconds(1));
+                EnsureAppendPumpScheduled();
                 return;
             }
 
-            // Grouped GridView fail-fasts (StackHash / E_UNEXPECTED) when a
-            // folder expand/collapse fires one Add/Remove per tile. One Reset
-            // replaces the window in a single layout pass.
-            if (desiredItems.Count == 0 || Items.Count == 0 || Math.Abs(Items.Count - desiredItems.Count) > 16)
+            CancelPendingAppend();
+            if (HasSameIds(Items, desiredItems))
+            {
+                ReplaceMaterializedReferences(desiredItems);
+                return;
+            }
+
+            if (desiredItems.Count == 0
+                || Items.Count == 0
+                || Math.Abs(Items.Count - desiredItems.Count) > VisibleItemNotificationBudget)
             {
                 ResetTo(desiredItems);
                 return;
@@ -306,6 +331,152 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
                 "visible-items-reset",
                 $"Reset visible media. PreviousCount={previousCount}, Count={Items.Count}.",
                 TimeSpan.FromSeconds(1));
+        }
+
+        private int PendingAppendCount => _pendingAppend.Count - _pendingAppendIndex;
+
+        private void SetPendingAppend(IReadOnlyList<MediaItemViewModel> desiredItems)
+        {
+            _pendingAppend.Clear();
+            _pendingAppendIndex = 0;
+            for (var index = Items.Count; index < desiredItems.Count; index++)
+            {
+                _pendingAppend.Add(desiredItems[index]);
+            }
+        }
+
+        private void ClearPendingAppend()
+        {
+            _pendingAppend.Clear();
+            _pendingAppendIndex = 0;
+        }
+
+        private void CancelPendingAppend()
+        {
+            ClearPendingAppend();
+            _appendGeneration++;
+        }
+
+        private void ReplaceMaterializedReferences(IReadOnlyList<MediaItemViewModel> desiredItems)
+        {
+            var count = Math.Min(Items.Count, desiredItems.Count);
+            for (var index = 0; index < count; index++)
+            {
+                if (!ReferenceEquals(Items[index], desiredItems[index]))
+                {
+                    SetItem(index, desiredItems[index]);
+                }
+            }
+        }
+
+        private void EnsureAppendPumpScheduled()
+        {
+            if (_appendPumpScheduled || PendingAppendCount == 0)
+            {
+                return;
+            }
+
+            var queue = DispatcherQueue.GetForCurrentThread();
+            if (queue == null)
+            {
+                DrainPendingAppend();
+                return;
+            }
+
+            var generation = _appendGeneration;
+            _appendPumpScheduled = true;
+            if (!queue.TryEnqueue(DispatcherQueuePriority.Normal, () => PumpAppendBatch(generation)))
+            {
+                _appendPumpScheduled = false;
+                DrainPendingAppend();
+            }
+        }
+
+        private void PumpAppendBatch(int generation)
+        {
+            if (generation != _appendGeneration)
+            {
+                CompleteAppendPumpTurn(generation);
+                return;
+            }
+
+            var inserted = 0;
+            while (inserted < VisibleItemNotificationBudget
+                   && PendingAppendCount > 0
+                   && generation == _appendGeneration)
+            {
+                var next = _pendingAppend[_pendingAppendIndex++];
+                InsertItem(Items.Count, next);
+                inserted++;
+            }
+
+            CompleteAppendPumpTurn(generation);
+        }
+
+        private void CompleteAppendPumpTurn(int generation)
+        {
+            if (generation != _appendGeneration)
+            {
+                _appendPumpScheduled = false;
+                if (PendingAppendCount > 0)
+                {
+                    EnsureAppendPumpScheduled();
+                }
+
+                return;
+            }
+
+            if (PendingAppendCount == 0)
+            {
+                ClearPendingAppend();
+                _appendPumpScheduled = false;
+                return;
+            }
+
+            var queue = DispatcherQueue.GetForCurrentThread();
+            if (queue == null || !queue.TryEnqueue(DispatcherQueuePriority.Normal, () => PumpAppendBatch(generation)))
+            {
+                _appendPumpScheduled = false;
+                DrainPendingAppend();
+            }
+        }
+
+        private void DrainPendingAppend()
+        {
+            var generation = _appendGeneration;
+            while (PendingAppendCount > 0 && generation == _appendGeneration)
+            {
+                var next = _pendingAppend[_pendingAppendIndex++];
+                InsertItem(Items.Count, next);
+            }
+
+            if (generation == _appendGeneration && PendingAppendCount == 0)
+            {
+                ClearPendingAppend();
+            }
+        }
+
+        private static bool HasSameIds(IList<MediaItemViewModel> current, IReadOnlyList<MediaItemViewModel> desired)
+        {
+            return current.Count == desired.Count && HasIdPrefix(desired, current);
+        }
+
+        private static bool HasIdPrefix(IReadOnlyList<MediaItemViewModel> desired, IList<MediaItemViewModel> prefix)
+        {
+            if (desired.Count < prefix.Count)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < prefix.Count; index++)
+            {
+                if (!string.Equals(desired[index].Id, prefix[index].Id, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

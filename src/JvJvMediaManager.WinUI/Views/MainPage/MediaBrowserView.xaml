@@ -1,69 +1,73 @@
 <UserControl
     x:Class="JvJvMediaManager.Views.MainPageParts.MediaBrowserView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:viewModels="using:JvJvMediaManager.ViewModels">
 
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/MainPage/MediaLibraryResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
-            <CollectionViewSource x:Key="ListGroupedMediaItemsSource"
-                                  IsSourceGrouped="True"
-                                  ItemsPath="VisibleItems" />
-            <CollectionViewSource x:Key="GridGroupedMediaItemsSource"
-                                  IsSourceGrouped="True"
-                                  ItemsPath="VisibleItems" />
+            <DataTemplate x:Key="FolderSectionTemplate" x:DataType="viewModels:MediaFolderGroupViewModel">
+                <StackPanel Spacing="6" Padding="0,0,0,8">
+                    <ContentPresenter Content="{Binding}"
+                                      ContentTemplate="{StaticResource MediaFolderGroupHeaderTemplate}"
+                                      HorizontalAlignment="Stretch" />
+                    <ItemsRepeater ItemsSource="{Binding VisibleItems}"
+                                   ItemTemplate="{StaticResource GridItemTemplate}"
+                                   HorizontalAlignment="Stretch"
+                                   VerticalAlignment="Top"
+                                   Tag="GroupItems">
+                        <ItemsRepeater.Layout>
+                            <UniformGridLayout Orientation="Horizontal"
+                                               MinItemWidth="140"
+                                               MinItemHeight="140"
+                                               MinRowSpacing="4"
+                                               MinColumnSpacing="4" />
+                        </ItemsRepeater.Layout>
+                    </ItemsRepeater>
+                </StackPanel>
+            </DataTemplate>
         </ResourceDictionary>
     </UserControl.Resources>
 
     <Grid x:Name="RootGrid"
           x:FieldModifier="public">
+        <ScrollViewer x:Name="MediaScrollViewer"
+                      x:FieldModifier="public"
+                      Visibility="{Binding MediaBrowserVisibility}"
+                      HorizontalScrollMode="Disabled"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollMode="Enabled"
+                      VerticalScrollBarVisibility="Auto"
+                      ZoomMode="Disabled"
+                      Background="Transparent">
+            <ItemsRepeater x:Name="MediaRepeater"
+                           x:FieldModifier="public"
+                           ItemsSource="{Binding MediaFolderGroups}"
+                           ItemTemplate="{StaticResource FolderSectionTemplate}"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Top">
+                <ItemsRepeater.Layout>
+                    <StackLayout Orientation="Vertical" />
+                </ItemsRepeater.Layout>
+            </ItemsRepeater>
+        </ScrollViewer>
+
+        <!-- Grouped ListView/GridView fail-fast inside Microsoft.UI.Xaml.dll when a
+             realized group changes. These hosts stay unbound so older controller
+             hooks still have a control to attach to. The repeater above is the view. -->
         <ListView x:Name="ListView"
                   x:FieldModifier="public"
-                  AutomationProperties.AutomationId="MediaListView"
-                  AutomationProperties.Name="媒体列表"
-                  ItemsSource="{Binding Source={StaticResource ListGroupedMediaItemsSource}}"
-                  Visibility="{Binding ListViewVisibility}"
-                  Background="Transparent"
-                  ItemContainerStyle="{StaticResource MediaListItemContainerStyle}"
-                  ItemTemplate="{StaticResource ListItemTemplate}"
-                  DataFetchSize="4"
-                  IncrementalLoadingThreshold="3"
-                  SelectionMode="Extended"
-                  CanDragItems="True"
-                  IsItemClickEnabled="False">
-            <ListView.GroupStyle>
-                <GroupStyle HeaderTemplate="{StaticResource MediaFolderGroupHeaderTemplate}" />
-            </ListView.GroupStyle>
-        </ListView>
-
+                  Visibility="Collapsed"
+                  IsHitTestVisible="False"
+                  SelectionMode="None" />
         <GridView x:Name="GridView"
                   x:FieldModifier="public"
-                  AutomationProperties.AutomationId="MediaGridView"
-                  AutomationProperties.Name="媒体网格"
-                  ItemsSource="{Binding Source={StaticResource GridGroupedMediaItemsSource}}"
-                  Tag="{Binding IconSize}"
-                  Visibility="{Binding GridViewVisibility}"
-                  Background="Transparent"
-                  ItemContainerStyle="{StaticResource MediaGridItemContainerStyle}"
-                  ItemTemplate="{StaticResource GridItemTemplate}"
-                  DataFetchSize="5"
-                  IncrementalLoadingThreshold="4"
-                  SelectionMode="Extended"
-                  CanDragItems="True"
-                  IsItemClickEnabled="False">
-            <GridView.GroupStyle>
-                <GroupStyle HeaderTemplate="{StaticResource MediaFolderGroupHeaderTemplate}" />
-            </GridView.GroupStyle>
-            <GridView.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <ItemsWrapGrid Orientation="Horizontal"
-                                   ItemWidth="140"
-                                   ItemHeight="140" />
-                </ItemsPanelTemplate>
-            </GridView.ItemsPanel>
-        </GridView>
+                  Visibility="Collapsed"
+                  IsHitTestVisible="False"
+                  SelectionMode="None" />
 
         <Canvas x:Name="SelectionCanvas"
                 x:FieldModifier="public"
