@@ -35,6 +35,8 @@ public static class AppServiceRegistration
                 playbackResources: playbackResources);
         });
         services.AddSingleton<LibraryShellServices>();
+        services.AddTransient<SelectionViewModel>();
+        services.AddTransient<MainPageShellViewModel>();
         services.AddTransient<IContentDialogService, ContentDialogService>();
         services.AddTransient<MainPageModuleFactory>();
 

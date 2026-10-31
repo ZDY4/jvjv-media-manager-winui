@@ -9,12 +9,13 @@ using JvJvMediaManager.Views.MainPageParts;
 using Windows.System;
 using Windows.ApplicationModel.DataTransfer;
 using JvJvMediaManager.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.Views;
 
 public sealed partial class MainPage : Page
 {
-    private readonly MainPageShellViewModel _shell = new();
+    private readonly MainPageShellViewModel _shell;
     private readonly Services.MainPage.MainPageModuleFactory _modules;
     private readonly IContentDialogService _dialogService;
     private readonly KeyEventHandler _keyDownHandler;
@@ -26,6 +27,7 @@ public sealed partial class MainPage : Page
 
     public MainPage()
     {
+        _shell = ((App)Application.Current).Services.GetRequiredService<MainPageShellViewModel>();
         _modules = ((App)Application.Current).MainPageModules;
         _dialogService = _modules.CreateContentDialogService();
         _keyDownHandler = MainPage_KeyDown;
