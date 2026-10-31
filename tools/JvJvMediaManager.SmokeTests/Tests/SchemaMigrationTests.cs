@@ -19,8 +19,8 @@ internal static class SchemaMigrationTests
 
             var factory = new MediaDbConnectionFactory(Path.Combine(ws.Root, "media.db"));
             using var connection = factory.OpenConnection();
-            Assert.Equal(2L, ReadScalar<long>(connection, "PRAGMA user_version;"), "current schema version");
-            Assert.Equal(2L, ReadScalar<long>(connection, "SELECT COUNT(*) FROM schema_migrations;"), "migration history rows");
+            Assert.Equal(3L, ReadScalar<long>(connection, "PRAGMA user_version;"), "current schema version");
+            Assert.Equal(3L, ReadScalar<long>(connection, "SELECT COUNT(*) FROM schema_migrations;"), "migration history rows");
         });
 
         registry.Add(Suite, "legacy databases upgrade in one initialization", () =>
@@ -44,9 +44,9 @@ PRAGMA user_version = 0;
 
             var factory = new MediaDbConnectionFactory(dbPath);
             using var upgraded = factory.OpenConnection();
-            Assert.Equal(2L, ReadScalar<long>(upgraded, "PRAGMA user_version;"), "legacy database schema version");
+            Assert.Equal(3L, ReadScalar<long>(upgraded, "PRAGMA user_version;"), "legacy database schema version");
             Assert.Equal(1L, ReadScalar<long>(upgraded, "SELECT COUNT(*) FROM pragma_table_info('media') WHERE name = 'folderPath';"), "legacy media columns upgraded");
-            Assert.Equal(2L, ReadScalar<long>(upgraded, "SELECT COUNT(*) FROM schema_migrations;"), "legacy migration history rows");
+            Assert.Equal(3L, ReadScalar<long>(upgraded, "SELECT COUNT(*) FROM schema_migrations;"), "legacy migration history rows");
         });
 
         registry.Add(Suite, "future schema versions fail closed", () =>

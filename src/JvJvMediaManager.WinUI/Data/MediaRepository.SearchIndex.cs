@@ -53,6 +53,7 @@ internal sealed partial class MediaRepository
         insertCmd.Parameters.AddWithValue("$filename", fileName);
         insertCmd.Parameters.AddWithValue("$tags", tags);
         await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+        await MarkSearchIndexHealthyAsync(connection, transaction, cancellationToken);
     }
 
     private static async Task RefreshSearchIndexBatchAsync(
@@ -94,6 +95,7 @@ WHERE m.id IN ({inClause})
 GROUP BY m.id, m.filename;
 ";
             await cmd.ExecuteNonQueryAsync(cancellationToken);
+            await MarkSearchIndexHealthyAsync(connection, transaction, cancellationToken);
         }
     }
 
@@ -131,11 +133,38 @@ GROUP BY m.id, m.filename;
         {
             await using var cmd = CreateCommand(connection, transaction);
             cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_search' LIMIT 1;";
-            return await cmd.ExecuteScalarAsync(cancellationToken) != null;
+            if (await cmd.ExecuteScalarAsync(cancellationToken) == null)
+            {
+                return false;
+            }
+
+            // FTS is a derived index. If a previous rebuild failed, callers
+            // should use the LIKE fallback until startup maintenance repairs it
+            // instead of returning silently stale search results.
+            cmd.CommandText = "SELECT isDirty FROM media_search_state WHERE id = 1;";
+            var dirty = await cmd.ExecuteScalarAsync(cancellationToken);
+            return dirty == null || Convert.ToInt64(dirty) == 0;
         }
         catch
         {
             return false;
         }
+    }
+
+    private static async Task MarkSearchIndexHealthyAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var cmd = CreateCommand(connection, transaction);
+        cmd.CommandText = @"
+UPDATE media_search_state
+SET indexedGeneration = indexedGeneration + 1,
+    isDirty = 0,
+    lastError = NULL,
+    updatedAt = unixepoch()
+WHERE id = 1;
+";
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 }

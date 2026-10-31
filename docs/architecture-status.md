@@ -6,6 +6,7 @@
 
 - SQLite 连接统一配置 busy timeout、foreign keys、WAL 和 synchronous 策略。
 - SQLite 数据库迁移现在使用显式 `user_version`，并记录 `schema_migrations` 历史；遇到未来版本会 fail closed。
+- FTS 派生索引记录 dirty 状态；索引异常时查询会回退到 LIKE，启动维护成功后再恢复 FTS。
 - 媒体查询已具备经过 smoke contract 验证的复合 keyset 分页；全库流式读取使用 keyset continuation。
 - Upsert 和批量标签写入在事务内批量刷新 FTS 行，避免每个媒体逐条重建索引。
 - 播放资源使用 lease 模型，后台媒体 I/O 会根据播放状态限速。
@@ -21,7 +22,7 @@
 - `IUiThreadDispatcher` 已存在并在部分 ViewModel 使用，控制器仍直接操作 `DispatcherQueue`。
 - 文件监控已有防抖、合并和 overflow 重扫；处理失败会重新入队，但尚无持久化重试队列。
 - 媒体身份已有内容指纹和 relocation 机制，但路径哈希仍是初始 ID，canonical path 和内部 opaque ID 尚未完全分离。
-- FTS 失败时有 LIKE fallback，但 dirty/generation 状态和后台重建队列仍待补齐。
+- FTS 失败时有 LIKE fallback 和 dirty 状态；跨进程可恢复的后台重建队列仍待补齐。
 
 ## 后续工作
 
