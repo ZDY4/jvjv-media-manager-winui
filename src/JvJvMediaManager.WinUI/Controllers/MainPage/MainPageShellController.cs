@@ -928,7 +928,7 @@ public sealed class MainPageShellController
                     return true;
                 }
 
-                if (_activePlaybackTarget.IndependentWindow is { } staleWindow)
+                if (_activePlaybackTarget.IndependentTarget is { } staleWindow)
                 {
                     _activePlaybackTarget.ClearIndependentIfActive(staleWindow);
                 }
@@ -1338,7 +1338,7 @@ public sealed class MainPageShellController
                     return true;
                 }
 
-                if (_activePlaybackTarget.IndependentWindow is { } staleWindow)
+                if (_activePlaybackTarget.IndependentTarget is { } staleWindow)
                 {
                     _activePlaybackTarget.ClearIndependentIfActive(staleWindow);
                 }

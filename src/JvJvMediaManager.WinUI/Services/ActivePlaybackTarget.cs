@@ -1,5 +1,5 @@
 using JvJvMediaManager.Utilities;
-using JvJvMediaManager.Views;
+using Windows.System;
 
 namespace JvJvMediaManager.Services;
 
@@ -10,6 +10,13 @@ internal enum ActivePlaybackTargetKind
     Independent
 }
 
+internal interface IIndependentPlaybackTarget
+{
+    void PlayMedia(IndependentMediaWindowMedia media);
+
+    Task<bool> TryHandleShortcutAsync(VirtualKey key);
+}
+
 /// <summary>
 /// Tracks which playback surface should receive library selection and player shortcuts
 /// after the user last clicked/activated it.
@@ -18,7 +25,7 @@ internal sealed class ActivePlaybackTarget
 {
     private readonly object _gate = new();
     private ActivePlaybackTargetKind _kind = ActivePlaybackTargetKind.Main;
-    private WeakReference<IndependentMediaWindow>? _independent;
+    private WeakReference<IIndependentPlaybackTarget>? _independent;
 
     public ActivePlaybackTargetKind Kind
     {
@@ -31,7 +38,7 @@ internal sealed class ActivePlaybackTarget
         }
     }
 
-    public IndependentMediaWindow? IndependentWindow
+    public IIndependentPlaybackTarget? IndependentTarget
     {
         get
         {
@@ -64,14 +71,14 @@ internal sealed class ActivePlaybackTarget
         AppTraceLogger.Log("ActivePlaybackTarget", "Target=Docked.");
     }
 
-    public void SetIndependent(IndependentMediaWindow window)
+    public void SetIndependent(IIndependentPlaybackTarget target)
     {
-        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(target);
 
         lock (_gate)
         {
             _kind = ActivePlaybackTargetKind.Independent;
-            _independent = new WeakReference<IndependentMediaWindow>(window);
+            _independent = new WeakReference<IIndependentPlaybackTarget>(target);
         }
 
         AppTraceLogger.Log("ActivePlaybackTarget", "Target=Independent.");
@@ -93,9 +100,9 @@ internal sealed class ActivePlaybackTarget
         AppTraceLogger.Log("ActivePlaybackTarget", "Docked cleared; Target=Main.");
     }
 
-    public void ClearIndependentIfActive(IndependentMediaWindow window)
+    public void ClearIndependentIfActive(IIndependentPlaybackTarget target)
     {
-        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(target);
 
         lock (_gate)
         {
@@ -104,7 +111,7 @@ internal sealed class ActivePlaybackTarget
                 return;
             }
 
-            if (!ReferenceEquals(ResolveIndependentUnlocked(), window))
+            if (!ReferenceEquals(ResolveIndependentUnlocked(), target))
             {
                 return;
             }
@@ -127,7 +134,7 @@ internal sealed class ActivePlaybackTarget
         return _kind;
     }
 
-    private IndependentMediaWindow? ResolveIndependentUnlocked()
+    private IIndependentPlaybackTarget? ResolveIndependentUnlocked()
     {
         if (_independent == null)
         {
