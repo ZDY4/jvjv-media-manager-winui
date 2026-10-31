@@ -1,6 +1,7 @@
 using JvJvMediaManager.Data;
 using JvJvMediaManager.Services.MainPage;
 using JvJvMediaManager.ViewModels.MainPage;
+using JvJvMediaManager.Views;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.Services;
@@ -39,6 +40,7 @@ public static class AppServiceRegistration
         services.AddTransient<MainPageShellViewModel>();
         services.AddTransient<IContentDialogService, ContentDialogService>();
         services.AddTransient<MainPageModuleFactory>();
+        services.AddTransient<JvJvMediaManager.Views.MainPage>();
 
         return services.BuildServiceProvider(new ServiceProviderOptions
         {

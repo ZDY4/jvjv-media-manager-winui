@@ -9,7 +9,6 @@ using JvJvMediaManager.Views.MainPageParts;
 using Windows.System;
 using Windows.ApplicationModel.DataTransfer;
 using JvJvMediaManager.Services;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.Views;
 
@@ -25,11 +24,14 @@ public sealed partial class MainPage : Page
     private bool _isResizingDockedPlayer;
     private bool _isShutdown;
 
-    public MainPage()
+    public MainPage(
+        MainPageShellViewModel shell,
+        Services.MainPage.MainPageModuleFactory modules,
+        IContentDialogService dialogService)
     {
-        _shell = ((App)Application.Current).Services.GetRequiredService<MainPageShellViewModel>();
-        _modules = ((App)Application.Current).MainPageModules;
-        _dialogService = _modules.CreateContentDialogService();
+        _shell = shell ?? throw new ArgumentNullException(nameof(shell));
+        _modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _keyDownHandler = MainPage_KeyDown;
         InitializeComponent();
         DockedPlayerHost.DetachRequested += DockedPlayerHost_DetachRequested;

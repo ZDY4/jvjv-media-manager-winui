@@ -9,6 +9,7 @@ using JvJvMediaManager.Views;
 using JvJvMediaManager.Utilities;
 using WinRT.Interop;
 using Windows.System;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager;
 
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
     private readonly WindowKeyboardInterceptor _keyboardInterceptor;
     private AppWindow? _appWindow;
     private MainPage? _mainPage;
+    private IServiceScope? _mainWindowScope;
     private IntPtr _windowHandle;
     private IntPtr _keyboardHookHandle;
 
@@ -55,7 +57,8 @@ public partial class MainWindow : Window
         ConfigureInitialWindowBounds();
         try
         {
-            _mainPage = new MainPage();
+            _mainWindowScope = ((App)Application.Current).Services.CreateScope();
+            _mainPage = _mainWindowScope.ServiceProvider.GetRequiredService<MainPage>();
             RootFrame.Content = _mainPage;
             AppTraceLogger.Log("MainWindow", "MainPage created.");
             InstallKeyboardSubclass();
@@ -209,6 +212,8 @@ public partial class MainWindow : Window
     {
         _mainPage?.Shutdown();
         _mainPage = null;
+        _mainWindowScope?.Dispose();
+        _mainWindowScope = null;
         RemoveLowLevelKeyboardHook();
         RemoveKeyboardSubclass();
         if (_appWindow != null)

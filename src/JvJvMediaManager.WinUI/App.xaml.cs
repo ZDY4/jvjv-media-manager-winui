@@ -1,7 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.Extensions.DependencyInjection;
 using JvJvMediaManager.Services;
-using JvJvMediaManager.Services.MainPage;
 using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager;
@@ -10,13 +9,11 @@ public partial class App : Application
 {
     public static Window? MainWindow { get; private set; }
     public ServiceProvider Services { get; }
-    public MainPageModuleFactory MainPageModules { get; }
     private int _servicesDisposed;
 
     public App()
     {
         Services = AppServiceRegistration.CreateServiceProvider();
-        MainPageModules = Services.GetRequiredService<MainPageModuleFactory>();
         AppTraceLogger.LogSessionStart();
         UnhandledException += App_UnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
