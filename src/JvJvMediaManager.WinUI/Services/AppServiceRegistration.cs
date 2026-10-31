@@ -38,6 +38,10 @@ public static class AppServiceRegistration
         services.AddTransient<IContentDialogService, ContentDialogService>();
         services.AddTransient<MainPageModuleFactory>();
 
-        return services.BuildServiceProvider(validateScopes: true);
+        return services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true
+        });
     }
 }
