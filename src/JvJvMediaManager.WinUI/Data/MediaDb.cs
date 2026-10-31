@@ -3,7 +3,7 @@ using JvJvMediaManager.Utilities;
 
 namespace JvJvMediaManager.Data;
 
-public sealed class MediaDb
+public sealed class MediaDb : IDisposable
 {
     public readonly record struct MediaEntryRef(string Id, string Path);
     public readonly record struct MediaFingerprintRef(
@@ -18,6 +18,9 @@ public sealed class MediaDb
     private readonly MediaRepository _media;
     private readonly MediaTagRepository _tags;
     private readonly PlaylistRepository _playlists;
+    private static readonly SemaphoreSlim StartupMaintenanceGate = new(1, 1);
+    private readonly CancellationTokenSource _maintenanceCancellation = new();
+    private int _isDisposed;
 
     public MediaDb(string dataDir)
     {
@@ -43,7 +46,7 @@ public sealed class MediaDb
         // shows the first cached page immediately, then awaits this task
         // before arming folder watchers (and silently refreshes if maintenance
         // was still running during that first query).
-        StartupMaintenanceTask = Task.Run(RunStartupMaintenanceAsync);
+        StartupMaintenanceTask = Task.Run(() => RunStartupMaintenanceAsync(_maintenanceCancellation.Token));
     }
 
     /// <summary>
@@ -53,17 +56,53 @@ public sealed class MediaDb
     /// </summary>
     public Task StartupMaintenanceTask { get; private set; } = Task.CompletedTask;
 
-    private async Task RunStartupMaintenanceAsync()
+    private async Task RunStartupMaintenanceAsync(CancellationToken cancellationToken)
     {
+        await StartupMaintenanceGate.WaitAsync(cancellationToken);
         try
         {
-            await using var connection = await _connections.OpenConnectionAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
             MediaDbSchema.RunStartupMaintenance(connection);
             AppTraceLogger.Log("MediaDb", "Startup maintenance completed.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            AppTraceLogger.Log("MediaDb", "Startup maintenance cancelled during shutdown.");
         }
         catch (Exception ex)
         {
             AppTraceLogger.LogException("MediaDb", "Startup maintenance failed.", ex);
+        }
+        finally
+        {
+            StartupMaintenanceGate.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+        {
+            return;
+        }
+
+        _maintenanceCancellation.Cancel();
+        try
+        {
+            StartupMaintenanceTask.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception ex) when (ex is AggregateException or OperationCanceledException)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaDb",
+                "startup-maintenance-dispose-wait-failed",
+                $"Startup maintenance did not finish during database disposal. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            _maintenanceCancellation.Dispose();
         }
     }
 

@@ -15,7 +15,6 @@ public partial class App : Application
 
     public App()
     {
-        Directory.SetCurrentDirectory(AppContext.BaseDirectory);
         Services = AppServiceRegistration.CreateServiceProvider();
         MainPageModules = Services.GetRequiredService<MainPageModuleFactory>();
         AppTraceLogger.LogSessionStart();

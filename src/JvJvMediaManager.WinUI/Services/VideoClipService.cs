@@ -582,8 +582,7 @@ public sealed class VideoClipService
         {
             Path.Combine(AppContext.BaseDirectory, fileName),
             Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "bin", fileName),
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName),
-            Path.Combine(Environment.CurrentDirectory, "tools", "ffmpeg", "bin", fileName)
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName)
         };
 
         var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;

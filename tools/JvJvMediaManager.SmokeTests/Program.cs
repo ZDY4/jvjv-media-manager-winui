@@ -11,6 +11,7 @@ Environment.SetEnvironmentVariable(AppDataPaths.StorageRootEnvironmentVariable, 
 var registry = new TestRegistry();
 
 MediaTransactionTests.Register(registry);
+SchemaMigrationTests.Register(registry);
 ConnectionConfigTests.Register(registry);
 MediaPagingContractTests.Register(registry);
 MediaPositionContractTests.Register(registry);

@@ -55,6 +55,48 @@ internal sealed partial class MediaRepository
         await insertCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private static async Task RefreshSearchIndexBatchAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        IReadOnlyCollection<string> mediaIds,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = mediaIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0 || !await IsSearchIndexAvailableAsync(connection, transaction, cancellationToken))
+        {
+            return;
+        }
+
+        const int maxIdsPerBatch = 500;
+        for (var offset = 0; offset < ids.Count; offset += maxIdsPerBatch)
+        {
+            var count = Math.Min(maxIdsPerBatch, ids.Count - offset);
+            await using var cmd = CreateCommand(connection, transaction);
+            var parameters = new List<string>(count);
+            for (var index = 0; index < count; index++)
+            {
+                var parameterName = $"$mediaId{index}";
+                parameters.Add(parameterName);
+                cmd.Parameters.AddWithValue(parameterName, ids[offset + index]);
+            }
+
+            var inClause = string.Join(", ", parameters);
+            cmd.CommandText = $@"
+DELETE FROM media_search WHERE mediaId IN ({inClause});
+INSERT INTO media_search(mediaId, filename, tags)
+SELECT m.id, m.filename, COALESCE(group_concat(t.name, ' '), '')
+FROM media m
+LEFT JOIN tags t ON t.mediaId = m.id
+WHERE m.id IN ({inClause})
+GROUP BY m.id, m.filename;
+";
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
     private static async Task DeleteSearchIndexAsync(SqliteConnection connection, SqliteTransaction? transaction, string mediaId, CancellationToken cancellationToken = default)
     {
         if (!await IsSearchIndexAvailableAsync(connection, transaction, cancellationToken))
