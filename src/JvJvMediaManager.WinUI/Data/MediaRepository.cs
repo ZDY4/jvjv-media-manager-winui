@@ -333,13 +333,17 @@ ORDER BY
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         const int pageSize = 1000;
-        var offset = 0;
+        MediaPageCursor? cursor = null;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var page = await QueryMediaPageAsync(new MediaQuery
             {
-                Offset = offset,
+                // The default stream order is keyset-compatible. After the
+                // first page, continue from the complete ordering tuple rather
+                // than forcing SQLite to scan an ever-growing OFFSET.
+                Cursor = cursor,
+                Offset = 0,
                 Limit = pageSize,
                 SortField = MediaSortField.ModifiedAt,
                 SortOrder = MediaSortOrder.Desc
@@ -349,9 +353,16 @@ ORDER BY
                 yield return media;
             }
 
-            offset += page.Items.Count;
             if (!page.HasMore || page.Items.Count == 0)
             {
+                yield break;
+            }
+
+            cursor = page.NextCursor;
+            if (cursor == null)
+            {
+                // Defensive fallback for a future query implementation that
+                // cannot produce a cursor for this sort.
                 yield break;
             }
         }

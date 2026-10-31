@@ -66,3 +66,5 @@ run-portable.bat
 ## 文档
 
 - [播放列表拖拽功能剩余任务](docs/playlist-drag-drop-remaining-tasks.md)
+- [架构优化状态](docs/architecture-status.md)
+- [构建与可复现性基线](docs/reproducibility-baseline.md)
