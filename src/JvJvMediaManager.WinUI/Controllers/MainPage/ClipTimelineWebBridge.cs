@@ -11,6 +11,11 @@ namespace JvJvMediaManager.Controllers.MainPage;
 internal sealed class ClipTimelineWebBridge : IClipTimelineWebBridge
 {
     private const string TimelineHostName = "clip-editor.local";
+#if DEBUG
+    private const bool EnableWebViewDevTools = true;
+#else
+    private const bool EnableWebViewDevTools = false;
+#endif
     private static readonly Uri TimelineEditorUri = new($"https://{TimelineHostName}/editor.html");
     private WebView2? _webView;
     private string? _pendingFullStateJson;
@@ -83,7 +88,7 @@ internal sealed class ClipTimelineWebBridge : IClipTimelineWebBridge
             {
                 sender.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 sender.CoreWebView2.Settings.IsStatusBarEnabled = false;
-                sender.CoreWebView2.Settings.AreDevToolsEnabled = true;
+                sender.CoreWebView2.Settings.AreDevToolsEnabled = EnableWebViewDevTools;
             }
 
             if (!args.IsSuccess)
@@ -207,18 +212,18 @@ internal sealed class ClipTimelineWebBridge : IClipTimelineWebBridge
             await _webView.EnsureCoreWebView2Async(environment);
             if (_webView.CoreWebView2 == null)
             {
-                return;
+                throw new InvalidOperationException("WebView2 初始化后未提供 CoreWebView2 实例。");
             }
 
             var assetDirectory = Path.Combine(AppContext.BaseDirectory, "Assets", "ClipEditor");
             if (!Directory.Exists(assetDirectory))
             {
-                return;
+                throw new DirectoryNotFoundException($"时间线编辑器资源目录不存在：'{assetDirectory}'。");
             }
 
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            _webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
+            _webView.CoreWebView2.Settings.AreDevToolsEnabled = EnableWebViewDevTools;
             _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 TimelineHostName,
                 assetDirectory,

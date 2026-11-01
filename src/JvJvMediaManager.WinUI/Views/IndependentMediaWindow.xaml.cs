@@ -16,7 +16,7 @@ using WinRT.Interop;
 
 namespace JvJvMediaManager.Views;
 
-public sealed partial class IndependentMediaWindow : Window
+public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybackTarget
 {
     private const int InitialWindowWidth = 960;
     private const int InitialWindowHeight = 540;
@@ -213,6 +213,8 @@ public sealed partial class IndependentMediaWindow : Window
         FocusPlayer();
     }
 
+    void IIndependentPlaybackTarget.PlayMedia(IndependentMediaWindowMedia media) => PlayMedia(media);
+
     internal void ApplyExternalTags(string mediaId, IReadOnlyList<string> tags)
     {
         if (string.IsNullOrWhiteSpace(mediaId))
@@ -305,6 +307,8 @@ public sealed partial class IndependentMediaWindow : Window
     {
         return _shortcutHandler.HandleKeyAsync(key);
     }
+
+    Task<bool> IIndependentPlaybackTarget.TryHandleShortcutAsync(VirtualKey key) => TryHandleShortcutAsync(key);
 
     private Grid PlayerRoot => PlayerPane.PlayerRoot;
 

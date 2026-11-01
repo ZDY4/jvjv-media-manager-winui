@@ -25,7 +25,7 @@ pwsh -NoLogo -NoProfile -File .\build.ps1
 
 ### 发布
 
-默认发布 `win-x64` 自包含版本到 `artifacts\publish\self-contained`：
+项目发布契约固定为 Windows x64（`win-x64`、`x64`）。默认发布自包含版本到 `artifacts\publish\self-contained`：
 
 ```bat
 package.bat
@@ -35,6 +35,12 @@ package.bat
 
 ```bat
 package.bat win-x64 framework-dependent
+```
+
+运行刚发布的自包含版本（会先发布到带时间戳的运行目录）：
+
+```bat
+run-portable.bat
 ```
 
 说明：
@@ -47,11 +53,10 @@ package.bat win-x64 framework-dependent
 - framework-dependent: `artifacts\publish\framework-dependent`
 - self-contained: `artifacts\publish\self-contained`
 
-可选运行时：
+架构约束：
 
-- `win-x64`
-- `win-x86`
-- `win-arm64`
+- 仅支持 `win-x64` / `x64`
+- `package.bat` 和 `run-portable.bat` 传入其他 Runtime Identifier 时会立即失败
 
 ## 输出目录
 
@@ -61,3 +66,5 @@ package.bat win-x64 framework-dependent
 ## 文档
 
 - [播放列表拖拽功能剩余任务](docs/playlist-drag-drop-remaining-tasks.md)
+- [架构优化状态](docs/architecture-status.md)
+- [构建与可复现性基线](docs/reproducibility-baseline.md)

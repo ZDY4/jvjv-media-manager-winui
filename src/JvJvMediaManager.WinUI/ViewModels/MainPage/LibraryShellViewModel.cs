@@ -879,6 +879,18 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         catch (Exception ex)
         {
             AppTraceLogger.LogException("LibraryShell", "ProcessFolderWatcherChangesAsync failed.", ex);
+            if (!_isDisposed)
+            {
+                // Do not silently lose a watcher batch when a transient file
+                // or database error occurs. The monitor debounces this requeue
+                // and coalesces it with any newer filesystem events.
+                _watchedFolderMonitor.Requeue(changes);
+                AppTraceLogger.LogSampled(
+                    "LibraryShell",
+                    "folder-watcher-requeued-after-failure",
+                    $"Requeued failed folder watcher batch. BatchId={changes.BatchId}, Imports={changes.Imports.Count}, Deletes={changes.Deletes.Count}, Relocations={changes.Relocations.Count}.",
+                    TimeSpan.FromSeconds(5));
+            }
         }
         finally
         {

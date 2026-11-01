@@ -8,9 +8,12 @@ set TOOL=%ROOT%tools\Invoke-WindowsAppSdkDotNet.ps1
 
 set RID=win-x64
 if not "%~1"=="" set RID=%~1
+if /I not "%RID%"=="win-x64" (
+    echo Error: only the win-x64 runtime is supported by this project.
+    echo Requested runtime: %RID%
+    exit /b 2
+)
 set PLATFORM=x64
-if /I "%RID%"=="win-x86" set PLATFORM=x86
-if /I "%RID%"=="win-arm64" set PLATFORM=ARM64
 set SELF_CONTAINED=true
 set WINDOWS_APP_SDK_SELF_CONTAINED=true
 if /I "%~2"=="framework-dependent" (

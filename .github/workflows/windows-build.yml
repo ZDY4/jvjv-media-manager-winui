@@ -1,0 +1,63 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore solution
+        shell: pwsh
+        run: dotnet restore .\JvJvMediaManager.sln
+
+      - name: Build solution
+        shell: pwsh
+        run: dotnet build .\JvJvMediaManager.sln --configuration Release --no-restore
+
+      - name: Restore smoke harness
+        shell: pwsh
+        run: dotnet restore .\tools\JvJvMediaManager.SmokeTests\JvJvMediaManager.SmokeTests.csproj
+
+      - name: Run smoke tests
+        shell: pwsh
+        run: .\tools\run-smoke-tests.ps1
+
+      - name: Audit vulnerable packages
+        shell: pwsh
+        run: dotnet list .\src\JvJvMediaManager.WinUI\JvJvMediaManager.WinUI.csproj package --include-transitive --vulnerable
+
+  portable-publish:
+    needs: build-and-test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish win-x64 portable build
+        shell: pwsh
+        run: cmd /c .\package.bat win-x64 self-contained
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvjv-media-manager-win-x64
+          path: artifacts/publish/self-contained
+          if-no-files-found: error

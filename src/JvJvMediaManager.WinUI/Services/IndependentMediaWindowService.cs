@@ -62,7 +62,7 @@ public sealed class IndependentMediaWindowService : IDisposable
             return false;
         }
 
-        var window = _activePlaybackTarget.IndependentWindow;
+        var window = _activePlaybackTarget.IndependentTarget;
         if (window == null || !_windows.Contains(window))
         {
             return false;
@@ -105,7 +105,7 @@ public sealed class IndependentMediaWindowService : IDisposable
             return Task.FromResult(false);
         }
 
-        var window = _activePlaybackTarget.IndependentWindow;
+        var window = _activePlaybackTarget.IndependentTarget;
         if (window == null || !_windows.Contains(window))
         {
             return Task.FromResult(false);

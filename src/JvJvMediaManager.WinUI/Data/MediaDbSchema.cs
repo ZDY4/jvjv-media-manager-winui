@@ -5,7 +5,11 @@ namespace JvJvMediaManager.Data;
 
 internal static class MediaDbSchema
 {
-    private const int CurrentSchemaVersion = 1;
+    // Keep schema evolution explicit. Version 1 is the legacy schema that was
+    // previously assembled by Ensure* helpers on every startup. Version 2
+    // records migration history so future changes can be applied once and
+    // diagnosed without re-running the entire compatibility path.
+    private const int CurrentSchemaVersion = 3;
 
     private const string CreateSchemaSql = @"
 CREATE TABLE IF NOT EXISTS media (
@@ -70,26 +74,91 @@ CREATE TABLE IF NOT EXISTS playlist_media (
         InitializeWalJournalMode(connection);
 
         var previousVersion = GetUserVersion(connection);
+        if (previousVersion > CurrentSchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"数据库版本 {previousVersion} 高于当前应用支持的版本 {CurrentSchemaVersion}。请先升级应用。" );
+        }
+
         using (var tx = connection.BeginTransaction())
         {
-            using var cmd = connection.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText = CreateSchemaSql;
-            cmd.ExecuteNonQuery();
+            if (previousVersion < 1)
+            {
+                ApplySchemaVersion1(connection, tx);
+            }
 
-            EnsureMediaCoreColumns(connection, tx);
-            EnsurePlaylistCoreColumns(connection, tx);
-            EnsurePlaylistMediaCoreColumns(connection, tx);
-            EnsureTagIndexes(connection, tx);
-            EnsurePlaylistColorColumn(connection, tx);
-            EnsureMediaFingerprintColumns(connection, tx);
-            EnsureMediaRelocationColumns(connection, tx);
-            EnsurePlaylistIndexes(connection, tx);
+            if (previousVersion < 2)
+            {
+                ApplySchemaVersion2(connection, tx);
+            }
+
+            if (previousVersion < 3)
+            {
+                ApplySchemaVersion3(connection, tx);
+            }
+
             SetUserVersion(connection, tx, CurrentSchemaVersion);
             tx.Commit();
         }
 
         AppTraceLogger.Log("MediaDbSchema", $"Initialize completed (schema only). PreviousVersion={previousVersion}, CurrentVersion={CurrentSchemaVersion}. Heavy maintenance runs on a background thread (RunStartupMaintenance).");
+    }
+
+    private static void ApplySchemaVersion1(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = CreateSchemaSql;
+        cmd.ExecuteNonQuery();
+
+        // These helpers remain idempotent so databases created by older
+        // previews (which left user_version at 0) can still be upgraded.
+        EnsureMediaCoreColumns(connection, transaction);
+        EnsurePlaylistCoreColumns(connection, transaction);
+        EnsurePlaylistMediaCoreColumns(connection, transaction);
+        EnsureTagIndexes(connection, transaction);
+        EnsurePlaylistColorColumn(connection, transaction);
+        EnsureMediaFingerprintColumns(connection, transaction);
+        EnsureMediaRelocationColumns(connection, transaction);
+        EnsurePlaylistIndexes(connection, transaction);
+        AppTraceLogger.Log("MediaDbSchema", "Applied schema migration version 1.");
+    }
+
+    private static void ApplySchemaVersion2(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var cmd = CreateCommand(connection, transaction);
+        cmd.CommandText = @"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  appliedAt INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO schema_migrations(version, appliedAt)
+VALUES (1, unixepoch());
+INSERT OR IGNORE INTO schema_migrations(version, appliedAt)
+VALUES (2, unixepoch());
+";
+        cmd.ExecuteNonQuery();
+        AppTraceLogger.Log("MediaDbSchema", "Applied schema migration version 2 and recorded migration history.");
+    }
+
+    private static void ApplySchemaVersion3(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var cmd = CreateCommand(connection, transaction);
+        cmd.CommandText = @"
+CREATE TABLE IF NOT EXISTS media_search_state (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  indexedGeneration INTEGER NOT NULL DEFAULT 0,
+  isDirty INTEGER NOT NULL DEFAULT 0,
+  lastError TEXT,
+  updatedAt INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO media_search_state(id, indexedGeneration, isDirty, lastError, updatedAt)
+VALUES (1, 0, 0, NULL, unixepoch());
+INSERT OR IGNORE INTO schema_migrations(version, appliedAt)
+VALUES (3, unixepoch());
+";
+        cmd.ExecuteNonQuery();
+        AppTraceLogger.Log("MediaDbSchema", "Applied schema migration version 3 for FTS state tracking.");
     }
 
     /// <summary>
@@ -597,6 +666,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS media_search USING fts5(
             var mediaCount = reader.GetInt64(2);
             if (!forceRebuild && searchRowCount == mediaCount && indexedMediaCount == mediaCount)
             {
+                SetSearchIndexState(connection, isDirty: false, error: null);
                 return;
             }
 
@@ -610,12 +680,37 @@ LEFT JOIN tags t ON t.mediaId = m.id
 GROUP BY m.id, m.filename;
 ";
             rebuildCmd.ExecuteNonQuery();
+            SetSearchIndexState(connection, isDirty: false, error: null);
             AppTraceLogger.Log("MediaDbSchema", "Rebuilt media_search FTS index.");
         }
         catch (Exception ex)
         {
+            try
+            {
+                SetSearchIndexState(connection, isDirty: true, error: ex.Message);
+            }
+            catch
+            {
+                // Preserve the original maintenance failure if the state table
+                // itself is unavailable or the database is read-only.
+            }
             AppTraceLogger.LogException("MediaDbSchema", "Media search FTS index initialization failed; falling back to LIKE search.", ex);
         }
+    }
+
+    private static void SetSearchIndexState(SqliteConnection connection, bool isDirty, string? error)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+UPDATE media_search_state
+SET isDirty = $isDirty,
+    lastError = $lastError,
+    updatedAt = unixepoch()
+WHERE id = 1;
+";
+        cmd.Parameters.AddWithValue("$isDirty", isDirty ? 1 : 0);
+        cmd.Parameters.AddWithValue("$lastError", (object?)error ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
     }
 
     private static bool TableExists(SqliteConnection connection, string tableName)

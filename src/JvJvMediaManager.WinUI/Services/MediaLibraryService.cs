@@ -16,7 +16,12 @@ public sealed class MediaLibraryService : IDisposable
 
     private readonly MediaDb _db;
     private readonly PlaybackResourceCoordinator _playbackResources;
-    private readonly SemaphoreSlim _fingerprintBackfillGate = new(1, 1);
+    // Metadata/fingerprint work is I/O-heavy, but running every queued batch
+    // concurrently can starve playback and create an unbounded task backlog.
+    // Keep a small amount of parallelism and cap pending batches below.
+    private static readonly int BackfillDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 4, 1, 2);
+    private const int MaxPendingBackfillTasks = 8;
+    private readonly SemaphoreSlim _fingerprintBackfillGate = new(BackfillDegreeOfParallelism, BackfillDegreeOfParallelism);
     private readonly object _backfillTasksSync = new();
     private readonly HashSet<Task> _backfillTasks = new();
     private readonly CancellationTokenSource _disposeCancellation = new();
@@ -717,13 +722,30 @@ public sealed class MediaLibraryService : IDisposable
             return;
         }
 
-        TrackBackfillTask(Task.Run(() => BackfillMediaDetailsAsync(pending, operationName, progress, _disposeCancellation.Token)));
+        if (!TryTrackBackfillTask(() => BackfillMediaDetailsAsync(pending, operationName, progress, _disposeCancellation.Token)))
+        {
+            // A later scan will retry these rows. Rejecting new work is
+            // preferable to retaining an unbounded set of fire-and-forget
+            // tasks while the user keeps changing watched folders.
+            AppTraceLogger.LogSampled(
+                "MediaLibrary",
+                "media-details-backfill-queue-full",
+                $"Skipped scheduling media details backfill because the bounded queue is full. Requested={pending.Count}, MaxPendingTasks={MaxPendingBackfillTasks}.",
+                TimeSpan.FromSeconds(5));
+        }
     }
 
-    private void TrackBackfillTask(Task task)
+    private bool TryTrackBackfillTask(Func<Task> taskFactory)
     {
+        Task task;
         lock (_backfillTasksSync)
         {
+            if (_backfillTasks.Count >= MaxPendingBackfillTasks || _isDisposed)
+            {
+                return false;
+            }
+
+            task = Task.Run(taskFactory);
             _backfillTasks.Add(task);
         }
 
@@ -746,6 +768,7 @@ public sealed class MediaLibraryService : IDisposable
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+        return true;
     }
 
     private async Task BackfillMediaDetailsAsync(IReadOnlyList<MediaFile> mediaItems, string operationName, IProgress<ScanProgress>? progress, CancellationToken cancellationToken)

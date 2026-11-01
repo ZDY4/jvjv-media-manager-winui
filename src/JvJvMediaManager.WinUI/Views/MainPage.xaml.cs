@@ -14,7 +14,7 @@ namespace JvJvMediaManager.Views;
 
 public sealed partial class MainPage : Page
 {
-    private readonly MainPageShellViewModel _shell = new();
+    private readonly MainPageShellViewModel _shell;
     private readonly Services.MainPage.MainPageModuleFactory _modules;
     private readonly IContentDialogService _dialogService;
     private readonly KeyEventHandler _keyDownHandler;
@@ -24,10 +24,14 @@ public sealed partial class MainPage : Page
     private bool _isResizingDockedPlayer;
     private bool _isShutdown;
 
-    public MainPage()
+    public MainPage(
+        MainPageShellViewModel shell,
+        Services.MainPage.MainPageModuleFactory modules,
+        IContentDialogService dialogService)
     {
-        _modules = ((App)Application.Current).MainPageModules;
-        _dialogService = _modules.CreateContentDialogService();
+        _shell = shell ?? throw new ArgumentNullException(nameof(shell));
+        _modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _keyDownHandler = MainPage_KeyDown;
         InitializeComponent();
         DockedPlayerHost.DetachRequested += DockedPlayerHost_DetachRequested;

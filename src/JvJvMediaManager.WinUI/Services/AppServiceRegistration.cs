@@ -1,6 +1,7 @@
 using JvJvMediaManager.Data;
 using JvJvMediaManager.Services.MainPage;
 using JvJvMediaManager.ViewModels.MainPage;
+using JvJvMediaManager.Views;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace JvJvMediaManager.Services;
@@ -35,9 +36,16 @@ public static class AppServiceRegistration
                 playbackResources: playbackResources);
         });
         services.AddSingleton<LibraryShellServices>();
+        services.AddTransient<SelectionViewModel>();
+        services.AddTransient<MainPageShellViewModel>();
         services.AddTransient<IContentDialogService, ContentDialogService>();
         services.AddTransient<MainPageModuleFactory>();
+        services.AddTransient<JvJvMediaManager.Views.MainPage>();
 
-        return services.BuildServiceProvider(validateScopes: true);
+        return services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true
+        });
     }
 }

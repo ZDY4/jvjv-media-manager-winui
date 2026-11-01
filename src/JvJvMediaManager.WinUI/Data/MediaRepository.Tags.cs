@@ -124,12 +124,9 @@ VALUES ($mediaId, $name, $createdAt);
                 }
             }
 
-            // One search-index rewrite per media id, inside the same
-            // transaction as the tag writes.
-            foreach (var mediaId in affectedIds)
-            {
-                await RefreshSearchIndexAsync(connection, sqliteTx, mediaId, cancellationToken);
-            }
+            // Rewrite all affected search rows in bounded batches inside the
+            // same transaction as the tag writes.
+            await RefreshSearchIndexBatchAsync(connection, sqliteTx, affectedIds, cancellationToken);
 
             await tx.CommitAsync(cancellationToken);
         }

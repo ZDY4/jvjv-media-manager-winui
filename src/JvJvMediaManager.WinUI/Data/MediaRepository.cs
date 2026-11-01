@@ -101,6 +101,7 @@ ON CONFLICT(id) DO UPDATE SET
             var contentHashParam = cmd.Parameters.Add("$contentHash", SqliteType.Text);
             var fingerprintVersionParam = cmd.Parameters.Add("$fingerprintVersion", SqliteType.Integer);
             var rotationParam = cmd.Parameters.Add("$rotation", SqliteType.Integer);
+            var changedMediaIds = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var media in items)
             {
@@ -125,10 +126,14 @@ ON CONFLICT(id) DO UPDATE SET
                 await cmd.ExecuteNonQueryAsync(cancellationToken);
 
                 await MediaTagRepository.AddTagsAsync(connection, (SqliteTransaction)tx, media.Id, media.Tags, cancellationToken);
-                await RefreshSearchIndexAsync(connection, (SqliteTransaction)tx, media.Id, cancellationToken);
+                changedMediaIds.Add(media.Id);
                 await RemoveRelocationAsync(connection, (SqliteTransaction)tx, media.Id, cancellationToken);
             }
 
+            // Rebuild changed FTS rows in batches after all media and tag writes
+            // are complete. The previous per-item refresh performed a delete,
+            // media lookup and tag aggregation for every row in the batch.
+            await RefreshSearchIndexBatchAsync(connection, (SqliteTransaction)tx, changedMediaIds, cancellationToken);
             await tx.CommitAsync(cancellationToken);
             AppTraceLogger.Log("MediaRepository", $"UpsertMediaBatchAsync completed. Count={items.Count}, ElapsedMs={stopwatch.ElapsedMilliseconds}.");
         }
@@ -328,13 +333,17 @@ ORDER BY
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         const int pageSize = 1000;
-        var offset = 0;
+        MediaPageCursor? cursor = null;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var page = await QueryMediaPageAsync(new MediaQuery
             {
-                Offset = offset,
+                // The default stream order is keyset-compatible. After the
+                // first page, continue from the complete ordering tuple rather
+                // than forcing SQLite to scan an ever-growing OFFSET.
+                Cursor = cursor,
+                Offset = 0,
                 Limit = pageSize,
                 SortField = MediaSortField.ModifiedAt,
                 SortOrder = MediaSortOrder.Desc
@@ -344,9 +353,16 @@ ORDER BY
                 yield return media;
             }
 
-            offset += page.Items.Count;
             if (!page.HasMore || page.Items.Count == 0)
             {
+                yield break;
+            }
+
+            cursor = page.NextCursor;
+            if (cursor == null)
+            {
+                // Defensive fallback for a future query implementation that
+                // cannot produce a cursor for this sort.
                 yield break;
             }
         }
