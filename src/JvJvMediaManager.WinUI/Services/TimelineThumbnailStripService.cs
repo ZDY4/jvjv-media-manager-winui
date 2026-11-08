@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
@@ -118,6 +119,15 @@ public sealed class TimelineThumbnailStripService
             return Array.Empty<ImageSource?>();
         }
 
+        // This is started from the UI thread and runs until its first incomplete
+        // await. Leave before the file stat and the per-frame fan-out so decode
+        // does not start on that thread.
+        if (DispatcherQueue.GetForCurrentThread() != null)
+        {
+            await Task.Yield();
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
         if (request.Duration <= TimeSpan.Zero
             || string.IsNullOrWhiteSpace(request.MediaPath)
             || !File.Exists(request.MediaPath)
@@ -317,17 +327,33 @@ public sealed class TimelineThumbnailStripService
         cancellationToken.ThrowIfCancellationRequested();
 
         var cachePath = Path.Combine(_cacheDir, $"{cachePrefix}_{index:00}.jpg");
-        var source = await TryLoadBitmapAsync(cachePath);
+        var decodeWidth = request.FrameWidth;
+        var source = await LoadFrameBitmapAsync(cachePath, decodeWidth, cancellationToken);
         if (source == null)
         {
             var timestamp = GetFrameTimestamp(request.Duration, Math.Clamp(request.FrameCount, 1, 64), index);
             await GenerateFrameAsync(request, cachePath, timestamp, cancellationToken);
-            source = await TryLoadBitmapAsync(cachePath);
+            source = await LoadFrameBitmapAsync(cachePath, decodeWidth, cancellationToken);
         }
 
         source ??= fallbackSource;
         frameLoaded?.Invoke(index, source);
         return (index, source);
+    }
+
+    private async Task<ImageSource?> LoadFrameBitmapAsync(string cachePath, int decodePixelWidth, CancellationToken cancellationToken)
+    {
+        // Generation and decode share the gate so a strip cannot open one
+        // BitmapImage.SetSourceAsync per frame at the same time.
+        await _frameGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await TryLoadBitmapAsync(cachePath, decodePixelWidth, cancellationToken);
+        }
+        finally
+        {
+            _frameGate.Release();
+        }
     }
 
     private static TimeSpan GetFrameTimestamp(TimeSpan duration, int frameCount, int index)
@@ -353,8 +379,9 @@ public sealed class TimelineThumbnailStripService
         return result;
     }
 
-    private static async Task<ImageSource?> TryLoadBitmapAsync(string cachePath)
+    private static async Task<ImageSource?> TryLoadBitmapAsync(string cachePath, int decodePixelWidth, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(cachePath))
         {
             return null;
@@ -362,11 +389,24 @@ public sealed class TimelineThumbnailStripService
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var file = await StorageFile.GetFileFromPathAsync(cachePath);
+            cancellationToken.ThrowIfCancellationRequested();
             using var stream = await file.OpenReadAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             var bitmap = new BitmapImage();
+            if (decodePixelWidth > 0)
+            {
+                bitmap.DecodePixelWidth = decodePixelWidth;
+            }
+
             await bitmap.SetSourceAsync(stream);
+            cancellationToken.ThrowIfCancellationRequested();
             return bitmap;
+        }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
         }
         catch
         {

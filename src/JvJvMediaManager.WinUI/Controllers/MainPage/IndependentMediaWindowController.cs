@@ -80,6 +80,12 @@ internal sealed class IndependentMediaWindowController
 
     public void RemoveDeletedMedia(DeletePlan deletePlan, bool preserveCurrentMedia = false)
     {
+        if (_mediaItems.Count == 0)
+        {
+            _currentIndex = 0;
+            return;
+        }
+
         var currentMediaId = CurrentMedia.Id;
         if (deletePlan.RemovedIndex >= 0)
         {

@@ -171,8 +171,11 @@ internal static class MediaTransactionTests
                 MediaType.Video,
                 size: 5000,
                 modifiedAt: 111,
-                contentHash: "deadbeefcafefeed");
+                contentHash: "deadbeefcafefeed",
+                tags: new[] { "relocated" });
             await db.UpsertMediaBatchAsync(new[] { original });
+            var playlist = await db.CreatePlaylistAsync("Moved");
+            await db.AddMediaToPlaylistAsync(playlist.Id, new[] { original.Id });
 
             await db.RemoveMediaRecordsOnlyAsync(new[] { original.Id });
             Assert.Equal(0, (await db.GetAllMediaAsync()).Count, "Media record removed");
@@ -180,6 +183,9 @@ internal static class MediaTransactionTests
             using (var connection = OpenRawConnection(ws))
             {
                 Assert.Equal(1, ScalarCount(connection, "SELECT COUNT(*) FROM media_relocations WHERE mediaId = $id;", original.Id), "Relocation recorded");
+                Assert.Equal(0, ScalarCount(connection, "SELECT COUNT(*) FROM tags WHERE mediaId = $id;", original.Id), "Tags removed with the media row");
+                Assert.Equal(0, ScalarCount(connection, "SELECT COUNT(*) FROM playlist_media WHERE mediaId = $id;", original.Id), "Playlist membership removed with the media row");
+                Assert.Equal(0, ScalarCount(connection, "SELECT COUNT(*) FROM media_search WHERE mediaId = $id;", original.Id), "Search index removed with the media row");
             }
 
             // Re-add at a new path with the same fingerprint; id must be reused.
@@ -216,6 +222,33 @@ internal static class MediaTransactionTests
 
             var all = await db.GetAllMediaAsync();
             Assert.Equal(160, all.Count, "All concurrent upserts persisted without lock failures");
+        });
+
+        registry.Add(Suite, "folder summaries honor the media type filter", async () =>
+        {
+            using var ws = new TempWorkspace("tx-folder-type-filter");
+            var db = CreateDb(ws);
+
+            await db.UpsertMediaBatchAsync(new[]
+            {
+                MediaFactory.Create("C:/media/clip.mp4", MediaType.Video),
+                MediaFactory.Create("C:/media/still.png", MediaType.Image),
+                MediaFactory.Create("C:/other/clip2.mp4", MediaType.Video)
+            });
+
+            var all = await db.QueryMediaFolderSummariesAsync(new MediaQuery());
+            Assert.Equal(3, all.Sum(folder => folder.Count), "Unfiltered folder summaries count every media file");
+
+            var videos = await db.QueryMediaFolderSummariesAsync(new MediaQuery { TypeFilter = MediaType.Video });
+            var videoPage = await db.QueryMediaPageAsync(new MediaQuery { TypeFilter = MediaType.Video, Limit = 50 });
+            Assert.Equal(2, videos.Count, "Video filter keeps both folders that contain a video");
+            Assert.Equal(videoPage.Items.Count, videos.Sum(folder => folder.Count), "Video folder counts match the filtered page");
+
+            var images = await db.QueryMediaFolderSummariesAsync(new MediaQuery { TypeFilter = MediaType.Image });
+            var imagePage = await db.QueryMediaPageAsync(new MediaQuery { TypeFilter = MediaType.Image, Limit = 50 });
+            Assert.Equal(1, images.Count, "Image filter drops the video-only folder");
+            Assert.Equal(imagePage.Items.Count, images.Sum(folder => folder.Count), "Image folder counts match the filtered page");
+            Assert.Equal(1, images.Sum(folder => folder.Count), "Image filter counts only the image");
         });
     }
 

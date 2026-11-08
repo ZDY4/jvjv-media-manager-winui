@@ -19,6 +19,13 @@ using JvJvMediaManager.Views.MainPageParts;
 
 namespace JvJvMediaManager.Controllers.MainPage;
 
+public enum VideoPlaybackOpenState
+{
+    Pending,
+    Ready,
+    Abandoned
+}
+
 public sealed class VideoPlaybackController
 {
     private const double TransportPointerZoneHeight = 112;
@@ -73,6 +80,10 @@ public sealed class VideoPlaybackController
     private TypedEventHandler<MediaPlaybackSession, object>? _playbackStateChangedHandler;
     private bool _replacePlayerAfterFailure;
     private int _switchInFlight;
+    // Set only by an explicit pause (user or a restored session). A source
+    // that has just opened also reports Paused, and treating that as a hold
+    // skips the Play() MediaOpened still has to issue.
+    private int _autoPlaySuppressed;
     private string? _shownMediaId;
     private MediaItemViewModel? _coalescedShowMedia;
     private long _coalescedSelectionChangedTimestamp;
@@ -101,6 +112,7 @@ public sealed class VideoPlaybackController
     private double? _progressValueOverrideSeconds;
     private double? _progressMaximumOverrideSeconds;
     private Func<TimeSpan, TimeSpan>? _displayToPlaybackPositionOverride;
+    private int _playbackDiagnosticsInFlight;
     private const double VolumeWheelStep = 0.05;
     private static readonly HashSet<string> CommonWindowsPlaybackExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -122,6 +134,8 @@ public sealed class VideoPlaybackController
     private int _isDisposed;
     private readonly CompositeTransform _videoRotationTransform = new();
     private double _videoRotationDegrees;
+    private uint _naturalVideoWidth;
+    private uint _naturalVideoHeight;
 
     // Flash fix: the loading preview is only shown when the video has not
     // revealed within the delay, so fast local opens never flash a thumbnail.
@@ -259,6 +273,39 @@ public sealed class VideoPlaybackController
     public bool IsSeeking => _isSeeking;
 
     public bool IsPlaying => _player?.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+
+    // Pauses once playback has actually started. Opening and buffering are not
+    // paused yet, so the caller keeps waiting instead of treating them as done.
+    public bool TryHoldPaused()
+    {
+        if (IsDisposed())
+        {
+            return false;
+        }
+
+        var player = _player;
+        if (player == null)
+        {
+            return false;
+        }
+
+        var state = player.PlaybackSession.PlaybackState;
+        if (state == MediaPlaybackState.Paused)
+        {
+            return Volatile.Read(ref _autoPlaySuppressed) == 1;
+        }
+
+        if (state != MediaPlaybackState.Playing)
+        {
+            return false;
+        }
+
+        player.Pause();
+        Interlocked.Exchange(ref _autoPlaySuppressed, 1);
+        _playbackLease.SetState(PlaybackActivityState.Inactive);
+        UpdatePlayPauseState();
+        return true;
+    }
 
     public bool IsShuffleMode => _playbackMode == PlaybackMode.Shuffle;
 
@@ -453,10 +500,15 @@ public sealed class VideoPlaybackController
         _showVideoCoalesceTimer.Stop();
         _shownMediaId = media.Id;
         Interlocked.Exchange(ref _switchInFlight, 1);
+        Interlocked.Exchange(ref _autoPlaySuppressed, 0);
 
         // Rotation is per-media: start from the media's persisted rotation.
+        // Drop the previous frame size so this item is not laid out in that
+        // aspect until its own natural size arrives.
         var persistedRotation = NormalizeVideoRotation(media.Rotation);
         _videoRotationDegrees = persistedRotation;
+        _naturalVideoWidth = 0;
+        _naturalVideoHeight = 0;
         ApplyVideoRotation();
 
         var mediaSourceVersion = Interlocked.Increment(ref _mediaSourceVersion);
@@ -466,7 +518,10 @@ public sealed class VideoPlaybackController
         _telemetry.BeginSwitch(showVideoStartTimestamp, mediaSourceVersion, selectionChangedTimestamp, switchTraceId);
         Interlocked.Exchange(ref _failedMediaSourceVersion, 0);
         Interlocked.Exchange(ref _handledMediaFailedSourceVersion, 0);
-        LogPlaybackTrace($"ShowVideo file={media.FileName} path={media.FileSystemPath} sourceVersion={mediaSourceVersion} {DescribeMediaPlaybackDiagnostics(media)}");
+        LogPlaybackTrace($"ShowVideo file={media.FileName} path={media.FileSystemPath} sourceVersion={mediaSourceVersion}");
+        // File.Exists/FileInfo.Length can block for tens of seconds on a stalled
+        // drive, so the diagnostics probe never runs on the UI thread.
+        QueuePlaybackDiagnostics(media, mediaSourceVersion, "ShowVideo");
         _telemetry.LogSwitchTrace(
             mediaSourceVersion,
             "ShowVideoStart",
@@ -485,14 +540,40 @@ public sealed class VideoPlaybackController
 
         _videoPlayer.InvalidateMeasure();
         _videoViewportView.InvalidateMeasure();
-        LogPlaybackTrace($"Assigning MediaPlayer source. SourceVersion={mediaSourceVersion}, UriScheme='{new Uri(media.FileSystemPath).Scheme}', PathExists={File.Exists(media.FileSystemPath)}.");
-        var sourceAssignStartTimestamp = Stopwatch.GetTimestamp();
-        AssignPlayerSource(player, media.FileSystemPath);
-        _telemetry.MarkSourceAssigned();
-        _telemetry.LogSwitchTrace(
-            mediaSourceVersion,
-            "SourceAssigned",
-            $"SelectedToSourceAssignedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(selectionChangedTimestamp)}, ShowVideoToSourceAssignedMs={Stopwatch.GetElapsedTime(showVideoStartTimestamp).TotalMilliseconds:0.###}, SourceAssignSyncMs={Stopwatch.GetElapsedTime(sourceAssignStartTimestamp).TotalMilliseconds:0.###}.");
+        try
+        {
+            var sourceUri = new Uri(media.FileSystemPath);
+            LogPlaybackTrace($"Assigning MediaPlayer source. SourceVersion={mediaSourceVersion}, UriScheme='{sourceUri.Scheme}'.");
+            var sourceAssignStartTimestamp = Stopwatch.GetTimestamp();
+            AssignPlayerSource(player, media.FileSystemPath);
+            _telemetry.MarkSourceAssigned();
+            _telemetry.LogSwitchTrace(
+                mediaSourceVersion,
+                "SourceAssigned",
+                $"SelectedToSourceAssignedMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(selectionChangedTimestamp)}, ShowVideoToSourceAssignedMs={Stopwatch.GetElapsedTime(showVideoStartTimestamp).TotalMilliseconds:0.###}, SourceAssignSyncMs={Stopwatch.GetElapsedTime(sourceAssignStartTimestamp).TotalMilliseconds:0.###}.");
+        }
+        catch (Exception ex)
+        {
+            // Version and _switchInFlight were already published. Leaving the
+            // in-flight flag set coalesces every later ShowVideo onto a source
+            // that will never open. Marking the version failed also stops
+            // position restore from waiting on an open that cannot happen.
+            Interlocked.Exchange(ref _switchInFlight, 0);
+            Interlocked.Exchange(ref _failedMediaSourceVersion, mediaSourceVersion);
+            _playbackLease.SetState(PlaybackActivityState.Inactive);
+            _loadingPreviewTimer.Stop();
+            _pendingPreviewMedia = null;
+            HideVideoLoadingPreview();
+            TryPauseAndClearPlayer(player);
+            DisposeCurrentMediaSource();
+            _videoPlayer.Opacity = 1;
+            AppTraceLogger.LogException(
+                "VideoPlayback",
+                $"ShowVideo failed while assigning the media source. MediaId='{media.Id}', Path='{media.FileSystemPath}', SourceVersion={mediaSourceVersion}.",
+                ex);
+            return;
+        }
+
         RequestPlaybackStart(mediaSourceVersion, "ShowVideo");
         SetVideoState();
         ShowMediaSwitchControls();
@@ -503,12 +584,21 @@ public sealed class VideoPlaybackController
     {
         Interlocked.Increment(ref _mediaSourceVersion);
         Interlocked.Exchange(ref _switchInFlight, 0);
+        Interlocked.Exchange(ref _autoPlaySuppressed, 0);
+        // A queued coalesce tick must not assign the previous item after this
+        // source has been retired.
+        _showVideoCoalesceTimer.Stop();
+        _coalescedShowMedia = null;
         LogPlaybackTrace("PauseAndClearSource invoked.");
         _playbackLease.SetState(PlaybackActivityState.Inactive);
         if (IsDisposed())
         {
             return;
         }
+
+        _loadingPreviewTimer.Stop();
+        _pendingPreviewMedia = null;
+        HideVideoLoadingPreview();
 
         if (_player == null)
         {
@@ -535,6 +625,8 @@ public sealed class VideoPlaybackController
         _videoSurfaceRevealed = false;
         _loadingPreviewTimer.Stop();
         _pendingPreviewMedia = null;
+        _naturalVideoWidth = 0;
+        _naturalVideoHeight = 0;
         _videoPlayer.Visibility = Visibility.Collapsed;
         _videoPlayer.Opacity = 1;
         HideVideoLoadingPreview();
@@ -565,6 +657,8 @@ public sealed class VideoPlaybackController
         _videoSurfaceRevealed = false;
         _loadingPreviewTimer.Stop();
         _pendingPreviewMedia = null;
+        _naturalVideoWidth = 0;
+        _naturalVideoHeight = 0;
         _videoPlayer.Visibility = Visibility.Collapsed;
         _videoPlayer.Opacity = 1;
         HideVideoLoadingPreview();
@@ -645,6 +739,20 @@ public sealed class VideoPlaybackController
         }
     }
 
+    private void RememberNaturalVideoSize(MediaPlaybackSession session)
+    {
+        var width = session.NaturalVideoWidth;
+        var height = session.NaturalVideoHeight;
+        if (width == 0 || height == 0 || (width == _naturalVideoWidth && height == _naturalVideoHeight))
+        {
+            return;
+        }
+
+        _naturalVideoWidth = width;
+        _naturalVideoHeight = height;
+        ApplyVideoRotation();
+    }
+
     private void ApplyVideoRotation()
     {
         var viewportWidth = _videoViewportView.ActualWidth;
@@ -657,9 +765,29 @@ public sealed class VideoPlaybackController
         // MediaPlayerElement clips to its layout slot. A Grid would clamp a
         // swapped 90/270 box to the viewport height, so the rotated frame
         // was cropped. Canvas keeps the full swapped rectangle.
+        // Size that rectangle to the frame's aspect ratio. A viewport-sized
+        // slot stretches the next item when its aspect differs and the
+        // presenter has not reapplied Stretch yet.
         var swapAxes = _videoRotationDegrees is 90 or 270;
-        var layoutWidth = swapAxes ? viewportHeight : viewportWidth;
-        var layoutHeight = swapAxes ? viewportWidth : viewportHeight;
+        double layoutWidth;
+        double layoutHeight;
+        if (_naturalVideoWidth > 0 && _naturalVideoHeight > 0)
+        {
+            var frameWidth = swapAxes ? (double)_naturalVideoHeight : _naturalVideoWidth;
+            var frameHeight = swapAxes ? (double)_naturalVideoWidth : _naturalVideoHeight;
+            var scale = Math.Min(viewportWidth / frameWidth, viewportHeight / frameHeight);
+            var fittedWidth = frameWidth * scale;
+            var fittedHeight = frameHeight * scale;
+            layoutWidth = swapAxes ? fittedHeight : fittedWidth;
+            layoutHeight = swapAxes ? fittedWidth : fittedHeight;
+        }
+        else
+        {
+            layoutWidth = swapAxes ? viewportHeight : viewportWidth;
+            layoutHeight = swapAxes ? viewportWidth : viewportHeight;
+        }
+
+        _videoPlayer.Stretch = Stretch.Uniform;
         var left = (viewportWidth - layoutWidth) / 2;
         var top = (viewportHeight - layoutHeight) / 2;
 
@@ -850,11 +978,13 @@ public sealed class VideoPlaybackController
 
         if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
         {
+            Interlocked.Exchange(ref _autoPlaySuppressed, 1);
             player.Pause();
             _playbackLease.SetState(PlaybackActivityState.Inactive);
         }
         else
         {
+            Interlocked.Exchange(ref _autoPlaySuppressed, 0);
             player.Play();
             _playbackLease.SetState(PlaybackActivityState.Playing);
         }
@@ -927,6 +1057,53 @@ public sealed class VideoPlaybackController
     public TimeSpan GetCurrentVideoDuration()
     {
         return _player?.PlaybackSession.NaturalDuration ?? TimeSpan.Zero;
+    }
+
+    // Call on the UI thread. Ready means this source has raised MediaOpened
+    // and reported a duration, so a transferred seek will land on the new
+    // item rather than the previous source's timeline.
+    public VideoPlaybackOpenState GetVideoOpenState()
+    {
+        if (IsDisposed())
+        {
+            return VideoPlaybackOpenState.Abandoned;
+        }
+
+        try
+        {
+            var version = Volatile.Read(ref _mediaSourceVersion);
+            if (version == 0)
+            {
+                return VideoPlaybackOpenState.Pending;
+            }
+
+            if (Volatile.Read(ref _failedMediaSourceVersion) == version)
+            {
+                return VideoPlaybackOpenState.Abandoned;
+            }
+
+            var player = _player;
+            if (player == null || player.Source == null)
+            {
+                return Volatile.Read(ref _switchInFlight) == 1
+                    ? VideoPlaybackOpenState.Pending
+                    : VideoPlaybackOpenState.Abandoned;
+            }
+
+            if (Volatile.Read(ref _openedMediaSourceVersion) != version)
+            {
+                return VideoPlaybackOpenState.Pending;
+            }
+
+            return player.PlaybackSession.NaturalDuration > TimeSpan.Zero
+                ? VideoPlaybackOpenState.Ready
+                : VideoPlaybackOpenState.Pending;
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("VideoPlayback", "GetVideoOpenState failed.", ex);
+            return VideoPlaybackOpenState.Abandoned;
+        }
     }
 
     public void SeekTo(TimeSpan position)
@@ -1966,11 +2143,16 @@ public sealed class VideoPlaybackController
             _lastPlaybackPosition = TimeSpan.Zero;
             _lastPlaybackDuration = duration;
             Interlocked.Exchange(ref _openedMediaSourceVersion, mediaSourceVersion);
+            RememberNaturalVideoSize(sender.PlaybackSession);
             UpdateTimeDisplay();
             _handleMediaOpened(duration);
             _notifyPlaybackProgressChanged();
-            RequestPlaybackStart(mediaSourceVersion, "MediaOpened");
-                _watchdog.ScheduleVideoSurfaceReveal(mediaSourceVersion, "MediaOpened");
+            // Opening is finished even when playback stays paused. Waiting for
+            // Playing left the in-flight flag set, so the next ShowVideo kept
+            // coalescing onto a source that would never start.
+            CompleteSwitchInFlight(mediaSourceVersion);
+            RequestPlaybackStart(mediaSourceVersion, "MediaOpened", startWhenPaused: false);
+            _watchdog.ScheduleVideoSurfaceReveal(mediaSourceVersion, "MediaOpened");
         });
     }
 
@@ -1981,16 +2163,18 @@ public sealed class VideoPlaybackController
             return;
         }
 
-        if (Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, mediaSourceVersion, 0) != 0)
+        if (!TryBeginMediaFailedHandling(mediaSourceVersion))
         {
-            LogPlaybackTrace($"Duplicate MediaFailed ignored. SourceVersion={mediaSourceVersion}, Error={args.Error}, ExtendedError=0x{args.ExtendedErrorCode.HResult:X8}.");
+            LogPlaybackTrace($"Duplicate or stale MediaFailed ignored. SourceVersion={mediaSourceVersion}, CurrentVersion={Volatile.Read(ref _mediaSourceVersion)}, Error={args.Error}, ExtendedError=0x{args.ExtendedErrorCode.HResult:X8}.");
             return;
         }
 
-        _dispatcherQueue.TryEnqueue(() =>
+        if (!_dispatcherQueue.TryEnqueue(() =>
         {
             if (IsDisposed() || !ReferenceEquals(sender, _player) || mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
             {
+                // A stale claim must not stick, or the live source's failure is ignored.
+                ReleaseMediaFailedClaim(mediaSourceVersion);
                 return;
             }
 
@@ -1998,7 +2182,8 @@ public sealed class VideoPlaybackController
             _replacePlayerAfterFailure = true;
             var selected = _libraryViewModel.SelectedMedia;
             LogPlaybackTrace(
-                $"MediaFailed error={args.Error} extendedError=0x{args.ExtendedErrorCode.HResult:X8} message={args.ErrorMessage} file='{selected?.FileName ?? "<none>"}' path='{selected?.FileSystemPath ?? "<none>"}' SourceVersion={mediaSourceVersion} OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0} {DescribeMediaPlaybackDiagnostics(selected)} CompatibilityHint='{GetPlaybackCompatibilityHint(selected, args)}'.");
+                $"MediaFailed error={args.Error} extendedError=0x{args.ExtendedErrorCode.HResult:X8} message={args.ErrorMessage} file='{selected?.FileName ?? "<none>"}' path='{selected?.FileSystemPath ?? "<none>"}' SourceVersion={mediaSourceVersion} OpenElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(mediaSourceVersion):0}.");
+            QueuePlaybackDiagnostics(selected, mediaSourceVersion, "MediaFailed", args.Error);
             _playbackLease.SetState(PlaybackActivityState.Inactive);
             TryStopFailedPlaybackSource(sender, mediaSourceVersion);
             DisposeCurrentMediaSource();
@@ -2009,7 +2194,46 @@ public sealed class VideoPlaybackController
             _videoPlayer.Opacity = 1;
             HideVideoLoadingPreview();
             CompleteSwitchInFlight(mediaSourceVersion);
-        });
+        }))
+        {
+            ReleaseMediaFailedClaim(mediaSourceVersion);
+            LogPlaybackTrace($"MediaFailed dispatcher rejected. SourceVersion={mediaSourceVersion}.");
+        }
+    }
+
+    private bool TryBeginMediaFailedHandling(int mediaSourceVersion)
+    {
+        if (mediaSourceVersion != Volatile.Read(ref _mediaSourceVersion))
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            var claimedVersion = Volatile.Read(ref _handledMediaFailedSourceVersion);
+            if (claimedVersion == mediaSourceVersion)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, mediaSourceVersion, claimedVersion) != claimedVersion)
+            {
+                continue;
+            }
+
+            if (mediaSourceVersion == Volatile.Read(ref _mediaSourceVersion))
+            {
+                return true;
+            }
+
+            Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, claimedVersion, mediaSourceVersion);
+            return false;
+        }
+    }
+
+    private void ReleaseMediaFailedClaim(int mediaSourceVersion)
+    {
+        Interlocked.CompareExchange(ref _handledMediaFailedSourceVersion, 0, mediaSourceVersion);
     }
 
     private void Player_MediaEnded(MediaPlayer sender, object args, int mediaSourceVersion)
@@ -2109,6 +2333,7 @@ public sealed class VideoPlaybackController
                     "FirstPlaying",
                     $"SelectedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SwitchSelectionChangedTimestamp)}, SourceAssignedToFirstPlayingMs={PlaybackSessionTelemetry.FormatElapsedMilliseconds(_telemetry.SourceAssignedTimestamp)}, FirstPlayingElapsedMs={_telemetry.GetSourceLoadElapsedMilliseconds(sourceVersion):0.###}, Position={sender.Position.TotalSeconds:F3}s, NaturalSize={sender.NaturalVideoWidth}x{sender.NaturalVideoHeight}.");
                 _watchdog.ScheduleVideoSurfaceReveal(sourceVersion, "PlaybackStateChanged");
+                RememberNaturalVideoSize(sender);
                 CompleteSwitchInFlight(sourceVersion);
             }
 
@@ -2241,36 +2466,84 @@ public sealed class VideoPlaybackController
             && _shuffle.IsHistoryEligible(item);
     }
 
-    private static string DescribeMediaPlaybackDiagnostics(MediaItemViewModel? media)
+    private static string DescribeMediaPlaybackDiagnostics(MediaItemViewModel media, MediaFileProbeResult probe)
     {
-        if (media == null)
-        {
-            return "MediaDiagnostics=<none>";
-        }
-
         var path = media.FileSystemPath;
         var extension = Path.GetExtension(path);
-        var exists = File.Exists(path);
-        var actualSize = TryGetFileSize(path);
+        var exists = probe.Availability == MediaFileAvailability.Available;
+        var actualSize = exists ? TryGetFileLength(path) : -1;
         var indexedSize = media.Media.Size;
         var sizeMismatch = exists && actualSize >= 0 && indexedSize > 0 && actualSize != indexedSize;
         var commonExtension = CommonWindowsPlaybackExtensions.Contains(extension);
 
-        return $"MediaDiagnostics=(MediaId='{media.Id}', Extension='{extension}', CommonWindowsExtension={commonExtension}, PathExists={exists}, IndexedSize={indexedSize}, ActualSize={actualSize}, SizeMismatch={sizeMismatch}, IndexedDuration={media.Media.Duration?.ToString("F3") ?? "<null>"}, IndexedSizePx={media.Media.Width?.ToString() ?? "<null>"}x{media.Media.Height?.ToString() ?? "<null>"})";
+        return $"MediaDiagnostics=(MediaId='{media.Id}', Extension='{extension}', CommonWindowsExtension={commonExtension}, PathExists={exists}, Availability={probe.Availability}, ProbeWin32Error={probe.Win32Error}, IndexedSize={indexedSize}, ActualSize={actualSize}, SizeMismatch={sizeMismatch}, IndexedDuration={media.Media.Duration?.ToString("F3") ?? "<null>"}, IndexedSizePx={media.Media.Width?.ToString() ?? "<null>"}x{media.Media.Height?.ToString() ?? "<null>"})";
     }
 
-    private static string GetPlaybackCompatibilityHint(MediaItemViewModel? media, MediaPlayerFailedEventArgs args)
+    /// <summary>
+    /// Emits <see cref="DescribeMediaPlaybackDiagnostics"/> (and optionally the
+    /// MediaFailed compatibility hint) from the thread pool. Both touch the
+    /// file system, and a stalled volume can block such a probe for tens of
+    /// seconds - doing it inline froze the whole window.
+    /// </summary>
+    private void QueuePlaybackDiagnostics(
+        MediaItemViewModel? media,
+        int mediaSourceVersion,
+        string reason,
+        MediaPlayerError? playbackError = null)
     {
         if (media == null)
         {
-            return "No selected media when MediaFailed fired.";
+            return;
         }
 
+        if (Interlocked.CompareExchange(ref _playbackDiagnosticsInFlight, 1, 0) != 0)
+        {
+            // A stalled drive can block a probe for a long time; never stack
+            // more blocking probes behind it.
+            LogPlaybackTraceSampled(
+                "playback-diagnostics-busy",
+                $"Skipped playback diagnostics because a previous storage probe is still running. Reason={reason}, SourceVersion={mediaSourceVersion}.",
+                TimeSpan.FromSeconds(5));
+            return;
+        }
+
+        var mediaId = media.Id;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var probe = MediaFileProbe.Probe(media.FileSystemPath);
+                var diagnostics = DescribeMediaPlaybackDiagnostics(media, probe);
+                var hint = playbackError is { } error
+                    ? $" CompatibilityHint='{GetPlaybackCompatibilityHint(media, error, probe)}'"
+                    : string.Empty;
+                AppTraceLogger.Log(
+                    "VideoPlayback",
+                    $"mediaId={mediaId} Playback diagnostics. Reason={reason}, SourceVersion={mediaSourceVersion}, {diagnostics}{hint}.");
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("VideoPlayback", $"Playback diagnostics failed. MediaId='{mediaId}', Reason={reason}.", ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _playbackDiagnosticsInFlight, 0);
+            }
+        });
+    }
+
+    private static string GetPlaybackCompatibilityHint(MediaItemViewModel media, MediaPlayerError error, MediaFileProbeResult probe)
+    {
         var path = media.FileSystemPath;
         var extension = Path.GetExtension(path);
-        if (!File.Exists(path))
+        if (probe.Availability == MediaFileAvailability.Missing)
         {
             return "File is missing on disk.";
+        }
+
+        if (probe.Availability == MediaFileAvailability.Unavailable)
+        {
+            return $"File could not be probed (Win32Error={probe.Win32Error}); storage was unavailable or access failed, so the file was not treated as deleted.";
         }
 
         if (!CommonWindowsPlaybackExtensions.Contains(extension))
@@ -2278,17 +2551,17 @@ public sealed class VideoPlaybackController
             return $"Extension '{extension}' is not in the common Windows MediaPlayer extension set; system codec support may be missing.";
         }
 
-        if (args.Error == MediaPlayerError.SourceNotSupported)
+        if (error == MediaPlayerError.SourceNotSupported)
         {
             return "Windows MediaPlayer reported SourceNotSupported; codec, container, or stream profile may not be supported by the system media pipeline.";
         }
 
-        if (args.Error == MediaPlayerError.DecodingError)
+        if (error == MediaPlayerError.DecodingError)
         {
             return "Windows MediaPlayer reported DecodingError; the file may be corrupt or uses a codec/profile the installed decoder cannot decode.";
         }
 
-        if (args.Error == MediaPlayerError.NetworkError)
+        if (error == MediaPlayerError.NetworkError)
         {
             return "Windows MediaPlayer reported NetworkError for a local source; verify path accessibility and storage health.";
         }
@@ -2296,11 +2569,11 @@ public sealed class VideoPlaybackController
         return "Windows MediaPlayer failed; inspect ExtendedError and media diagnostics for codec/container clues.";
     }
 
-    private static long TryGetFileSize(string path)
+    private static long TryGetFileLength(string path)
     {
         try
         {
-            return File.Exists(path) ? new FileInfo(path).Length : -1;
+            return new FileInfo(path).Length;
         }
         catch
         {
@@ -2566,7 +2839,7 @@ public sealed class VideoPlaybackController
         }
     }
 
-    private void RequestPlaybackStart(int mediaSourceVersion, string reason)
+    private void RequestPlaybackStart(int mediaSourceVersion, string reason, bool startWhenPaused = true)
     {
         if (!IsCurrentMediaSourceActive(mediaSourceVersion))
         {
@@ -2576,6 +2849,12 @@ public sealed class VideoPlaybackController
         var player = _player;
         if (player == null)
         {
+            return;
+        }
+
+        if (!startWhenPaused && Volatile.Read(ref _autoPlaySuppressed) == 1)
+        {
+            LogPlaybackTrace($"Playback start left paused. SourceVersion={mediaSourceVersion}, Reason={reason}.");
             return;
         }
 
@@ -2611,6 +2890,14 @@ public sealed class VideoPlaybackController
             var state = session.PlaybackState;
             LogPlaybackTrace($"Playback watchdog. SourceVersion={mediaSourceVersion}, State={state}, Position={position.TotalSeconds:F3}s, Duration={session.NaturalDuration.TotalSeconds:F3}s, Width={session.NaturalVideoWidth}, Height={session.NaturalVideoHeight}.");
             if (state == MediaPlaybackState.Playing)
+            {
+                return;
+            }
+
+            // A freshly opened source also reports Paused. Only an explicit
+            // pause (user or restored session) should keep the watchdog from
+            // issuing the Play() that MediaOpened still needs.
+            if (state == MediaPlaybackState.Paused && Volatile.Read(ref _autoPlaySuppressed) == 1)
             {
                 return;
             }

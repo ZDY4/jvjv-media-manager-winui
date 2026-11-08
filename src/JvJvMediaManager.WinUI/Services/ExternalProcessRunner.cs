@@ -42,7 +42,10 @@ public sealed class ExternalProcessRunner
         try
         {
             await Task.WhenAll(outputTask, errorTask);
-            await process.WaitForExitAsync(CancellationToken.None);
+            // Pipes can close while the child is still running. Keep the same
+            // timeout that bounds the readers so a stuck ffmpeg/ffprobe cannot
+            // wait forever after its output has already been consumed.
+            await process.WaitForExitAsync(processCancellationToken);
         }
         catch
         {

@@ -20,6 +20,7 @@ KeysetScaleContractTests.Register(registry);
 FingerprintCancellationTests.Register(registry);
 DiskCacheTrimmerTests.Register(registry);
 LogGovernanceTests.Register(registry);
+MediaFileProbeTests.Register(registry);
 SettingsFlushTests.Register(registry);
 PlaybackLeaseTests.Register(registry);
 PlayerNavigationWindowTests.Register(registry);

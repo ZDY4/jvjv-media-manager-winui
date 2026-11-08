@@ -15,9 +15,12 @@ internal sealed class LibraryPersistenceCoordinator
     private readonly MediaDb _db;
     private readonly ThumbnailService _thumbnails;
     private readonly TimelineThumbnailStripService _timelineThumbnails;
+    private const int DeleteAttempts = 3;
+
     private readonly Action<IReadOnlyList<string>> _onCleanupFinished;
     private readonly object _tasksSync = new();
     private readonly List<Task> _cleanupTasks = new();
+    private readonly CancellationTokenSource _shutdownCts = new();
 
     public LibraryPersistenceCoordinator(
         MediaDb db,
@@ -47,20 +50,35 @@ internal sealed class LibraryPersistenceCoordinator
             return;
         }
 
+        var shutdownToken = _shutdownCts.Token;
         var cleanupTask = Task.Run(async () =>
         {
+            // Pending-deleted ids stay in the query filter until the rows are
+            // actually gone. Clearing them after a failed delete lets the next
+            // refresh bring back items the UI already removed.
+            var deleted = false;
             try
             {
-                await _db.DeleteMediaAsync(ids);
+                deleted = await DeleteMediaWithRetryAsync(ids, shutdownToken);
+                if (!deleted)
+                {
+                    return;
+                }
+
                 _thumbnails.ClearCacheForMediaIds(ids);
                 _timelineThumbnails.ClearCacheForMediaIds(ids);
                 AppTraceLogger.Log("LibraryShell", $"Deleted media persistence cleanup completed. Count={ids.Count}.");
+            }
+            catch (OperationCanceledException)
+            {
+                AppTraceLogger.Log("LibraryShell", $"Deleted media persistence cleanup canceled. Count={ids.Count}, Deleted={deleted}.");
             }
             catch (Exception ex)
             {
                 AppTraceLogger.LogException("LibraryShell", $"Deleted media persistence cleanup failed. Count={ids.Count}.", ex);
             }
-            finally
+
+            if (deleted)
             {
                 _onCleanupFinished(ids);
             }
@@ -86,6 +104,15 @@ internal sealed class LibraryPersistenceCoordinator
 
     public void Drain()
     {
+        try
+        {
+            _shutdownCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Shutdown can race a late drain; the token is already unusable.
+        }
+
         Task[] pendingTasks;
         lock (_tasksSync)
         {
@@ -111,5 +138,36 @@ internal sealed class LibraryPersistenceCoordinator
         {
             AppTraceLogger.LogException("LibraryShell", "DrainDeletedMediaPersistenceCleanupTasks failed.", ex);
         }
+    }
+
+    private async Task<bool> DeleteMediaWithRetryAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= DeleteAttempts; attempt++)
+        {
+            try
+            {
+                await _db.DeleteMediaAsync(ids, cancellationToken);
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException(
+                    "LibraryShell",
+                    $"Deleted media persistence cleanup attempt failed. Attempt={attempt}, Count={ids.Count}.",
+                    ex);
+                if (attempt >= DeleteAttempts)
+                {
+                    return false;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), cancellationToken);
+            }
+        }
+
+        return false;
     }
 }

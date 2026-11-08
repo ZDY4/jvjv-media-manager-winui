@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices.WindowsRuntime;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics.Imaging;
@@ -39,6 +40,7 @@ public sealed class ThumbnailService
     private readonly object _sync = new();
     private readonly string _cacheDir;
     private readonly DiskCacheTrimmer _diskTrimmer;
+    private DispatcherQueue? _dispatcherQueue;
     private int _writesSinceTrim;
     private int _trimScheduled;
     private int _startupTrimDone;
@@ -51,6 +53,11 @@ public sealed class ThumbnailService
         _playbackResources = playbackResources;
         Directory.CreateDirectory(_cacheDir);
         _diskTrimmer = new DiskCacheTrimmer(_cacheDir, "thumbnail");
+    }
+
+    public void SetDispatcher(DispatcherQueue dispatcher)
+    {
+        _dispatcherQueue = dispatcher;
     }
 
     public async Task<ImageSource?> GetThumbnailAsync(MediaFile media, CancellationToken cancellationToken = default)
@@ -87,7 +94,10 @@ public sealed class ThumbnailService
                 var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(_cacheCancellation.Token);
                 request = new InflightThumbnailRequest(cacheGeneration, requestCancellation);
                 _inflight[cacheKey] = request;
-                request.Task = LoadThumbnailCoreAsync(media, cacheKey, request);
+                // Callers are often the UI thread, and an uncontended cache-gate
+                // wait completes inline. Queue the load so shell/WIC decode and
+                // ffmpeg never start there. WinUI does not resume awaits on the UI thread.
+                request.Task = Task.Run(() => LoadThumbnailCoreAsync(media, cacheKey, request));
                 AppTraceLogger.LogSampled(
                     "ThumbnailService",
                     "thumbnail-cache-miss",
@@ -529,7 +539,9 @@ public sealed class ThumbnailService
 
             if (source == null && media.Type != MediaType.Image)
             {
-                source = await TryGetWindowsThumbnailAsync(media, cachePath, cachedOnly: true, persist: false, cancellationToken);
+                // Persist a usable shell thumbnail. The memory cache is capped,
+                // and without a disk file every eviction decodes this same image again.
+                source = await TryGetWindowsThumbnailAsync(media, cachePath, cachedOnly: true, persist: true, cancellationToken);
                 if (source != null)
                 {
                     sourceStage = "windows-cached";
@@ -734,12 +746,50 @@ public sealed class ThumbnailService
 
             cancellationToken.ThrowIfCancellationRequested();
             var source = await CreateBitmapFromStreamAsync(thumbnail, cancellationToken);
+            byte[]? persistBytes = null;
             if (source != null && persist)
             {
                 try
                 {
                     thumbnail.Seek(0);
-                    await PersistStreamAsync(media, thumbnail, cachePath);
+                    var size = thumbnail.Size;
+                    if (size > 0 && size <= 8UL * 1024 * 1024)
+                    {
+                        var buffer = new Windows.Storage.Streams.Buffer((uint)size);
+                        var loaded = await thumbnail.ReadAsync(buffer, (uint)size, InputStreamOptions.None);
+                        var bytes = loaded.ToArray();
+                        if (bytes.Length > 0)
+                        {
+                            persistBytes = bytes;
+                        }
+                    }
+                }
+                catch (Exception persistEx) when (persistEx is not OperationCanceledException)
+                {
+                    persistBytes = null;
+                    AppTraceLogger.LogSampled(
+                        "ThumbnailService",
+                        "windows-thumbnail-persist-failed",
+                        $"Windows thumbnail persist failed. MediaId='{media.Id}', File='{media.FileName}'. ErrorType={persistEx.GetType().Name}, Message='{persistEx.Message}'.",
+                        TimeSpan.FromSeconds(5));
+                }
+            }
+
+            if (useCacheReadGate)
+            {
+                _cacheReadGate.Release();
+                useCacheReadGate = false;
+            }
+
+            if (persistBytes is { Length: > 0 })
+            {
+                try
+                {
+                    await PersistThumbnailBytesAsync(media, persistBytes, cachePath, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception persistEx)
                 {
@@ -792,16 +842,135 @@ public sealed class ThumbnailService
             && thumbnail.Type != ThumbnailType.Icon;
     }
 
-    private static async Task<ImageSource?> CreateBitmapFromStreamAsync(IRandomAccessStream stream, CancellationToken cancellationToken)
+    private async Task<ImageSource?> CreateBitmapFromStreamAsync(IRandomAccessStream stream, CancellationToken cancellationToken)
     {
+        var bytes = await ReadStreamBytesAsync(stream, cancellationToken);
+        if (bytes.Length == 0)
+        {
+            return null;
+        }
+
+        return await CreateBitmapFromBytesAsync(bytes, cancellationToken);
+    }
+
+    private async Task<ImageSource?> CreateBitmapFromBytesAsync(byte[] bytes, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (bytes.Length == 0)
+        {
+            return null;
+        }
+
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+            await writer.FlushAsync();
+            writer.DetachStream();
+        }
+
         stream.Seek(0);
+        // BitmapImage is a UI object. There is no synchronization context, so
+        // an await before SetSourceAsync would leave the thread pool and every
+        // thumbnail would fail. Create it on the dispatcher with no await first.
+        return await DecodeBitmapOnUiAsync(stream, cancellationToken);
+    }
+
+    private Task<ImageSource?> DecodeBitmapOnUiAsync(InMemoryRandomAccessStream stream, CancellationToken cancellationToken)
+    {
+        var dispatcher = _dispatcherQueue ?? DispatcherQueue.GetForCurrentThread();
+        if (dispatcher == null)
+        {
+            throw new InvalidOperationException("Thumbnail decode has no UI dispatcher.");
+        }
+
+        if (dispatcher.HasThreadAccess)
+        {
+            return StartBitmapDecode(stream, cancellationToken);
+        }
+
+        var completion = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    StartBitmapDecode(stream, cancellationToken).ContinueWith(
+                        task => CompleteBitmapDecode(task, completion),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            throw new InvalidOperationException("无法切换到 UI 线程。");
+        }
+
+        return completion.Task;
+    }
+
+    private static void CompleteBitmapDecode(Task<ImageSource?> task, TaskCompletionSource<ImageSource?> completion)
+    {
+        if (task.IsCanceled)
+        {
+            completion.TrySetCanceled();
+            return;
+        }
+
+        if (task.IsFaulted)
+        {
+            completion.TrySetException(task.Exception?.InnerException ?? task.Exception!);
+            return;
+        }
+
+        completion.TrySetResult(task.Result);
+    }
+
+    private static Task<ImageSource?> StartBitmapDecode(InMemoryRandomAccessStream stream, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var completion = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var bitmap = new BitmapImage
         {
             DecodePixelWidth = ThumbnailSize
         };
-        await bitmap.SetSourceAsync(stream);
+        var operation = bitmap.SetSourceAsync(stream);
+        operation.Completed = (info, status) =>
+        {
+            if (cancellationToken.IsCancellationRequested || status == Windows.Foundation.AsyncStatus.Canceled)
+            {
+                completion.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            if (status == Windows.Foundation.AsyncStatus.Error)
+            {
+                completion.TrySetException(info.ErrorCode);
+                return;
+            }
+
+            completion.TrySetResult(bitmap);
+        };
+        return completion.Task;
+    }
+
+    private static async Task<byte[]> ReadStreamBytesAsync(IRandomAccessStream stream, CancellationToken cancellationToken)
+    {
+        stream.Seek(0);
+        var size = stream.Size;
+        if (size == 0 || size > 8UL * 1024 * 1024)
+        {
+            return Array.Empty<byte>();
+        }
+
+        var buffer = new Windows.Storage.Streams.Buffer((uint)size);
+        var loaded = await stream.ReadAsync(buffer, (uint)size, InputStreamOptions.None);
         cancellationToken.ThrowIfCancellationRequested();
-        return bitmap;
+        return loaded.ToArray();
     }
 
     private async Task<ImageSource?> GenerateFallbackThumbnailAsync(MediaFile media, string cachePath, CancellationToken cancellationToken)
@@ -829,14 +998,26 @@ public sealed class ThumbnailService
                 return null;
             }
 
-            using var stream = new InMemoryRandomAccessStream();
-            await stream.WriteAsync(jpeg.AsBuffer());
-            stream.Seek(0);
-            var bitmap = new BitmapImage
+            // Keep the transcoded JPEG. A later memory-cache miss would otherwise
+            // run ffmpeg again for the same file; video frames already persist.
+            try
             {
-                DecodePixelWidth = ThumbnailSize
-            };
-            await bitmap.SetSourceAsync(stream);
+                await PersistThumbnailBytesAsync(media, jpeg, cachePath, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception persistEx)
+            {
+                AppTraceLogger.LogSampled(
+                    "ThumbnailService",
+                    "image-file-fallback-persist-failed",
+                    $"Image fallback thumbnail persist failed. MediaId='{media.Id}', File='{media.FileName}'. ErrorType={persistEx.GetType().Name}, Message='{persistEx.Message}'.",
+                    TimeSpan.FromSeconds(5));
+            }
+
+            var bitmap = await CreateBitmapFromBytesAsync(jpeg, cancellationToken);
             AppTraceLogger.LogSampled(
                 "ThumbnailService",
                 "image-file-fallback-thumbnail-used",
@@ -939,6 +1120,41 @@ public sealed class ThumbnailService
             Math.Max(1, (int)Math.Round(media.Height.Value * scale)));
     }
 
+    private async Task PersistThumbnailBytesAsync(MediaFile media, byte[] bytes, string cachePath, CancellationToken cancellationToken)
+    {
+        var tempPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
+        await _cacheMutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(_cacheDir);
+            DeleteStaleCacheFiles(media, cachePath);
+            await File.WriteAllBytesAsync(tempPath, bytes, cancellationToken);
+            File.Move(tempPath, cachePath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Best-effort temp cleanup only.
+            }
+
+            throw;
+        }
+        finally
+        {
+            _cacheMutationGate.Release();
+        }
+
+        NotifyDiskCacheWrite();
+    }
+
     private async Task PersistStreamAsync(MediaFile media, IRandomAccessStream stream, string cachePath)
     {
         await _cacheMutationGate.WaitAsync();
@@ -996,28 +1212,21 @@ public sealed class ThumbnailService
         try
         {
             var bytes = await File.ReadAllBytesAsync(cachePath, cancellationToken);
-            using var stream = new InMemoryRandomAccessStream();
-            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                writer.WriteBytes(bytes);
-                await writer.StoreAsync();
-                await writer.FlushAsync();
-                writer.DetachStream();
-            }
-
-            stream.Seek(0);
-            var bitmap = new BitmapImage
-            {
-                DecodePixelWidth = ThumbnailSize
-            };
-            await bitmap.SetSourceAsync(stream);
-            cancellationToken.ThrowIfCancellationRequested();
-            return bitmap;
+            return await CreateBitmapFromBytesAsync(bytes, cancellationToken);
         }
         catch (OperationCanceledException)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            return null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Missing the UI dispatcher is not a corrupt cache file.
+            AppTraceLogger.LogSampled(
+                "ThumbnailService",
+                "load-cache-failed",
+                $"TryLoadBitmapAsync failed. CachePath='{cachePath}'. ErrorType={ex.GetType().Name}, Message='{ex.Message}'.",
+                TimeSpan.FromSeconds(5));
             return null;
         }
         catch (Exception ex)

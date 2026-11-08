@@ -685,7 +685,10 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         var primaryId = selectedIds.Contains(media.Id) ? media.Id : selectedIds.LastOrDefault();
-        ApplySelectionSnapshot(selectedIds, primaryId);
+        // Folder expansion loads items into the group only. The paged library
+        // index does not contain them, and a click used to resolve to nothing.
+        var knownItems = range.Count > 0 ? (IEnumerable<MediaItemViewModel>)range : new[] { media };
+        ApplySelectionSnapshot(selectedIds, primaryId, knownItems);
     }
 
     private void BrowserSurface_MediaPrepared(object? sender, MediaItemViewModel media)
@@ -881,10 +884,9 @@ public sealed class MediaBrowserController : IDisposable
         {
             ApplyPressedItemSelection();
         }
-        else if (!_dragSelection.IsAdditive)
-        {
-            ApplySelectionSnapshot(Array.Empty<string>(), null);
-        }
+        // A click on blank space used to clear SelectedMedia. Playback follows
+        // that selection, so the click stopped the current item. Leave the
+        // selection in place; a marquee that hits items still replaces it.
 
         EndDragSelection();
         e.Handled = true;
@@ -2224,7 +2226,7 @@ public sealed class MediaBrowserController : IDisposable
             return;
         }
 
-        ApplySelectionSnapshot(new[] { media.Id }, media.Id);
+        ApplySelectionSnapshot(new[] { media.Id }, media.Id, new[] { media });
     }
 
     private bool TryGetMediaFromElement(DependencyObject? origin, out MediaItemViewModel? media)
@@ -2250,6 +2252,10 @@ public sealed class MediaBrowserController : IDisposable
         EndDragSelection();
 
         var startedOnItem = TryGetMediaFromElement(e.OriginalSource as DependencyObject, out var pressedMedia) && pressedMedia != null;
+        if (pressedMedia != null)
+        {
+            TrackSelectionItem(pressedMedia);
+        }
 
         _dragSelectionController.Begin(
             listViewBase,
@@ -2352,7 +2358,7 @@ public sealed class MediaBrowserController : IDisposable
             primaryId = _dragSelection.SeedPrimaryId;
         }
 
-        ApplySelectionSnapshot(nextSelection, primaryId);
+        ApplySelectionSnapshot(nextSelection, primaryId, hitItems);
     }
 
     private void DragSelectionAutoScrollTimer_Tick(object? sender, object e)
@@ -2548,19 +2554,35 @@ public sealed class MediaBrowserController : IDisposable
         return new Rect(origin.X, origin.Y, element.ActualWidth, element.ActualHeight);
     }
 
-    private void ApplySelectionSnapshot(IEnumerable<string> selectedIds, string? primaryId)
+    private void ApplySelectionSnapshot(
+        IEnumerable<string> selectedIds,
+        string? primaryId,
+        IEnumerable<MediaItemViewModel>? knownItems = null)
     {
+        MediaItemViewModel? knownPrimary = null;
+        if (knownItems != null)
+        {
+            foreach (var item in knownItems)
+            {
+                var tracked = TrackSelectionItem(item);
+                if (tracked != null && string.Equals(tracked.Id, primaryId, StringComparison.Ordinal))
+                {
+                    knownPrimary = tracked;
+                }
+            }
+        }
+
         var nextSelectedIds = selectedIds.ToHashSet(StringComparer.Ordinal);
         if (_selectionCoordinator.SelectedItemIds.SetEquals(nextSelectedIds)
             && string.Equals(_viewModel.SelectedMedia?.Id, primaryId, StringComparison.Ordinal))
         {
-            UpdateNowPlayingState(_viewModel.SelectedMedia);
+            UpdateNowPlayingState(_viewModel.SelectedMedia ?? knownPrimary);
             return;
         }
 
         var previousSelectedIds = _selectionCoordinator.Snapshot();
         _selectionCoordinator.ReplaceSelection(nextSelectedIds);
-        var selectedMedia = ResolvePrimarySelection(primaryId, nextSelectedIds);
+        var selectedMedia = ResolvePrimarySelection(primaryId, nextSelectedIds) ?? knownPrimary;
 
         _isSyncingSelection = true;
         try
@@ -2576,6 +2598,28 @@ public sealed class MediaBrowserController : IDisposable
         }
 
         _viewModel.SelectedMedia = selectedMedia;
+    }
+
+    private MediaItemViewModel? TrackSelectionItem(MediaItemViewModel? media)
+    {
+        if (media == null || string.IsNullOrWhiteSpace(media.Id))
+        {
+            return null;
+        }
+
+        if (_selectionSync.Contains(media.Id))
+        {
+            _selectionSync.Add(media);
+            return media;
+        }
+
+        _selectionSync.Add(media);
+        AppTraceLogger.LogSampled(
+            "MediaBrowser",
+            "selection-track-unpaged",
+            $"Tracked media that is visible outside the paged library. MediaId='{media.Id}', File='{media.FileName}', LoadedCount={_selectionSync.LoadedCount}, ViewItemCount={_viewModel.FilteredMediaItems.Count}.",
+            TimeSpan.FromSeconds(1));
+        return media;
     }
 
     private MediaItemViewModel? ResolvePrimarySelection(string? preferredId, IReadOnlySet<string> selectedIds)
@@ -3078,6 +3122,10 @@ public sealed class MediaBrowserController : IDisposable
     private void RebuildLoadedMediaIndex()
     {
         _selectionSync.Rebuild(_viewModel.FilteredMediaItems);
+        if (_viewModel.SelectedMedia is { } selected)
+        {
+            TrackSelectionItem(selected);
+        }
 
         PruneTrackedSelectionToLoadedItems("rebuild-loaded-index");
         foreach (var item in _selectionSync.LoadedItems)

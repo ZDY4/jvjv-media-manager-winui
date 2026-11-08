@@ -9,7 +9,7 @@
           Background="Transparent">
         <Image x:Name="PreviewImageElement"
                x:FieldModifier="public"
-               Stretch="Fill"
+               Stretch="Uniform"
                HorizontalAlignment="Center"
                VerticalAlignment="Center"
                RenderTransformOrigin="0.5,0.5">

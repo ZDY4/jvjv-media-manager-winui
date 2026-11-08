@@ -504,6 +504,7 @@ ORDER BY
             normalized.ExcludedFolders,
             query.PlaylistId,
             normalized.ExcludedMediaIds,
+            query.TypeFilter,
             useFtsSearch ? normalized.FtsSearch : null);
 
         var folders = new List<MediaFolderSummary>();
@@ -535,6 +536,7 @@ ORDER BY
                 normalized.ExcludedFolders,
                 query.PlaylistId,
                 normalized.ExcludedMediaIds,
+                query.TypeFilter,
                 null);
             await using var fallbackReader = await fallbackCmd.ExecuteReaderAsync(cancellationToken);
             while (await fallbackReader.ReadAsync(cancellationToken))
@@ -857,6 +859,15 @@ WHERE path = $path COLLATE NOCASE
         {
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
         await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+        await using var playlistCmd = connection.CreateCommand();
+        await using var tagCmd = connection.CreateCommand();
+        playlistCmd.Transaction = (SqliteTransaction)tx;
+        tagCmd.Transaction = (SqliteTransaction)tx;
+        playlistCmd.CommandText = "DELETE FROM playlist_media WHERE mediaId = $id;";
+        tagCmd.CommandText = "DELETE FROM tags WHERE mediaId = $id;";
+        var playlistIdParam = playlistCmd.Parameters.Add("$id", SqliteType.Text);
+        var tagIdParam = tagCmd.Parameters.Add("$id", SqliteType.Text);
+
         await using var relocationCmd = connection.CreateCommand();
         relocationCmd.Transaction = (SqliteTransaction)tx;
         relocationCmd.CommandText = @"
@@ -887,7 +898,11 @@ WHERE id = $id;
         {
             relocationCreatedAtParam.Value = createdAt;
             relocationIdParam.Value = id;
+            playlistIdParam.Value = id;
+            tagIdParam.Value = id;
             await relocationCmd.ExecuteNonQueryAsync(cancellationToken);
+            await playlistCmd.ExecuteNonQueryAsync(cancellationToken);
+            await tagCmd.ExecuteNonQueryAsync(cancellationToken);
             await DeleteSearchIndexAsync(connection, (SqliteTransaction)tx, id, cancellationToken);
             mediaIdParam.Value = id;
             await cmd.ExecuteNonQueryAsync(cancellationToken);

@@ -23,6 +23,9 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
     private const double PlayerEdgeNavigationRevealWidth = 96;
     private const double ZoomedImageNavigationHotspotWidth = 32;
     private const double NavigationGestureDragThreshold = 8;
+    // MediaOpened often arrives well after the file probe. The previous
+    // 20x100ms budget started once the probe applied and dropped the seek.
+    private const int PlaybackRestoreAttemptCount = 300;
     private static readonly UIntPtr KeyboardSubclassId = new(0x4A564A57);
 
     private enum PlayerNavigationEdge
@@ -30,6 +33,13 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         None,
         Left,
         Right
+    }
+
+    private enum OpenRestoreStep
+    {
+        Wait,
+        Done,
+        Stop
     }
 
     private readonly IndependentMediaWindowController _controller;
@@ -52,6 +62,9 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
     private bool _isNavigationHotspotTapCanceled;
     private bool _isNavigationHotspotDraggingImage;
     private bool _isDeletingCurrentMedia;
+    private bool _isClosed;
+    private int _mediaOpenGeneration;
+    private int _appliedMediaOpenGeneration;
     private int _isNavigationHotspotWheelNavigating;
     private BossKeyController? _bossKeyController;
     private Windows.Foundation.Point _navigationHotspotPressPoint;
@@ -252,6 +265,12 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
             return;
         }
 
+        if (_controller.Count == 0)
+        {
+            Close();
+            return;
+        }
+
         var currentMediaId = _controller.CurrentMedia.Id;
         var isDeletingCurrentMedia = deletedIds.Contains(currentMediaId);
         var removedAny = false;
@@ -359,18 +378,86 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
     {
         try
         {
-            if (positionSeconds <= 0 && wasPlaying && rotationDegrees <= 0) return;
-            for (var attempt = 0; attempt < 20; attempt++)
+            if (positionSeconds <= 0 && wasPlaying && rotationDegrees <= 0)
             {
-                await Task.Delay(100, cancellationToken);
-                if (!string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
-                    || _library.SelectedMedia?.Type != MediaType.Video) return;
-                if (_videoPlaybackController.GetCurrentVideoDuration() <= TimeSpan.Zero) continue;
-                if (positionSeconds > 0) _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(positionSeconds));
-                if (!wasPlaying && _videoPlaybackController.IsPlaying) _videoPlaybackController.TogglePlayPause();
-                if (rotationDegrees > 0) _videoPlaybackController.SetVideoRotation(rotationDegrees);
                 return;
             }
+
+            // ShowVideo waits on a file probe. Rotation is applied as soon as
+            // that probe publishes; the seek waits until MediaOpened so it is
+            // not clamped to the previous item's duration or dropped after 2s.
+            var generation = Volatile.Read(ref _mediaOpenGeneration);
+            await WaitForMediaOpenAppliedAsync(generation, cancellationToken);
+
+            if (rotationDegrees > 0)
+            {
+                await InvokeOnUiAsync(() =>
+                {
+                    if (_isClosed
+                        || !string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                        || _library.SelectedMedia?.Type != MediaType.Video)
+                    {
+                        return;
+                    }
+
+                    if (Math.Abs(_videoPlaybackController.VideoRotationDegrees - rotationDegrees) < 0.5)
+                    {
+                        return;
+                    }
+
+                    _videoPlaybackController.SetVideoRotation(rotationDegrees);
+                });
+            }
+
+            if (positionSeconds <= 0 && wasPlaying)
+            {
+                return;
+            }
+
+            for (var attempt = 0; attempt < PlaybackRestoreAttemptCount; attempt++)
+            {
+                await Task.Delay(100, cancellationToken);
+                var step = await InvokeOnUiAsync(() =>
+                {
+                    if (_isClosed
+                        || !string.Equals(_library.SelectedMedia?.Id, expectedMediaId, StringComparison.Ordinal)
+                        || _library.SelectedMedia?.Type != MediaType.Video)
+                    {
+                        return OpenRestoreStep.Stop;
+                    }
+
+                    var openState = _videoPlaybackController.GetVideoOpenState();
+                    if (openState == VideoPlaybackOpenState.Abandoned)
+                    {
+                        return OpenRestoreStep.Stop;
+                    }
+
+                    if (openState != VideoPlaybackOpenState.Ready)
+                    {
+                        return OpenRestoreStep.Wait;
+                    }
+
+                    if (positionSeconds > 0)
+                    {
+                        _videoPlaybackController.SeekTo(TimeSpan.FromSeconds(positionSeconds));
+                    }
+
+                    if (!wasPlaying && !_videoPlaybackController.TryHoldPaused())
+                    {
+                        return OpenRestoreStep.Wait;
+                    }
+
+                    return OpenRestoreStep.Done;
+                });
+                if (step != OpenRestoreStep.Wait)
+                {
+                    return;
+                }
+            }
+
+            AppTraceLogger.Log(
+                "IndependentMediaWindow",
+                $"Playback restore gave up waiting for the source to open. MediaId='{expectedMediaId}', PositionSeconds={positionSeconds:F3}.");
         }
         catch (OperationCanceledException)
         {
@@ -419,6 +506,10 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
 
     private void OpenCurrentMedia()
     {
+        // The title switches immediately, but the file probe can take seconds.
+        // Stop the previous source now so it cannot keep playing underneath.
+        _videoPlaybackController.PauseAndClearSource();
+        var generation = Interlocked.Increment(ref _mediaOpenGeneration);
         var media = _controller.CurrentMedia;
         _library.SelectedMedia = media;
         Title = string.IsNullOrWhiteSpace(media.FileName) ? "媒体播放器" : media.FileName;
@@ -430,9 +521,80 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         RefreshNumpadShortcutHint();
         RefreshPlayerNavigationHotspots();
 
-        if (string.IsNullOrWhiteSpace(media.FileSystemPath) || !File.Exists(media.FileSystemPath))
+        _ = OpenCurrentMediaCoreAsync(media, generation);
+    }
+
+    private async Task OpenCurrentMediaCoreAsync(MediaItemViewModel media, int generation)
+    {
+        MediaFileProbeResult probe;
+        try
+        {
+            // A stalled volume can block this probe for tens of seconds, so it
+            // never runs on the UI thread. WinUI does not resume the await on
+            // that thread, so the result is applied through the dispatcher.
+            probe = await Task.Run(() => MediaFileProbe.Probe(media.FileSystemPath));
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("IndependentMediaWindow", $"OpenCurrentMedia probe failed. MediaId='{media.Id}'.", ex);
+            probe = new MediaFileProbeResult(MediaFileAvailability.Unavailable, 0);
+        }
+
+        ScheduleOpenedMedia(media, generation, probe);
+    }
+
+    private void ScheduleOpenedMedia(MediaItemViewModel media, int generation, MediaFileProbeResult probe)
+    {
+        void Apply()
+        {
+            try
+            {
+                ApplyOpenedMedia(media, generation, probe);
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("IndependentMediaWindow", $"OpenCurrentMedia failed. MediaId='{media.Id}'.", ex);
+            }
+            finally
+            {
+                MarkMediaOpenApplied(generation);
+            }
+        }
+
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            Apply();
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(Apply))
+        {
+            MarkMediaOpenApplied(generation);
+            AppTraceLogger.Log("IndependentMediaWindow", $"OpenCurrentMedia dispatcher rejected. MediaId='{media.Id}'.");
+        }
+    }
+
+    private void ApplyOpenedMedia(MediaItemViewModel media, int generation, MediaFileProbeResult probe)
+    {
+        if (generation != Volatile.Read(ref _mediaOpenGeneration) || _isClosed || _controller.Count == 0)
+        {
+            return;
+        }
+
+        if (!string.Equals(_controller.CurrentMedia.Id, media.Id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (probe.Availability == MediaFileAvailability.Missing)
         {
             ShowMissingMediaState(media);
+            return;
+        }
+
+        if (probe.Availability != MediaFileAvailability.Available)
+        {
+            ShowUnavailableMediaState(media);
             return;
         }
 
@@ -449,6 +611,77 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         _imagePreviewController.ShowImage(media);
     }
 
+    private void MarkMediaOpenApplied(int generation)
+    {
+        while (true)
+        {
+            var applied = Volatile.Read(ref _appliedMediaOpenGeneration);
+            if (generation <= applied)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _appliedMediaOpenGeneration, generation, applied) == applied)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task WaitForMediaOpenAppliedAsync(int generation, CancellationToken cancellationToken)
+    {
+        while (Volatile.Read(ref _appliedMediaOpenGeneration) < generation)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _mediaOpenGeneration) != generation)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            await Task.Delay(50, cancellationToken);
+        }
+
+        if (Volatile.Read(ref _mediaOpenGeneration) != generation)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
+    private async Task<T> InvokeOnUiAsync<T>(Func<T> action)
+    {
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            return action();
+        }
+
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    completion.TrySetResult(action());
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            completion.TrySetCanceled();
+        }
+
+        return await completion.Task;
+    }
+
+    private Task InvokeOnUiAsync(Action action)
+    {
+        return InvokeOnUiAsync(() =>
+        {
+            action();
+            return true;
+        });
+    }
+
     private void ShowMissingMediaState(MediaItemViewModel media)
     {
         _videoPlaybackController.Clear();
@@ -458,6 +691,17 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         AppTraceLogger.Log(
             "IndependentMediaWindow",
             $"Missing media. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
+    }
+
+    private void ShowUnavailableMediaState(MediaItemViewModel media)
+    {
+        _videoPlaybackController.Clear();
+        _imagePreviewController.Clear();
+        _player.PlayerFileName = $"暂时无法访问：{media.FileName}";
+        _player.PlayerResolution = media.FileSystemPath;
+        AppTraceLogger.Log(
+            "IndependentMediaWindow",
+            $"Media file is temporarily unavailable. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
     }
 
     private void RefreshPlayerTags(MediaItemViewModel media)
@@ -684,6 +928,7 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
 
     private async void PlayerNavigationHotspot_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
+        var acquired = false;
         try
         {
             if (!CanShowPlayerNavigationHotspots() || sender is not UIElement hotspot)
@@ -703,6 +948,7 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
                 return;
             }
 
+            acquired = true;
             var offset = point.Properties.MouseWheelDelta < 0 ? 1 : -1;
             var edge = offset < 0 ? PlayerNavigationEdge.Left : PlayerNavigationEdge.Right;
             await NavigateRelativeAsync(offset);
@@ -715,7 +961,13 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         }
         finally
         {
-            Interlocked.Exchange(ref _isNavigationHotspotWheelNavigating, 0);
+            // A second wheel event used to clear this flag from its own finally
+            // while the first navigation was still awaiting, so two opens ran
+            // at once and skipped items.
+            if (acquired)
+            {
+                Interlocked.Exchange(ref _isNavigationHotspotWheelNavigating, 0);
+            }
         }
     }
 
@@ -938,17 +1190,26 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         }
 
         var applied = await _library.TryApplyNumpadTagShortcutAsync(digit, new[] { currentMedia });
-        if (applied)
+        if (!applied)
         {
+            return false;
+        }
+
+        await InvokeOnUiAsync(() =>
+        {
+            if (_isClosed)
+            {
+                return;
+            }
+
             RefreshPlayerTags(currentMedia);
             RefreshNumpadShortcutHint();
             RaiseMediaTagsChanged(currentMedia);
             AppTraceLogger.Log(
                 "IndependentMediaWindow",
                 $"Shortcut tag applied. Digit={digit}, MediaId='{currentMedia.Id}', File='{currentMedia.FileName}'.");
-        }
-
-        return applied;
+        });
+        return true;
     }
 
     private async Task<bool> TryApplyShortcutTagAsync(int index)
@@ -960,14 +1221,23 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         }
 
         var applied = await _library.TryApplyTagShortcutAsync(index, new[] { currentMedia });
-        if (applied)
+        if (!applied)
         {
+            return false;
+        }
+
+        await InvokeOnUiAsync(() =>
+        {
+            if (_isClosed)
+            {
+                return;
+            }
+
             RefreshPlayerTags(currentMedia);
             RefreshNumpadShortcutHint();
             RaiseMediaTagsChanged(currentMedia);
-        }
-
-        return applied;
+        });
+        return true;
     }
 
     private async Task RemoveCurrentPlayerTagAsync(string tag)
@@ -987,9 +1257,17 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
         }
 
         await _library.UpdateTagsAsync(new[] { currentMedia }, nextTags, TagUpdateMode.Replace);
-        RefreshPlayerTags(currentMedia);
-        RefreshNumpadShortcutHint();
-        RaiseMediaTagsChanged(currentMedia);
+        await InvokeOnUiAsync(() =>
+        {
+            if (_isClosed)
+            {
+                return;
+            }
+
+            RefreshPlayerTags(currentMedia);
+            RefreshNumpadShortcutHint();
+            RaiseMediaTagsChanged(currentMedia);
+        });
     }
 
     private async Task DeleteCurrentMediaAsync()
@@ -1057,42 +1335,69 @@ public sealed partial class IndependentMediaWindow : Window, IIndependentPlaybac
                 }
             });
         }
-        catch
+        catch (Exception)
         {
-            if (_controller.TrySelect(media.Id))
+            try
+            {
+                await InvokeOnUiAsync(() =>
+                {
+                    if (_isClosed)
+                    {
+                        return;
+                    }
+
+                    if (_controller.TrySelect(media.Id))
+                    {
+                        OpenCurrentMedia();
+                    }
+
+                    FocusPlayer();
+                });
+            }
+            catch (Exception uiEx)
+            {
+                if (uiEx is not OperationCanceledException)
+                {
+                    AppTraceLogger.LogException("IndependentMediaWindow", $"DeleteCurrentMediaAsync failed to restore the player. MediaId='{media.Id}'.", uiEx);
+                }
+            }
+
+            throw;
+        }
+
+        await _library.DeleteMediaAsync(new[] { media });
+        await InvokeOnUiAsync(() =>
+        {
+            if (_isClosed)
+            {
+                return;
+            }
+
+            _controller.RemoveDeletedMedia(deletePlan);
+            MediaDeleted?.Invoke(this, new IndependentMediaWindowDeletedEventArgs(new[] { media.Id }));
+            if (_controller.Count == 0)
+            {
+                AppTraceLogger.Log("IndependentMediaWindow", $"DeleteCurrentMediaAsync closing empty window. DeletedId='{media.Id}'.");
+                Close();
+                return;
+            }
+
+            if (!switchedToReplacement
+                || !string.Equals(_controller.CurrentMedia.Id, replacement?.Id, StringComparison.Ordinal))
             {
                 OpenCurrentMedia();
             }
 
             FocusPlayer();
-            throw;
-        }
-
-        await _library.DeleteMediaAsync(new[] { media });
-        _controller.RemoveDeletedMedia(deletePlan);
-
-        MediaDeleted?.Invoke(this, new IndependentMediaWindowDeletedEventArgs(new[] { media.Id }));
-        if (_controller.Count == 0)
-        {
-            AppTraceLogger.Log("IndependentMediaWindow", $"DeleteCurrentMediaAsync closing empty window. DeletedId='{media.Id}'.");
-            Close();
-            return;
-        }
-
-        if (!switchedToReplacement
-            || !string.Equals(_controller.CurrentMedia.Id, replacement?.Id, StringComparison.Ordinal))
-        {
-            OpenCurrentMedia();
-        }
-
-        FocusPlayer();
-        AppTraceLogger.Log(
-            "IndependentMediaWindow",
-            $"DeleteCurrentMediaAsync completed. DeletedId='{media.Id}', NextId='{_controller.CurrentMedia.Id}', Remaining={_controller.Count}, TotalElapsedMs={stopwatch.ElapsedMilliseconds}.");
+            AppTraceLogger.Log(
+                "IndependentMediaWindow",
+                $"DeleteCurrentMediaAsync completed. DeletedId='{media.Id}', NextId='{_controller.CurrentMedia.Id}', Remaining={_controller.Count}, TotalElapsedMs={stopwatch.ElapsedMilliseconds}.");
+        });
     }
 
     private void IndependentMediaWindow_Closed(object sender, WindowEventArgs args)
     {
+        _isClosed = true;
         _restoreCancellation.Cancel();
         _restoreCancellation.Dispose();
         _videoPlaybackController.Dispose();

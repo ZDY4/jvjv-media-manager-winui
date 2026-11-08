@@ -170,23 +170,100 @@ public sealed class MediaLibraryService : IDisposable
         var normalized = paths
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .Select(p => p.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase);
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
+        var directories = new List<string>();
+        var files = new List<string>();
         foreach (var path in normalized)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (Directory.Exists(path))
             {
-                foreach (var file in EnumerateFolderMediaFiles(path, cancellationToken))
+                directories.Add(path);
+            }
+            else if (File.Exists(path) && MediaExtensions.IsSupported(path))
+            {
+                files.Add(path);
+            }
+        }
+
+        // A copied tree arrives as the new folder plus every nested folder.
+        // Walking each of those is a full subtree enumeration of the same files.
+        var roots = SelectShallowestDirectories(directories);
+        if (roots.Count < directories.Count)
+        {
+            AppTraceLogger.LogSampled(
+                "MediaLibrary",
+                "import-nested-directories-collapsed",
+                $"Collapsed nested import directories. Directories={directories.Count}, Roots={roots.Count}.",
+                TimeSpan.FromSeconds(2));
+        }
+
+        foreach (var directory in roots)
+        {
+            var state = new FolderEnumerationState();
+            foreach (var file in EnumerateFolderMediaFiles(directory, state, cancellationToken))
+            {
+                yield return file;
+            }
+
+            if (!state.HadErrors)
+            {
+                continue;
+            }
+
+            // The shallow walk could not list every child. Walk the nested
+            // directories from this batch so an access error on the parent
+            // does not drop folders that can still be listed on their own.
+            foreach (var nested in directories)
+            {
+                if (!PathHelpers.IsPathUnderFolder(nested, directory))
+                {
+                    continue;
+                }
+
+                foreach (var file in EnumerateFolderMediaFiles(nested, cancellationToken))
                 {
                     yield return file;
                 }
             }
-            else if (File.Exists(path) && MediaExtensions.IsSupported(path))
-            {
-                yield return path;
-            }
         }
+
+        foreach (var file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return file;
+        }
+    }
+
+    private static List<string> SelectShallowestDirectories(List<string> directories)
+    {
+        if (directories.Count <= 1)
+        {
+            return directories;
+        }
+
+        var ordered = directories
+            .OrderBy(path => PathHelpers.NormalizeFolderPath(path).Length)
+            .ToList();
+        var roots = new List<string>(ordered.Count);
+        foreach (var directory in ordered)
+        {
+            if (roots.Exists(root =>
+                    string.Equals(
+                        PathHelpers.NormalizeFolderPath(directory),
+                        PathHelpers.NormalizeFolderPath(root),
+                        StringComparison.OrdinalIgnoreCase)
+                    || PathHelpers.IsPathUnderFolder(directory, root)))
+            {
+                continue;
+            }
+
+            roots.Add(directory);
+        }
+
+        return roots;
     }
 
     private static IEnumerable<string> EnumerateFolderMediaFiles(string folderPath, CancellationToken cancellationToken)

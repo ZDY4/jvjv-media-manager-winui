@@ -63,7 +63,7 @@ public sealed class MediaDeletionWorkflow
             return Array.Empty<string>();
         }
 
-        if (selected.Count > 1 && !await _confirmBatchDeleteAsync(selected.Count))
+        if (selected.Count > 1 && !await _viewModel.RunUiAsync<bool>(() => _confirmBatchDeleteAsync(selected.Count)))
         {
             AppTraceLogger.Log("MediaDeletion", $"DeleteAsync canceled by user. SelectionCount={selected.Count}.");
             return Array.Empty<string>();
@@ -78,7 +78,7 @@ public sealed class MediaDeletionWorkflow
 
         if (isDeletingCurrent)
         {
-            plannedReplacement = FindLoadedReplacementSelection(selected)
+            plannedReplacement = await _viewModel.InvokeOnUiThreadAsync(() => FindLoadedReplacementSelection(selected))
                 ?? await FindReplacementSelectionAsync(selected);
             if (plannedReplacement != null)
             {
@@ -88,21 +88,24 @@ public sealed class MediaDeletionWorkflow
                 AppTraceLogger.Log(
                     "MediaDeletion",
                     $"Selected replacement before file delete. CurrentMediaId='{currentMediaId}', ReplacementId='{plannedReplacement.Id}'.");
-                _viewModel.SelectedMedia = plannedReplacement;
-                _syncSelection(plannedReplacement);
-                _forceUpdatePlayer(plannedReplacement);
+                await _viewModel.InvokeOnUiThreadAsync(() =>
+                {
+                    _viewModel.SelectedMedia = plannedReplacement;
+                    _syncSelection(plannedReplacement);
+                    _forceUpdatePlayer(plannedReplacement);
+                });
                 switchedToReplacement = true;
-                // Let MediaPlayer finish swapping sources on this dispatcher
-                // pass before recycle-bin I/O starts. Otherwise the outgoing
-                // file stays locked and the next video cannot paint yet.
-                await UiThreadYield.NextPassAsync();
+                // There is no SynchronizationContext, so UiThreadYield cannot
+                // pump the dispatcher. Post a turn explicitly and let MediaPlayer
+                // release the outgoing file before recycle-bin I/O starts.
+                await _viewModel.YieldUiThreadAsync();
             }
             else
             {
                 AppTraceLogger.Log(
                     "MediaDeletion",
                     $"DeleteAsync releasing preview handles; no replacement available. CurrentMediaId='{currentMediaId}'.");
-                _releasePreviewHandlesForMedia(currentMediaId);
+                await _viewModel.InvokeOnUiThreadAsync(() => _releasePreviewHandlesForMedia(currentMediaId));
             }
         }
 
@@ -132,66 +135,97 @@ public sealed class MediaDeletionWorkflow
         var failed = deletionResult.Failed;
 
         MediaItemViewModel? nextSelection = null;
-        if (deleted.Count > 0)
+        IDisposable? selectionMutation = null;
+        try
         {
-            AppTraceLogger.Log("MediaDeletion", $"DeleteAsync deleting database records. DeletedFiles={deleted.Count}, FailedFiles={failed.Count}.");
-            using var selectionMutation = _preserveSelectionDuringCollectionMutation(plannedReplacement ?? _viewModel.SelectedMedia);
-            nextSelection = await _viewModel.DeleteMediaAsync(deleted);
-            _viewModel.StatusMessage = $"已将 {deleted.Count} 个文件移到回收站。";
+            if (deleted.Count > 0)
+            {
+                AppTraceLogger.Log("MediaDeletion", $"DeleteAsync deleting database records. DeletedFiles={deleted.Count}, FailedFiles={failed.Count}.");
+                var preservedSelection = plannedReplacement ?? _viewModel.SelectedMedia;
+                selectionMutation = await _viewModel.InvokeOnUiThreadAsync(() => _preserveSelectionDuringCollectionMutation(preservedSelection));
+                nextSelection = await _viewModel.DeleteMediaAsync(deleted);
+                var deletedCount = deleted.Count;
+                await _viewModel.InvokeOnUiThreadAsync(() =>
+                {
+                    _viewModel.StatusMessage = $"已将 {deletedCount} 个文件移到回收站。";
+                });
+            }
+        }
+        finally
+        {
+            if (selectionMutation != null)
+            {
+                try
+                {
+                    await _viewModel.InvokeOnUiThreadAsync(selectionMutation.Dispose);
+                }
+                catch (Exception ex)
+                {
+                    AppTraceLogger.LogException("MediaDeletion", "Selection mutation scope could not be disposed on the UI thread.", ex);
+                }
+            }
         }
 
         if (isDeletingCurrent && deleted.Count > 0)
-        {
-            if (nextSelection == null || deleted.Any(item => string.Equals(item.Id, nextSelection.Id, StringComparison.Ordinal)))
             {
-                nextSelection = plannedReplacement ?? await FindReplacementSelectionAsync(deleted);
-            }
-
-            if (nextSelection != null)
-            {
-                _viewModel.SelectedMedia = nextSelection;
-                _syncSelection(nextSelection);
-                var alreadyPlayingReplacement = switchedToReplacement
-                    && plannedReplacement != null
-                    && string.Equals(plannedReplacement.Id, nextSelection.Id, StringComparison.Ordinal);
-                if (!alreadyPlayingReplacement)
+                if (nextSelection == null || deleted.Any(item => string.Equals(item.Id, nextSelection.Id, StringComparison.Ordinal)))
                 {
-                    _forceUpdatePlayer(nextSelection);
+                    nextSelection = plannedReplacement ?? await FindReplacementSelectionAsync(deleted);
                 }
 
+                if (nextSelection != null)
+                {
+                    var replacement = nextSelection;
+                    var alreadyPlayingReplacement = switchedToReplacement
+                        && plannedReplacement != null
+                        && string.Equals(plannedReplacement.Id, replacement.Id, StringComparison.Ordinal);
+                    await _viewModel.InvokeOnUiThreadAsync(() =>
+                    {
+                        _viewModel.SelectedMedia = replacement;
+                        _syncSelection(replacement);
+                        if (!alreadyPlayingReplacement)
+                        {
+                            _forceUpdatePlayer(replacement);
+                        }
+                    });
+
+                    AppTraceLogger.Log(
+                        "MediaDeletion",
+                        $"DeleteAsync applied replacement after current media deletion. ReplacementId='{replacement.Id}', Deleted={deleted.Count}, AlreadyPlaying={alreadyPlayingReplacement}.");
+                }
+                else
+                {
+                    await _viewModel.InvokeOnUiThreadAsync(() => _clearPlayerSelection());
+                }
+            }
+
+            var currentDeleteFailed = !string.IsNullOrWhiteSpace(currentMediaId)
+                && selected.Any(item => string.Equals(item.Id, currentMediaId, StringComparison.Ordinal))
+                && deleted.All(item => !string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
+            if (currentDeleteFailed && originalCurrentMedia != null)
+            {
+                var restored = originalCurrentMedia;
+                await _viewModel.InvokeOnUiThreadAsync(() =>
+                {
+                    _viewModel.SelectedMedia = restored;
+                    _syncSelection(restored);
+                    _forceUpdatePlayer(restored);
+                });
                 AppTraceLogger.Log(
                     "MediaDeletion",
-                    $"DeleteAsync applied replacement after current media deletion. ReplacementId='{nextSelection.Id}', Deleted={deleted.Count}, AlreadyPlaying={alreadyPlayingReplacement}.");
+                    $"DeleteAsync restored original current media after delete failure. MediaId='{restored.Id}', Failed={failed.Count}.");
             }
-            else
+
+            if (failed.Count > 0)
             {
-                _clearPlayerSelection();
+                var detail = string.Join(Environment.NewLine, failed.Take(5));
+                var suffix = failed.Count > 5 ? $"{Environment.NewLine}... 另有 {failed.Count - 5} 个文件移到回收站失败。" : string.Empty;
+                await _viewModel.RunUiAsync(() => _showInfoAsync("部分文件移到回收站失败", $"{detail}{suffix}"));
             }
-        }
 
-        var currentDeleteFailed = !string.IsNullOrWhiteSpace(currentMediaId)
-            && selected.Any(item => string.Equals(item.Id, currentMediaId, StringComparison.Ordinal))
-            && deleted.All(item => !string.Equals(item.Id, currentMediaId, StringComparison.Ordinal));
-        if (currentDeleteFailed && originalCurrentMedia != null)
-        {
-            _viewModel.SelectedMedia = originalCurrentMedia;
-            _syncSelection(originalCurrentMedia);
-            _forceUpdatePlayer(originalCurrentMedia);
-            AppTraceLogger.Log(
-                "MediaDeletion",
-                $"DeleteAsync restored original current media after delete failure. MediaId='{originalCurrentMedia.Id}', Failed={failed.Count}.");
-        }
-
-        if (failed.Count > 0)
-        {
-            var detail = string.Join(Environment.NewLine, failed.Take(5));
-            var suffix = failed.Count > 5 ? $"{Environment.NewLine}... 另有 {failed.Count - 5} 个文件移到回收站失败。" : string.Empty;
-            await _showInfoAsync("部分文件移到回收站失败", $"{detail}{suffix}");
-        }
-
-        _syncSelection(_viewModel.SelectedMedia);
-        AppTraceLogger.Log("MediaDeletion", $"DeleteAsync completed. Requested={selected.Count}, Deleted={deleted.Count}, Failed={failed.Count}, NextSelection='{_viewModel.SelectedMedia?.Id ?? "<null>"}'.");
-        return deleted.Select(item => item.Id).ToList();
+            await _viewModel.InvokeOnUiThreadAsync(() => _syncSelection(_viewModel.SelectedMedia));
+            AppTraceLogger.Log("MediaDeletion", $"DeleteAsync completed. Requested={selected.Count}, Deleted={deleted.Count}, Failed={failed.Count}, NextSelection='{_viewModel.SelectedMedia?.Id ?? "<null>"}'.");
+            return deleted.Select(item => item.Id).ToList();
     }
 
     private MediaItemViewModel? FindLoadedReplacementSelection(IReadOnlyList<MediaItemViewModel> selected)
@@ -241,66 +275,106 @@ public sealed class MediaDeletionWorkflow
         var removedIds = selected
             .Select(item => item.Id)
             .ToHashSet(StringComparer.Ordinal);
-        var items = _viewModel.FilteredMediaItems;
-        if (items.Count == 0)
+
+        var initial = await _viewModel.InvokeOnUiThreadAsync(() => DescribeLoadedWindow());
+        if (initial.Count == 0)
         {
-            if (!items.HasMoreItems)
+            if (!initial.HasMore)
             {
                 return null;
             }
 
             await _viewModel.EnsureMediaItemLoadedAsync(0);
-            if (items.Count == 0)
+            initial = await _viewModel.InvokeOnUiThreadAsync(() => DescribeLoadedWindow());
+            if (initial.Count == 0)
             {
                 return null;
             }
         }
 
-        var currentIndex = _viewModel.SelectedMedia == null
-            ? -1
-            : IndexOfMediaId(items, _viewModel.SelectedMedia.Id);
-        if (currentIndex < 0)
+        var forward = await _viewModel.InvokeOnUiThreadAsync(() =>
+            FindForwardReplacement(selected, removedIds));
+        if (forward.Match != null)
         {
-            var selectedIndex = selected
-                .Select(item => IndexOfMediaId(items, item.Id))
-                .Where(index => index >= 0)
-                .DefaultIfEmpty(-1)
-                .Min();
-            currentIndex = selectedIndex;
+            return forward.Match;
         }
 
-        for (var index = currentIndex + 1; index < items.Count; index++)
+        if (forward.HasMore)
         {
-            if (!removedIds.Contains(items[index].Id))
+            var probeIndex = forward.LoadedCount;
+            while (true)
             {
-                return items[index];
-            }
-        }
-
-        if (items.HasMoreItems)
-        {
-            var probeIndex = items.Count;
-            while (items.HasMoreItems)
-            {
-                var previousCount = items.Count;
+                var previousCount = probeIndex;
                 await _viewModel.EnsureMediaItemLoadedAsync(probeIndex);
-                if (items.Count <= previousCount)
+                var page = await _viewModel.InvokeOnUiThreadAsync(() =>
+                    FindReplacementInRange(removedIds, Math.Max(probeIndex, 0), previousCount));
+                if (page.Match != null)
+                {
+                    return page.Match;
+                }
+
+                if (!page.Advanced || !page.HasMore)
                 {
                     break;
                 }
 
-                for (var index = Math.Max(probeIndex, 0); index < items.Count; index++)
-                {
-                    if (!removedIds.Contains(items[index].Id))
-                    {
-                        return items[index];
-                    }
-                }
-
-                probeIndex = items.Count;
+                probeIndex = page.LoadedCount;
             }
         }
 
+        var currentIndex = forward.CurrentIndex;
+        return await _viewModel.InvokeOnUiThreadAsync(() =>
+            FindBackwardReplacement(removedIds, currentIndex));
+    }
+
+    private (int Count, bool HasMore) DescribeLoadedWindow()
+    {
+        var items = _viewModel.FilteredMediaItems;
+        return (items.Count, items.HasMoreItems);
+    }
+
+    private (MediaItemViewModel? Match, int CurrentIndex, int LoadedCount, bool HasMore) FindForwardReplacement(
+        IReadOnlyList<MediaItemViewModel> selected,
+        HashSet<string> removedIds)
+    {
+        var items = _viewModel.FilteredMediaItems;
+        var currentIndex = ResolveReplacementIndex(items, selected);
+        for (var index = currentIndex + 1; index < items.Count; index++)
+        {
+            if (!removedIds.Contains(items[index].Id))
+            {
+                return (items[index], currentIndex, items.Count, items.HasMoreItems);
+            }
+        }
+
+        return (null, currentIndex, items.Count, items.HasMoreItems);
+    }
+
+    private (MediaItemViewModel? Match, int LoadedCount, bool HasMore, bool Advanced) FindReplacementInRange(
+        HashSet<string> removedIds,
+        int startIndex,
+        int previousCount)
+    {
+        var items = _viewModel.FilteredMediaItems;
+        if (items.Count <= previousCount)
+        {
+            return (null, items.Count, items.HasMoreItems, false);
+        }
+
+        for (var index = Math.Max(startIndex, 0); index < items.Count; index++)
+        {
+            if (!removedIds.Contains(items[index].Id))
+            {
+                return (items[index], items.Count, items.HasMoreItems, true);
+            }
+        }
+
+        return (null, items.Count, items.HasMoreItems, true);
+    }
+
+    private MediaItemViewModel? FindBackwardReplacement(HashSet<string> removedIds, int currentIndex)
+    {
+        var items = _viewModel.FilteredMediaItems;
         for (var index = Math.Min(currentIndex - 1, items.Count - 1); index >= 0; index--)
         {
             if (!removedIds.Contains(items[index].Id))
@@ -310,6 +384,23 @@ public sealed class MediaDeletionWorkflow
         }
 
         return null;
+    }
+
+    private int ResolveReplacementIndex(IReadOnlyList<MediaItemViewModel> items, IReadOnlyList<MediaItemViewModel> selected)
+    {
+        var currentIndex = _viewModel.SelectedMedia == null
+            ? -1
+            : IndexOfMediaId(items, _viewModel.SelectedMedia.Id);
+        if (currentIndex >= 0)
+        {
+            return currentIndex;
+        }
+
+        return selected
+            .Select(item => IndexOfMediaId(items, item.Id))
+            .Where(index => index >= 0)
+            .DefaultIfEmpty(-1)
+            .Min();
     }
 
     private List<MediaItemViewModel> NormalizeSelection(IEnumerable<MediaItemViewModel> initialSelection)

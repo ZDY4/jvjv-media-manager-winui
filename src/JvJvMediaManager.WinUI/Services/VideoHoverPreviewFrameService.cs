@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices.WindowsRuntime;
+using Microsoft.UI.Dispatching;
 using Windows.Media.Editing;
 using Windows.Storage;
 using JvJvMediaManager.Utilities;
@@ -34,6 +35,7 @@ public sealed class VideoHoverPreviewFrameService
             return null;
         }
 
+        await LeaveCallerUiThreadAsync();
         await _frameGate.WaitAsync(cancellationToken);
         var startedAt = Stopwatch.GetTimestamp();
         try
@@ -134,9 +136,11 @@ public sealed class VideoHoverPreviewFrameService
 
         if (string.IsNullOrWhiteSpace(_ffmpegPath))
         {
+            await LeaveCallerUiThreadAsync();
             return await GenerateFrameWithWindowsAsync(mediaPath, timestamp, frameWidth, frameHeight, cancellationToken);
         }
 
+        await LeaveCallerUiThreadAsync();
         await _frameGate.WaitAsync(cancellationToken);
         var startedAt = Stopwatch.GetTimestamp();
         try
@@ -286,6 +290,17 @@ public sealed class VideoHoverPreviewFrameService
         finally
         {
             _frameGate.Release();
+        }
+    }
+
+    private static async Task LeaveCallerUiThreadAsync()
+    {
+        // WinUI has no SynchronizationContext, so an uncontended gate wait
+        // continues on the caller. Hover seeks start from the UI timer; process
+        // launch and MediaComposition decode have to leave that thread first.
+        if (DispatcherQueue.GetForCurrentThread() != null)
+        {
+            await Task.Yield();
         }
     }
 

@@ -2,33 +2,17 @@
     x:Class="JvJvMediaManager.Views.MainPageParts.MediaBrowserView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:viewModels="using:JvJvMediaManager.ViewModels">
+    xmlns:local="using:JvJvMediaManager.Views.MainPageParts">
 
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/MainPage/MediaLibraryResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
-            <DataTemplate x:Key="FolderSectionTemplate" x:DataType="viewModels:MediaFolderGroupViewModel">
-                <StackPanel Spacing="6" Padding="0,0,0,8">
-                    <ContentPresenter Content="{Binding}"
-                                      ContentTemplate="{StaticResource MediaFolderGroupHeaderTemplate}"
-                                      HorizontalAlignment="Stretch" />
-                    <ItemsRepeater ItemsSource="{Binding VisibleItems}"
-                                   ItemTemplate="{StaticResource GridItemTemplate}"
-                                   HorizontalAlignment="Stretch"
-                                   VerticalAlignment="Top"
-                                   Tag="GroupItems">
-                        <ItemsRepeater.Layout>
-                            <UniformGridLayout Orientation="Horizontal"
-                                               MinItemWidth="140"
-                                               MinItemHeight="140"
-                                               MinRowSpacing="4"
-                                               MinColumnSpacing="4" />
-                        </ItemsRepeater.Layout>
-                    </ItemsRepeater>
-                </StackPanel>
+            <DataTemplate x:Key="MediaTileRowTemplate" x:DataType="local:MediaTileRow">
+                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,0,0,4" />
             </DataTemplate>
+            <SolidColorBrush x:Key="StickyFolderBarBrush" Color="{ThemeResource SurfaceAltColor}" />
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -45,15 +29,37 @@
                       Background="Transparent">
             <ItemsRepeater x:Name="MediaRepeater"
                            x:FieldModifier="public"
-                           ItemsSource="{Binding MediaFolderGroups}"
-                           ItemTemplate="{StaticResource FolderSectionTemplate}"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Top">
                 <ItemsRepeater.Layout>
-                    <StackLayout Orientation="Vertical" />
+                    <StackLayout Orientation="Vertical" Spacing="2" />
                 </ItemsRepeater.Layout>
             </ItemsRepeater>
         </ScrollViewer>
+
+        <Border x:Name="StickyFolderBar"
+                VerticalAlignment="Top"
+                HorizontalAlignment="Stretch"
+                Visibility="Collapsed"
+                Background="{StaticResource StickyFolderBarBrush}"
+                BorderBrush="{ThemeResource SurfaceStrokeBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="10,7"
+                IsHitTestVisible="True">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <FontIcon Glyph="&#xE8B7;"
+                          FontSize="12"
+                          Foreground="{ThemeResource MutedTextBrush}"
+                          VerticalAlignment="Center" />
+                <TextBlock x:Name="StickyFolderText"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource TextBrush}"
+                           MaxLines="1"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
 
         <!-- Grouped ListView/GridView fail-fast inside Microsoft.UI.Xaml.dll when a
              realized group changes. These hosts stay unbound so older controller

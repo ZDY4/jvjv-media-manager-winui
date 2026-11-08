@@ -5,18 +5,21 @@ namespace JvJvMediaManager.Controllers.MainPage;
 
 internal sealed class MissingMediaCleanupWorker
 {
-    private const int MaxBatchSize = 48;
+    // Only the destructive "confirmed missing" outcome is retried: a transient
+    // failure never deletes anything, so retrying it would just add latency.
+    private static readonly TimeSpan[] MissingConfirmationDelays =
+    [
+        TimeSpan.FromMilliseconds(250),
+        TimeSpan.FromMilliseconds(500)
+    ];
+
     private readonly object _sync = new();
     private readonly HashSet<string> _queuedIds = new(StringComparer.Ordinal);
-    private readonly Func<IReadOnlyList<MediaItemViewModel>> _getLoadedItems;
     private readonly Action<MediaItemViewModel, string> _logMissingMedia;
     private int _activeCount;
 
-    public MissingMediaCleanupWorker(
-        Func<IReadOnlyList<MediaItemViewModel>> getLoadedItems,
-        Action<MediaItemViewModel, string> logMissingMedia)
+    public MissingMediaCleanupWorker(Action<MediaItemViewModel, string> logMissingMedia)
     {
-        _getLoadedItems = getLoadedItems;
         _logMissingMedia = logMissingMedia;
     }
 
@@ -36,15 +39,30 @@ internal sealed class MissingMediaCleanupWorker
         return true;
     }
 
-    public async Task<IReadOnlyList<MediaItemViewModel>> BuildCleanupBatchAsync(MediaItemViewModel media)
+    public void ReleaseQueued(MediaItemViewModel media)
     {
-        var items = _getLoadedItems();
-        return await Task.Run(() => BuildCleanupBatch(items, media));
+        lock (_sync)
+        {
+            _queuedIds.Remove(media.Id);
+        }
     }
 
-    public async Task<bool> IsMediaFileAvailableAsync(MediaItemViewModel media)
+    /// <summary>
+    /// Probes the media file and classifies the outcome. A single
+    /// "not found" is re-checked a couple of times before it is reported as
+    /// <see cref="MediaFileAvailability.Missing"/>, so a momentary volume or
+    /// filter-driver hiccup cannot masquerade as a deleted file.
+    /// </summary>
+    public async Task<MediaFileAvailability> ProbeMediaFileAsync(MediaItemViewModel media)
     {
-        return await Task.Run(() => IsMediaFileAvailable(media));
+        var availability = await Task.Run(() => ProbeMediaFile(media)).ConfigureAwait(false);
+        for (var attempt = 0; attempt < MissingConfirmationDelays.Length && availability == MediaFileAvailability.Missing; attempt++)
+        {
+            await Task.Delay(MissingConfirmationDelays[attempt]).ConfigureAwait(false);
+            availability = await Task.Run(() => ProbeMediaFile(media)).ConfigureAwait(false);
+        }
+
+        return availability;
     }
 
     public IDisposable EnterCleanup()
@@ -53,79 +71,19 @@ internal sealed class MissingMediaCleanupWorker
         return new CleanupScope(this);
     }
 
-    public void MarkBatchQueued(IEnumerable<MediaItemViewModel> mediaItems, ISet<string> cleanupIds)
+    private static MediaFileAvailability ProbeMediaFile(MediaItemViewModel media)
     {
-        lock (_sync)
+        var result = MediaFileProbe.Probe(media.FileSystemPath);
+        if (result.Availability == MediaFileAvailability.Unavailable && result.Win32Error != 0)
         {
-            foreach (var item in mediaItems)
-            {
-                _queuedIds.Add(item.Id);
-                cleanupIds.Add(item.Id);
-            }
-        }
-    }
-
-    public void ReleaseQueued(MediaItemViewModel requestedMedia, IEnumerable<string> cleanupIds)
-    {
-        lock (_sync)
-        {
-            _queuedIds.Remove(requestedMedia.Id);
-            foreach (var id in cleanupIds)
-            {
-                _queuedIds.Remove(id);
-            }
-        }
-    }
-
-    private static IReadOnlyList<MediaItemViewModel> BuildCleanupBatch(IReadOnlyList<MediaItemViewModel> items, MediaItemViewModel media)
-    {
-        var index = IndexOfMediaId(items, media.Id);
-        if (index < 0)
-        {
-            return IsMediaFileAvailable(media)
-                ? Array.Empty<MediaItemViewModel>()
-                : new[] { media };
+            AppTraceLogger.LogSampled(
+                "MissingMediaCleanup",
+                $"media-probe-transient:{result.Win32Error}",
+                $"Media file probe hit a transient storage failure; keeping the library entry. MediaId='{media.Id}', Path='{media.FileSystemPath}', Win32Error={result.Win32Error}.",
+                TimeSpan.FromSeconds(5));
         }
 
-        var batch = new List<MediaItemViewModel>(capacity: Math.Min(MaxBatchSize, items.Count - index));
-        for (var currentIndex = index; currentIndex < items.Count && batch.Count < MaxBatchSize; currentIndex++)
-        {
-            var candidate = items[currentIndex];
-            if (IsMediaFileAvailable(candidate))
-            {
-                break;
-            }
-
-            batch.Add(candidate);
-        }
-
-        return batch;
-    }
-
-    private static bool IsMediaFileAvailable(MediaItemViewModel media)
-    {
-        try
-        {
-            return !string.IsNullOrWhiteSpace(media.FileSystemPath) && File.Exists(media.FileSystemPath);
-        }
-        catch (Exception ex)
-        {
-            AppTraceLogger.LogException("MainPageShell", $"IsMediaFileAvailable failed. MediaId='{media.Id}', Path='{media.FileSystemPath}'.", ex);
-            return false;
-        }
-    }
-
-    private static int IndexOfMediaId(IReadOnlyList<MediaItemViewModel> items, string mediaId)
-    {
-        for (var i = 0; i < items.Count; i++)
-        {
-            if (string.Equals(items[i].Id, mediaId, StringComparison.Ordinal))
-            {
-                return i;
-            }
-        }
-
-        return -1;
+        return result.Availability;
     }
 
     private sealed class CleanupScope : IDisposable

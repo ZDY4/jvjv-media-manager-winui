@@ -6,8 +6,6 @@ set JVJVMM_STORAGE_ROOT=%ROOT%data
 set CONFIG=Debug
 if not "%~1"=="" set CONFIG=%~1
 
-set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\win-x64\JvJvMediaManager.WinUI.exe
-if not exist "%EXE%" set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\JvJvMediaManager.WinUI.exe
 taskkill /IM JvJvMediaManager.WinUI.exe /F >nul 2>&1
 set RUNTIME_CHECK=pwsh -NoLogo -NoProfile -Command "if (Get-AppxPackage -Name 'Microsoft.WindowsAppRuntime.1.8*' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 
@@ -17,6 +15,15 @@ if errorlevel 1 (
     echo Build failed.
     exit /b 1
 )
+
+rem The solution builds with Platform=x64 (JvJvMediaManager.sln), so build.ps1
+rem writes to bin\x64\<Configuration>. Resolve the exe *after* the build and
+rem prefer that path: a leftover copy under bin\<Configuration> (AnyCPU) would
+rem otherwise shadow the freshly built binary and the app would keep running
+rem stale code.
+set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\x64\%CONFIG%\net10.0-windows10.0.19041.0\win-x64\JvJvMediaManager.WinUI.exe
+if not exist "%EXE%" set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\win-x64\JvJvMediaManager.WinUI.exe
+if not exist "%EXE%" set EXE=%ROOT%src\JvJvMediaManager.WinUI\bin\%CONFIG%\net10.0-windows10.0.19041.0\JvJvMediaManager.WinUI.exe
 
 if not exist "%EXE%" (
     echo Executable not found:

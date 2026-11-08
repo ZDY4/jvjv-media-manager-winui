@@ -422,11 +422,14 @@ public sealed class ClipEditorController : IClipTimelineEditor
         {
             var progress = new Progress<double>(value =>
             {
-                _viewModel.ProgressValue = value * 100;
-                _clipStatusMessage = value >= 1
-                    ? $"正在收尾 {Path.GetFileName(outputPath)}"
-                    : $"正在导出 {Path.GetFileName(outputPath)} ({value:P0})";
-                UpdateUi();
+                InvokeOnClipUi(() =>
+                {
+                    _viewModel.ProgressValue = value * 100;
+                    _clipStatusMessage = value >= 1
+                        ? $"正在收尾 {Path.GetFileName(outputPath)}"
+                        : $"正在导出 {Path.GetFileName(outputPath)} ({value:P0})";
+                    UpdateUi();
+                });
             });
 
             var result = await _clipService.ExportClipAsync(new VideoClipRequest
@@ -439,8 +442,12 @@ public sealed class ClipEditorController : IClipTimelineEditor
                 OutputPath = outputPath
             }, progress);
 
-            _clipStatusMessage = $"导出完成：{Path.GetFileName(result.OutputPath)}";
-            _viewModel.ProgressValue = 100;
+            var completedName = Path.GetFileName(result.OutputPath);
+            InvokeOnClipUi(() =>
+            {
+                _clipStatusMessage = $"导出完成：{completedName}";
+                _viewModel.ProgressValue = 100;
+            });
 
             await _host.AddOutputFilesAsync(new[] { result.OutputPath });
             await _registerOutputPathsAsync(new[] { result.OutputPath });
@@ -448,7 +455,8 @@ public sealed class ClipEditorController : IClipTimelineEditor
         catch (Exception ex)
         {
             AppTraceLogger.LogException("ClipEditor", $"Export clip failed. MediaId='{media.Id}', OutputPath='{outputPath}'.", ex);
-            _clipStatusMessage = $"导出失败：{ex.Message}";
+            var failureMessage = ex.Message;
+            InvokeOnClipUi(() => _clipStatusMessage = $"导出失败：{failureMessage}");
         }
         finally
         {
@@ -1202,8 +1210,34 @@ public sealed class ClipEditorController : IClipTimelineEditor
         _clipBarView.TimelineScrollViewer.ChangeView(Math.Clamp(offset, 0, maxOffset), null, null, true);
     }
 
+    private void InvokeOnClipUi(Action action)
+    {
+        var queue = _clipBarView.DispatcherQueue;
+        if (queue.HasThreadAccess)
+        {
+            action();
+            return;
+        }
+
+        if (!queue.TryEnqueue(() => action()))
+        {
+            AppTraceLogger.Log("ClipEditor", "Clip UI dispatcher rejected.");
+        }
+    }
+
     private void UpdateUi()
     {
+        var queue = _clipBarView.DispatcherQueue;
+        if (!queue.HasThreadAccess)
+        {
+            if (!queue.TryEnqueue(UpdateUi))
+            {
+                AppTraceLogger.Log("ClipEditor", "UpdateUi dispatcher rejected.");
+            }
+
+            return;
+        }
+
         var media = _host.SelectedMedia;
         var isVideo = media?.Type == MediaType.Video;
         var showClipBar = isVideo && _isClipModeActive;

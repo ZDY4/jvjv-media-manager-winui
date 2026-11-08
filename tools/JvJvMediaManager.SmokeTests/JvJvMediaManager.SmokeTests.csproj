@@ -28,6 +28,7 @@
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\PathHelpers.cs" Link="Linked\Utilities\PathHelpers.cs" />
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\MediaContentFingerprint.cs" Link="Linked\Utilities\MediaContentFingerprint.cs" />
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\MediaExtensions.cs" Link="Linked\Utilities\MediaExtensions.cs" />
+    <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\MediaFileProbe.cs" Link="Linked\Utilities\MediaFileProbe.cs" />
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Utilities\DiskCacheTrimmer.cs" Link="Linked\Utilities\DiskCacheTrimmer.cs" />
 
     <Compile Include="..\..\src\JvJvMediaManager.WinUI\Data\MediaDb.cs" Link="Linked\Data\MediaDb.cs" />

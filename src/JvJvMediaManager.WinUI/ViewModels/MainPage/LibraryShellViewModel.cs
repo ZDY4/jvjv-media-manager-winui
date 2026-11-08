@@ -34,6 +34,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private readonly Dictionary<string, MediaFolderGroupViewModel> _mediaFolderGroupsByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<MediaItemViewModel>> _folderGroupDirectItemsByPath = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _persistMediaLibraryViewState;
+    private DispatcherQueue? _dispatcherQueue;
     private readonly bool _enableWatchedFolderMonitoring;
     private bool _folderWatchersReady;
     private readonly HashSet<string> _sessionUnlockedFolders = new(StringComparer.OrdinalIgnoreCase);
@@ -55,6 +56,10 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private static readonly TimeSpan WatcherImportStabilityWindow = TimeSpan.FromMilliseconds(1200);
     private const int MaxFolderExpansionLoadPages = 100;
     private const int MaxExpandAllAutoLoadGroups = 3;
+    // A full refresh drops the per-folder cache, so repopulate the groups the
+    // user left expanded; otherwise they fall back to whatever few items the
+    // paged library window happens to contain for that folder.
+    private const int MaxAutoLoadExpandedGroups = 4;
     private const int MaxStartupCacheCheckFolders = 8;
     private const double MinLibraryPaneWidth = 240;
     private const double MinPlayerPaneWidth = 280;
@@ -494,8 +499,79 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
     public void SetDispatcher(DispatcherQueue dispatcher)
     {
+        _dispatcherQueue = dispatcher;
         _dispatcher = new UiThreadDispatcher(dispatcher, "LibraryShell");
         _mediaPageStore.SetDispatcher(dispatcher);
+        _thumbnails.SetDispatcher(dispatcher);
+    }
+
+    internal Task InvokeOnUiThreadAsync(Action action)
+    {
+        return RunOnUiThreadAsync(action);
+    }
+
+    internal Task<T> InvokeOnUiThreadAsync<T>(Func<T> action)
+    {
+        return RunOnUiThreadAsync(action);
+    }
+
+    internal Task RunUiAsync(Func<Task> action)
+    {
+        return RunUiAsync<bool>(async () =>
+        {
+            await action().ConfigureAwait(false);
+            return true;
+        });
+    }
+
+    internal async Task<T> RunUiAsync<T>(Func<Task<T>> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (_dispatcher.HasThreadAccess)
+        {
+            return await action().ConfigureAwait(false);
+        }
+
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_dispatcher.Enqueue(() =>
+            {
+                _ = CompleteAsync();
+                async Task CompleteAsync()
+                {
+                    try
+                    {
+                        completion.TrySetResult(await action().ConfigureAwait(false));
+                    }
+                    catch (Exception ex)
+                    {
+                        completion.TrySetException(ex);
+                    }
+                }
+            }, failureContext: "RunUiAsync action failed."))
+        {
+            completion.TrySetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return await completion.Task.ConfigureAwait(false);
+    }
+
+    // Always posts, even when already on the UI thread. MediaPlayer needs a
+    // later dispatcher turn to release the outgoing file before recycle-bin I/O.
+    internal Task YieldUiThreadAsync()
+    {
+        var queue = _dispatcherQueue;
+        if (queue == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!queue.TryEnqueue(() => completion.TrySetResult()))
+        {
+            completion.TrySetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return completion.Task;
     }
 
     partial void OnViewModeChanged(MediaViewMode value)
@@ -1242,10 +1318,13 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
 
         await _db.SetTagsForMediaAsync(tagUpdates);
-        foreach (var (media, nextTags) in appliedUpdates)
+        await RunOnUiThreadAsync(() =>
         {
-            media.UpdateTags(nextTags);
-        }
+            foreach (var (media, nextTags) in appliedUpdates)
+            {
+                media.UpdateTags(nextTags);
+            }
+        });
 
         if (!string.IsNullOrWhiteSpace(SearchQuery) || SelectedTags.Count > 0)
         {
@@ -1311,23 +1390,27 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
 
         await _db.SetTagsForMediaAsync(tagUpdates);
-        foreach (var (media, nextTags) in appliedUpdates)
-        {
-            media.UpdateTags(nextTags);
-        }
-
-        if (!string.IsNullOrWhiteSpace(SearchQuery) || SelectedTags.Count > 0)
-        {
-            await QueueUserFilterRefreshAsync(true);
-        }
-
-        StatusMessage = allTagged
+        var statusMessage = allTagged
             ? mediaItems.Count == 1
                 ? $"已移除当前媒体标签：{tag}"
                 : $"已移除 {mediaItems.Count} 个媒体的标签：{tag}"
             : mediaItems.Count == 1
                 ? $"已为当前媒体追加标签：{tag}"
                 : $"已为 {mediaItems.Count} 个媒体追加标签：{tag}";
+        await RunOnUiThreadAsync(() =>
+        {
+            foreach (var (media, nextTags) in appliedUpdates)
+            {
+                media.UpdateTags(nextTags);
+            }
+
+            StatusMessage = statusMessage;
+        });
+
+        if (!string.IsNullOrWhiteSpace(SearchQuery) || SelectedTags.Count > 0)
+        {
+            await QueueUserFilterRefreshAsync(true);
+        }
         AppTraceLogger.Log("LibraryShell", $"TryApplyTagShortcutAsync completed. Index={index}, Tag='{tag}', MediaCount={mediaItems.Count}, Removed={allTagged}.");
         return true;
     }
@@ -1340,17 +1423,20 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             return SelectedMedia;
         }
 
-        var loadedCount = FilteredMediaItems.Count;
-        var selectedId = SelectedMedia?.Id;
         var removedIds = new HashSet<string>(list.Select(item => item.Id), StringComparer.Ordinal);
-        var firstRemovedIndex = list
-            .Select(item => IndexOfMediaId(FilteredMediaItems, item.Id))
-            .Where(index => index >= 0)
-            .DefaultIfEmpty(FilteredMediaItems.Count)
-            .Min();
+        var snapshot = await RunOnUiThreadAsync(() =>
+        {
+            var selectedId = SelectedMedia?.Id;
+            var firstRemovedIndex = list
+                .Select(item => IndexOfMediaId(FilteredMediaItems, item.Id))
+                .Where(index => index >= 0)
+                .DefaultIfEmpty(FilteredMediaItems.Count)
+                .Min();
+            return (LoadedCount: FilteredMediaItems.Count, SelectedId: selectedId, FirstRemovedIndex: firstRemovedIndex);
+        });
         AppTraceLogger.Log(
             "LibraryShell",
-            $"DeleteMediaAsync start. Requested={list.Count}, LoadedCount={loadedCount}, FirstRemovedIndex={firstRemovedIndex}, SelectedId='{selectedId ?? "<null>"}'.");
+            $"DeleteMediaAsync start. Requested={list.Count}, LoadedCount={snapshot.LoadedCount}, FirstRemovedIndex={snapshot.FirstRemovedIndex}, SelectedId='{snapshot.SelectedId ?? "<null>"}'.");
         var mediaIds = removedIds.ToList();
         lock (_pendingDeletedMediaIdsSync)
         {
@@ -1361,41 +1447,56 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
 
         var uiRemovalStopwatch = Stopwatch.StartNew();
+        // Compact the folder cache and the expanded groups before the paged
+        // collection raises its change. A rebuild queued by that change merges
+        // the cache back in; doing this afterward resurrects deleted tiles.
+        await RunOnUiThreadAsync(() =>
+        {
+            RemoveFromFolderGroupDirectItems(removedIds);
+            foreach (var group in _mediaFolderGroupsByPath.Values)
+            {
+                group.RemoveLoadedIds(removedIds);
+            }
+        });
         var removedCount = await _mediaPageStore.RemoveByIdsAsync(removedIds);
         _mediaItemStore.RemoveMany(removedIds);
-        AppTraceLogger.Log(
-            "LibraryShell",
-            $"DeleteMediaAsync UI removal finished. Removed={removedCount}, Remaining={FilteredMediaItems.Count}, ElapsedMs={uiRemovalStopwatch.ElapsedMilliseconds}.");
         QueueDeletedMediaPersistenceCleanup(mediaIds);
 
-        if (!string.IsNullOrWhiteSpace(selectedId) && !removedIds.Contains(selectedId))
+        return await RunOnUiThreadAsync(() =>
         {
-            var existingSelection = FilteredMediaItems.FirstOrDefault(item => item.Id == selectedId);
-            if (existingSelection != null)
-            {
-                await RunOnUiThreadAsync(() => SelectedMedia = existingSelection);
-                return existingSelection;
-            }
-
             AppTraceLogger.Log(
                 "LibraryShell",
-                $"DeleteMediaAsync preserved current selection outside loaded window. SelectedId='{selectedId}', Removed={removedIds.Count}, Remaining={FilteredMediaItems.Count}.");
-            return SelectedMedia;
-        }
+                $"DeleteMediaAsync UI removal finished. Removed={removedCount}, Remaining={FilteredMediaItems.Count}, ElapsedMs={uiRemovalStopwatch.ElapsedMilliseconds}.");
 
-        if (FilteredMediaItems.Count == 0)
-        {
-            await RunOnUiThreadAsync(() => SelectedMedia = null);
-            return null;
-        }
+            if (!string.IsNullOrWhiteSpace(snapshot.SelectedId) && !removedIds.Contains(snapshot.SelectedId))
+            {
+                var existingSelection = FilteredMediaItems.FirstOrDefault(item => item.Id == snapshot.SelectedId);
+                if (existingSelection != null)
+                {
+                    SelectedMedia = existingSelection;
+                    return existingSelection;
+                }
 
-        var fallbackIndex = Math.Clamp(firstRemovedIndex, 0, FilteredMediaItems.Count - 1);
-        var replacement = FilteredMediaItems[fallbackIndex];
-        await RunOnUiThreadAsync(() => SelectedMedia = replacement);
-        AppTraceLogger.Log(
-            "LibraryShell",
-            $"DeleteMediaAsync fallback selection applied. FallbackIndex={fallbackIndex}, ReplacementId='{replacement.Id}', RemainingLoaded={FilteredMediaItems.Count}, PreviousLoaded={loadedCount}, TotalElapsedMs={uiRemovalStopwatch.ElapsedMilliseconds}.");
-        return replacement;
+                AppTraceLogger.Log(
+                    "LibraryShell",
+                    $"DeleteMediaAsync preserved current selection outside loaded window. SelectedId='{snapshot.SelectedId}', Removed={removedIds.Count}, Remaining={FilteredMediaItems.Count}.");
+                return SelectedMedia;
+            }
+
+            if (FilteredMediaItems.Count == 0)
+            {
+                SelectedMedia = null;
+                return (MediaItemViewModel?)null;
+            }
+
+            var fallbackIndex = Math.Clamp(snapshot.FirstRemovedIndex, 0, FilteredMediaItems.Count - 1);
+            var replacement = FilteredMediaItems[fallbackIndex];
+            SelectedMedia = replacement;
+            AppTraceLogger.Log(
+                "LibraryShell",
+                $"DeleteMediaAsync fallback selection applied. FallbackIndex={fallbackIndex}, ReplacementId='{replacement.Id}', RemainingLoaded={FilteredMediaItems.Count}, PreviousLoaded={snapshot.LoadedCount}, TotalElapsedMs={uiRemovalStopwatch.ElapsedMilliseconds}.");
+            return replacement;
+        });
     }
 
     private static int IndexOfMediaId(IReadOnlyList<MediaItemViewModel> items, string mediaId)
@@ -1436,6 +1537,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         }
 
         _mediaItemStore.RemoveMany(ids);
+        RemoveFromFolderGroupDirectItems(ids.ToHashSet(StringComparer.Ordinal));
         QueueDeletedMediaPersistenceCleanup(ids);
         AppTraceLogger.Log(
             "LibraryShell",
@@ -1563,6 +1665,11 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                 "refresh-media-complete",
                 $"RefreshMediaAsync completed. Version={refreshVersion}, ItemCount={FilteredMediaItems.Count}, SelectedId='{SelectedMedia?.Id ?? "<null>"}', SummariesMs={summariesElapsedMs:0}, FirstGroupMs=0, PageRefreshMs={pageRefreshElapsedMs:0}, SecondGroupMs={groupElapsedMs:0}, RestoreSelectionMs={restoreSelectionElapsedMs:0}, PrunedStoreItems={prunedStoreItems}, PruneStoreMs={pruneStoreElapsedMs:0}, TotalMs={stopwatch.ElapsedMilliseconds}.",
                 TimeSpan.FromSeconds(1));
+
+            if (refreshVersion == _refreshVersion)
+            {
+                _ = EnsureExpandedFolderGroupsLoadedAsync(maxGroupsToLoad: MaxAutoLoadExpandedGroups);
+            }
         }
         catch (Exception ex)
         {
@@ -1724,7 +1831,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
         var normalizedMediaFolderPath = PathHelpers.NormalizeFolderPath(media.FolderPath);
         _mediaFolderGroupsByPath.TryGetValue(normalizedMediaFolderPath, out var group);
-        if (group != null && !group.HasLoadedItems)
+        if (group is { IsCollapsed: false } && NeedsFolderGroupLoad(group.FolderPath))
         {
             _ = EnsureFolderGroupLoadedAsync(group.FolderPath);
         }
@@ -2126,14 +2233,20 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         _timelineThumbnails.ClearCache();
         _sessionUnlockedFolders.Clear();
         await ReloadPlaylistsAsync();
-        SelectedMedia = null;
-        if (includePlaylists)
+        await RunOnUiThreadAsync(() =>
         {
-            SelectedPlaylist = null;
-        }
+            SelectedMedia = null;
+            if (includePlaylists)
+            {
+                SelectedPlaylist = null;
+            }
+        });
 
         await RefreshMediaAsync(false);
-        StatusMessage = includePlaylists ? "媒体库、标签和播放列表已清空。" : "媒体库和标签已清空。";
+        await RunOnUiThreadAsync(() =>
+        {
+            StatusMessage = includePlaylists ? "媒体库、标签和播放列表已清空。" : "媒体库和标签已清空。";
+        });
         AppTraceLogger.Log("LibraryShell", $"ResetLibraryAsync completed. IncludePlaylists={includePlaylists}, LoadedCount={FilteredMediaItems.Count}, PlaylistCount={Playlists.Count}.");
     }
 
@@ -2143,9 +2256,12 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         // H2: stream the library in bounded pages and sweep the cache directory
         // on background threads instead of loading all media into memory.
         var deleted = await _thumbnails.ClearInvalidCacheAsync(_db.StreamAllMediaAsync());
-        StatusMessage = deleted == 0
-            ? "没有发现失效的缩略图缓存。"
-            : $"已清理 {deleted} 个失效的缩略图缓存。";
+        await RunOnUiThreadAsync(() =>
+        {
+            StatusMessage = deleted == 0
+                ? "没有发现失效的缩略图缓存。"
+                : $"已清理 {deleted} 个失效的缩略图缓存。";
+        });
         AppTraceLogger.Log("LibraryShell", $"ClearInvalidThumbnailCache completed. DeletedCount={deleted}, LoadedCount={FilteredMediaItems.Count}.");
     }
 
@@ -2570,7 +2686,11 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             group.SetTreeDisplay(node.DisplayName, node.TreePath, node.Depth);
             group.SetTotalCount(node.TotalCount, hasDirectMedia);
             group.SetCollapsedFromProjection(isCollapsed);
-            if (loadedItems is { Count: > 0 } || !group.HasLoadedItems)
+            var folderLoadInFlight = _folderGroupLoadRequests.Contains(PathHelpers.NormalizeFolderPath(node.FolderPath));
+            // Keep already-shown items only while a folder load is about to
+            // publish them. Otherwise an empty projection is real: a filter
+            // refresh cleared the cache, or every item in the folder was deleted.
+            if (hasLoadedItems || !group.HasLoadedItems || !folderLoadInFlight)
             {
                 group.SetItems(loadedItems ?? Enumerable.Empty<MediaItemViewModel>());
             }
@@ -2665,11 +2785,15 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
         // H5: page appends are the hot path while scrolling; append the new
         // items straight into their existing folder groups instead of
-        // re-grouping the whole loaded window (O(loaded)) per page. Any shape
-        // change (new folder, removal, move, reset) still takes the full
-        // rebuild, which also reconciles any fast-path state.
+        // re-grouping the whole loaded window (O(loaded)) per page. Only a
+        // pure suffix is an append. A middle insert (loaded-window diff) still
+        // takes the full rebuild, which also reconciles any fast-path state.
+        var addedCount = e.NewItems?.Count ?? 0;
         if (e.Action == NotifyCollectionChangedAction.Add
             && e.NewItems != null
+            && addedCount > 0
+            && e.NewStartingIndex >= 0
+            && e.NewStartingIndex == FilteredMediaItems.Count - addedCount
             && TryAppendToExistingFolderGroups(e.NewItems))
         {
             return;
@@ -2818,7 +2942,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
             $"Media folder collapse changed. Folder='{group.FolderPath}', Collapsed={group.IsCollapsed}, Count={group.TotalCount}.",
             TimeSpan.FromSeconds(1));
 
-        if (!group.IsCollapsed && !group.HasLoadedItems && group.HasDirectMedia)
+        if (!group.IsCollapsed && NeedsFolderGroupLoad(group.FolderPath))
         {
             _ = EnsureFolderGroupLoadedAsync(group.FolderPath);
         }
@@ -2835,7 +2959,7 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
     private async Task EnsureExpandedFolderGroupsLoadedAsync(int? maxGroupsToLoad = null)
     {
         var folderPaths = MediaFolderGroups
-            .Where(group => !group.IsCollapsed && group.HasDirectMedia && !group.HasLoadedItems && group.TotalCount > 0)
+            .Where(group => !group.IsCollapsed && NeedsFolderGroupLoad(group.FolderPath))
             .Select(group => group.FolderPath)
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -2859,16 +2983,6 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
 
         foreach (var folderPath in folderPaths)
         {
-            if (!_mediaPageStore.HasMoreItems)
-            {
-                break;
-            }
-
-            if (FilteredMediaItems.Any(item => string.Equals(item.FolderPath, folderPath, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
             await EnsureFolderGroupLoadedAsync(folderPath);
         }
 
@@ -2906,47 +3020,93 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
                 return;
             }
 
-            AppTraceLogger.LogSampled(
-                "LibraryShell",
-                $"folder-group-load:{normalizedFolderPath}",
-                $"Folder group load requested. Folder='{normalizedFolderPath}', LoadedCount={_mediaPageStore.Count}, HasMore={_mediaPageStore.HasMoreItems}.",
-                TimeSpan.FromSeconds(1));
+            var pageSize = Math.Max(1, _mediaPageStore.PageSize);
+            var expectedCount = GetFolderDirectMediaCount(normalizedFolderPath);
+            var loadedItems = new List<MediaItemViewModel>();
+            var loadedIds = new HashSet<string>(StringComparer.Ordinal);
+            var loadedPages = 0;
+            var hasMore = true;
 
-            var baseQuery = CreateCurrentQueryState().ToMediaQuery(offset: 0, limit: _mediaPageStore.PageSize);
-            var query = new MediaQuery
+            AppTraceLogger.Log(
+                "LibraryShell",
+                $"Folder group load requested. Folder='{normalizedFolderPath}', ExpectedCount={expectedCount}, PageSize={pageSize}, LoadedCount={_mediaPageStore.Count}.");
+
+            // Load the whole folder, not just its first page. A folder group is
+            // the only surface where the user asks for "everything in this
+            // folder"; stopping after one page made a 1710-item folder look
+            // incomplete no matter how often it was refreshed.
+            while (hasMore && loadedPages < MaxFolderExpansionLoadPages)
             {
-                SearchText = baseQuery.SearchText,
-                SelectedTags = baseQuery.SelectedTags,
-                PlaylistId = baseQuery.PlaylistId,
-                IncludedFolderPaths = baseQuery.IncludedFolderPaths,
-                ExactFolderPaths = new[] { normalizedFolderPath },
-                ExcludedFolderPaths = baseQuery.ExcludedFolderPaths,
-                TypeFilter = baseQuery.TypeFilter,
-                ExcludedMediaIds = baseQuery.ExcludedMediaIds,
-                RandomOrder = baseQuery.RandomOrder,
-                SortField = baseQuery.SortField,
-                SortOrder = baseQuery.SortOrder,
-                Offset = 0,
-                Limit = _mediaPageStore.PageSize
-            };
-            var result = await _library.QueryPageAsync(query);
-            var loadedItems = await RunOnUiThreadAsync(() =>
-            {
-                var items = _mediaItemStore.GetOrUpdateRange(result.Items);
-                _folderGroupDirectItemsByPath[normalizedFolderPath] = items;
-                if (_mediaFolderGroupsByPath.TryGetValue(normalizedFolderPath, out var group))
+                var query = CreateFolderGroupPageQuery(normalizedFolderPath, loadedPages * pageSize, pageSize);
+                var result = await _library.QueryPageAsync(query);
+                hasMore = result.HasMore;
+                loadedPages++;
+
+                if (result.Items.Count == 0)
                 {
-                    group.SetItems(items);
+                    break;
                 }
 
-                return items;
+                var publishAsReplacement = loadedPages == 1;
+                await RunOnUiThreadAsync(() =>
+                {
+                    var pageItems = new List<MediaItemViewModel>(result.Items.Count);
+                    foreach (var item in _mediaItemStore.GetOrUpdateRange(result.Items))
+                    {
+                        if (loadedIds.Add(item.Id))
+                        {
+                            loadedItems.Add(item);
+                            pageItems.Add(item);
+                        }
+                    }
+
+                    _folderGroupDirectItemsByPath[normalizedFolderPath] = loadedItems;
+
+                    // Publish each page so the group fills in progressively
+                    // instead of staying empty until the last page lands.
+                    // The first page replaces the handful projected from the
+                    // paged library window. Later pages append: SetItems of the
+                    // accumulated list rewrites every id and, when the sequence
+                    // is not a pure prefix, resets VisibleItems (one repeater
+                    // rebuild of the whole folder per page).
+                    if (!_mediaFolderGroupsByPath.TryGetValue(normalizedFolderPath, out var group))
+                    {
+                        return;
+                    }
+
+                    if (publishAsReplacement || !group.HasLoadedItems)
+                    {
+                        group.SetItems(loadedItems);
+                    }
+                    else if (pageItems.Count > 0)
+                    {
+                        group.AppendLoadedItems(pageItems);
+                    }
+                });
+
+                if (expectedCount > 0 && loadedItems.Count >= expectedCount)
+                {
+                    break;
+                }
+            }
+
+            await RunOnUiThreadAsync(() =>
+            {
+                if (loadedItems.Count != 0)
+                {
+                    return;
+                }
+
+                _folderGroupDirectItemsByPath.Remove(normalizedFolderPath);
+                if (_mediaFolderGroupsByPath.TryGetValue(normalizedFolderPath, out var group))
+                {
+                    group.SetItems(Array.Empty<MediaItemViewModel>());
+                }
             });
 
-            AppTraceLogger.LogSampled(
+            AppTraceLogger.Log(
                 "LibraryShell",
-                $"folder-group-load-complete:{normalizedFolderPath}",
-                $"Folder group load completed. Folder='{normalizedFolderPath}', DirectItems={loadedItems.Count}, HasMore={result.HasMore}, LoadedCount={_mediaPageStore.Count}.",
-                TimeSpan.FromSeconds(1));
+                $"Folder group load completed. Folder='{normalizedFolderPath}', DirectItems={loadedItems.Count}, ExpectedCount={expectedCount}, LoadedPages={loadedPages}, HasMore={hasMore}, Capped={loadedPages >= MaxFolderExpansionLoadPages}.");
         }
         catch (Exception ex)
         {
@@ -2955,6 +3115,146 @@ public sealed partial class LibraryShellViewModel : ObservableObject, IDisposabl
         finally
         {
             _folderGroupLoadRequests.Remove(normalizedFolderPath);
+        }
+    }
+
+    private MediaQuery CreateFolderGroupPageQuery(string normalizedFolderPath, int offset, int limit)
+    {
+        var baseQuery = CreateCurrentQueryState().ToMediaQuery(offset, limit);
+        return new MediaQuery
+        {
+            SearchText = baseQuery.SearchText,
+            SelectedTags = baseQuery.SelectedTags,
+            PlaylistId = baseQuery.PlaylistId,
+            IncludedFolderPaths = baseQuery.IncludedFolderPaths,
+            ExactFolderPaths = new[] { normalizedFolderPath },
+            ExcludedFolderPaths = baseQuery.ExcludedFolderPaths,
+            TypeFilter = baseQuery.TypeFilter,
+            ExcludedMediaIds = baseQuery.ExcludedMediaIds,
+            RandomOrder = baseQuery.RandomOrder,
+            SortField = baseQuery.SortField,
+            SortOrder = baseQuery.SortOrder,
+            Offset = offset,
+            Limit = limit
+        };
+    }
+
+    private int GetFolderDirectMediaCount(string normalizedFolderPath)
+    {
+        foreach (var summary in _mediaFolderSummaries)
+        {
+            if (string.Equals(PathHelpers.NormalizeFolderPath(summary.FolderPath), normalizedFolderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return summary.Count;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// True when expanding this folder should query its media: the folder has
+    /// direct media and the per-folder cache does not cover its full count.
+    /// The previous check ("no items loaded at all") skipped folders that
+    /// already had a few items from the paged library window, so expanding them
+    /// showed a handful of items under a header counting hundreds.
+    /// </summary>
+    private bool NeedsFolderGroupLoad(string folderPath)
+    {
+        var normalizedFolderPath = PathHelpers.NormalizeFolderPath(folderPath);
+        if (string.IsNullOrWhiteSpace(normalizedFolderPath) || !HasDirectMediaForFolder(normalizedFolderPath))
+        {
+            return false;
+        }
+
+        if (!_folderGroupDirectItemsByPath.TryGetValue(normalizedFolderPath, out var loadedItems))
+        {
+            return true;
+        }
+
+        var expectedCount = GetFolderDirectMediaCount(normalizedFolderPath);
+        return expectedCount > 0 && loadedItems.Count < expectedCount;
+    }
+
+    private void RemoveFromFolderGroupDirectItems(ISet<string> mediaIds)
+    {
+        if (mediaIds.Count == 0 || _folderGroupDirectItemsByPath.Count == 0)
+        {
+            return;
+        }
+
+        // The cache is a List (see EnsureFolderGroupLoadedAsync). Compact in
+        // place so deleting one id does not copy every other folder's items.
+        List<string>? replacePaths = null;
+        foreach (var pair in _folderGroupDirectItemsByPath)
+        {
+            if (pair.Value is List<MediaItemViewModel> items)
+            {
+                CompactRemovedMedia(items, mediaIds);
+                continue;
+            }
+
+            var removed = false;
+            foreach (var item in pair.Value)
+            {
+                if (mediaIds.Contains(item.Id))
+                {
+                    removed = true;
+                    break;
+                }
+            }
+
+            if (!removed)
+            {
+                continue;
+            }
+
+            replacePaths ??= new List<string>();
+            replacePaths.Add(pair.Key);
+        }
+
+        if (replacePaths == null)
+        {
+            return;
+        }
+
+        foreach (var folderPath in replacePaths)
+        {
+            var source = _folderGroupDirectItemsByPath[folderPath];
+            var kept = new List<MediaItemViewModel>(source.Count);
+            foreach (var item in source)
+            {
+                if (!mediaIds.Contains(item.Id))
+                {
+                    kept.Add(item);
+                }
+            }
+
+            _folderGroupDirectItemsByPath[folderPath] = kept;
+        }
+    }
+
+    private static void CompactRemovedMedia(List<MediaItemViewModel> items, ISet<string> mediaIds)
+    {
+        var kept = 0;
+        for (var index = 0; index < items.Count; index++)
+        {
+            if (mediaIds.Contains(items[index].Id))
+            {
+                continue;
+            }
+
+            if (kept != index)
+            {
+                items[kept] = items[index];
+            }
+
+            kept++;
+        }
+
+        if (kept != items.Count)
+        {
+            items.RemoveRange(kept, items.Count - kept);
         }
     }
 

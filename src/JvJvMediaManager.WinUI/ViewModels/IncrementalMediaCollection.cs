@@ -18,6 +18,8 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
     private readonly SemaphoreSlim _loadLock = new(1, 1);
     private readonly Dictionary<string, int> _indexByMediaId = new(StringComparer.Ordinal);
 
+    private const int MaxLoadBatchMultiplier = 4;
+
     private readonly int _pageSize;
     private int _generation;
     private bool _hasMoreItems = true;
@@ -132,11 +134,28 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
             return;
         }
 
+        var stagnantPages = 0;
         while (Count <= index && HasMoreItems)
         {
             var generation = Volatile.Read(ref _generation);
-            var loaded = await LoadMoreCoreAsync((uint)Math.Max(_pageSize, index - Count + 1), generation);
-            if (loaded == 0)
+            var remaining = index - Count + 1;
+            var batch = (uint)Math.Min(Math.Max(_pageSize, remaining), _pageSize * MaxLoadBatchMultiplier);
+            var loaded = await LoadMoreCoreAsync(batch, generation);
+            if (generation != Volatile.Read(ref _generation))
+            {
+                return;
+            }
+
+            if (loaded > 0)
+            {
+                stagnantPages = 0;
+                continue;
+            }
+
+            // A page of ids already in the window still advances the keyset
+            // cursor. Stop only when the query is exhausted or the cursor is
+            // no longer making progress.
+            if (!HasMoreItems || ++stagnantPages >= 32)
             {
                 return;
             }
@@ -150,11 +169,23 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
             return false;
         }
 
+        var stagnantPages = 0;
         while (IndexOfMediaId(mediaId, 0) < 0 && HasMoreItems)
         {
             var generation = Volatile.Read(ref _generation);
             var loaded = await LoadMoreCoreAsync((uint)_pageSize, generation);
-            if (loaded == 0)
+            if (generation != Volatile.Read(ref _generation))
+            {
+                break;
+            }
+
+            if (loaded > 0)
+            {
+                stagnantPages = 0;
+                continue;
+            }
+
+            if (!HasMoreItems || ++stagnantPages >= 32)
             {
                 break;
             }
@@ -237,7 +268,8 @@ public sealed class IncrementalMediaCollection : ObservableCollection<MediaItemV
                 return 0;
             }
 
-            var limit = (int)Math.Max((uint)_pageSize, requestedCount);
+            var requested = requestedCount > int.MaxValue ? int.MaxValue : (int)requestedCount;
+            var limit = Math.Clamp(Math.Max(_pageSize, requested), _pageSize, _pageSize * MaxLoadBatchMultiplier);
             var result = await _pageLoader(Count, limit, generation, _generationCts.Token);
 
             if (generation != Volatile.Read(ref _generation))

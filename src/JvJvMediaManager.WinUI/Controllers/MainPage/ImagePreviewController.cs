@@ -247,12 +247,22 @@ public sealed class ImagePreviewController
                 return;
             }
 
-            _imageViewportView.PreviewImageElement.Source = bitmap;
-            UpdatePreviewImageSourceSize(
-                bitmap.PixelWidth > 0 ? bitmap.PixelWidth : null,
-                bitmap.PixelHeight > 0 ? bitmap.PixelHeight : null);
-            _pendingImageFitMediaId = media.Id;
-            TryApplyPendingImageFit();
+            // The decode continuation is not on the UI thread. Fitting there
+            // can keep the previous item's display box and stretch this one.
+            await RunOnPreviewThreadAsync(() =>
+            {
+                if (!IsCurrentImageLoad(media, loadVersion))
+                {
+                    return;
+                }
+
+                _imageViewportView.PreviewImageElement.Source = bitmap;
+                UpdatePreviewImageSourceSize(
+                    bitmap.PixelWidth > 0 ? bitmap.PixelWidth : null,
+                    bitmap.PixelHeight > 0 ? bitmap.PixelHeight : null);
+                _pendingImageFitMediaId = media.Id;
+                TryApplyPendingImageFit();
+            });
             AppTraceLogger.Log(
                 "ImagePreview",
                 $"LoadImagePreviewAsync completed. MediaId='{media.Id}', PixelSize={bitmap.PixelWidth}x{bitmap.PixelHeight}, JpegBytes={jpeg!.Length}, CacheHit={fromCache}.");
@@ -452,7 +462,7 @@ public sealed class ImagePreviewController
         }
 
         if (!TryGetImageViewportSize(out var viewportWidth, out var viewportHeight)
-            || !TryGetImageSourceSize(out var imageWidth, out var imageHeight))
+            || !TryGetIntrinsicImageSize(out var imageWidth, out var imageHeight))
         {
             return false;
         }
@@ -475,6 +485,56 @@ public sealed class ImagePreviewController
         viewportWidth = _imageViewportView.ImageScrollViewer.ActualWidth;
         viewportHeight = _imageViewportView.ImageScrollViewer.ActualHeight;
         return viewportWidth > 0 && viewportHeight > 0;
+    }
+
+    private bool TryGetIntrinsicImageSize(out double imageWidth, out double imageHeight)
+    {
+        imageWidth = _imageSourceWidth;
+        imageHeight = _imageSourceHeight;
+        if (imageWidth > 0 && imageHeight > 0)
+        {
+            return true;
+        }
+
+        if (_imageViewportView.PreviewImageElement.Source is BitmapImage bitmap
+            && bitmap.PixelWidth > 0
+            && bitmap.PixelHeight > 0)
+        {
+            imageWidth = bitmap.PixelWidth;
+            imageHeight = bitmap.PixelHeight;
+            return true;
+        }
+
+        return false;
+    }
+
+    private Task RunOnPreviewThreadAsync(Action action)
+    {
+        var queue = _imageViewportView.DispatcherQueue;
+        if (queue.HasThreadAccess)
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!queue.TryEnqueue(() =>
+            {
+                try
+                {
+                    action();
+                    completion.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            completion.TrySetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return completion.Task;
     }
 
     private bool TryGetImageSourceSize(out double imageWidth, out double imageHeight)

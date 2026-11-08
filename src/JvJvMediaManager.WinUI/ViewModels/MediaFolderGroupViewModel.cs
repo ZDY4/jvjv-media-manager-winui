@@ -133,11 +133,21 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
         // Folder groups are a projection of the loaded media list. Keep these references intact
         // so selection, navigation, and deletion can use object identity safely.
         var nextItems = items.ToList();
-        if (nextItems.Count == 0 && _items.Count > 0)
+        if (nextItems.Count == 0)
         {
-            // A projection rebuild can race a folder-group load and pass an
-            // empty list. Keep the items already shown rather than dumping
-            // the GridView and immediately re-inserting them.
+            if (_items.Count == 0)
+            {
+                ApplyVisibleItems();
+                return;
+            }
+
+            // An empty projection means the folder's media is gone (deleted or
+            // filtered out). Callers skip this while a folder load is in flight
+            // so a rebuild cannot wipe items the load is about to publish.
+            _items.Clear();
+            _itemIds.Clear();
+            OnPropertyChanged(nameof(TotalCount));
+            OnPropertyChanged(nameof(CountText));
             ApplyVisibleItems();
             return;
         }
@@ -197,6 +207,37 @@ public sealed class MediaFolderGroupViewModel : ObservableObject
         OnPropertyChanged(nameof(TotalCount));
         OnPropertyChanged(nameof(CountText));
         ApplyVisibleItems();
+    }
+
+    public int RemoveLoadedIds(ISet<string> ids)
+    {
+        if (ids.Count == 0 || _items.Count == 0)
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        for (var index = _items.Count - 1; index >= 0; index--)
+        {
+            if (!ids.Contains(_items[index].Id))
+            {
+                continue;
+            }
+
+            _itemIds.Remove(_items[index].Id);
+            _items.RemoveAt(index);
+            removed++;
+        }
+
+        if (removed == 0)
+        {
+            return 0;
+        }
+
+        OnPropertyChanged(nameof(TotalCount));
+        OnPropertyChanged(nameof(CountText));
+        ApplyVisibleItems();
+        return removed;
     }
 
     private async void RefreshFolderAsync()

@@ -33,6 +33,11 @@ public sealed class MainPageShellController
     private const double PlayerEdgeNavigationRevealWidth = 96;
     private const double ZoomedImageNavigationHotspotWidth = 32;
     private const double NavigationGestureDragThreshold = 8;
+    private static readonly TimeSpan[] DeferredPlayerUpdateRetryDelays =
+    [
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5)
+    ];
 #if DEBUG
     private const string SmokeOpenIndependentWindowIdsEnvironmentVariable = "JVJVMM_SMOKE_OPEN_INDEPENDENT_WINDOW_IDS";
     private const string SmokeShowContextMenuMediaIdEnvironmentVariable = "JVJVMM_SMOKE_SHOW_CONTEXT_MENU_MEDIA_ID";
@@ -178,9 +183,7 @@ public sealed class MainPageShellController
             ForceUpdatePlayer,
             selected => _mediaBrowserController.SyncSelectionFromViewModel(selected),
             selected => _mediaBrowserController.PreserveSelectionDuringCollectionMutation(selected));
-        _missingMediaCleanupWorker = new MissingMediaCleanupWorker(
-            () => ViewModel.FilteredMediaItems.ToList(),
-            LogMissingMediaDetected);
+        _missingMediaCleanupWorker = new MissingMediaCleanupWorker(LogMissingMediaDetected);
         _mediaContextMenuCoordinator.PlaylistModified += MediaContextMenuCoordinator_PlaylistModified;
         _videoPlaybackController = _modules.CreateVideoPlaybackController(
             shell.Settings,
@@ -949,7 +952,7 @@ public sealed class MainPageShellController
     private async Task VerifyPlayerMediaAvailableAndUpdateAsync(MediaItemViewModel media, int version)
     {
         var availabilityStartTimestamp = Stopwatch.GetTimestamp();
-        var isAvailable = await _missingMediaCleanupWorker.IsMediaFileAvailableAsync(media);
+        var availability = await _missingMediaCleanupWorker.ProbeMediaFileAsync(media);
         var availabilityElapsedMs = Stopwatch.GetElapsedTime(availabilityStartTimestamp).TotalMilliseconds;
 
         if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
@@ -957,18 +960,55 @@ public sealed class MainPageShellController
             return;
         }
 
-        if (!isAvailable)
+        if (availability == MediaFileAvailability.Missing)
         {
             LogPlayerSwitchTrace(
                 0,
                 media,
                 "UpdatePlayerMissing",
-                $"FileAvailabilityMs={availabilityElapsedMs:0.###}.");
+                $"FileAvailabilityMs={availabilityElapsedMs:0.###}, Availability={availability}.");
             QueueMissingMediaCleanup(media, "update-player");
             return;
         }
 
-        if (!_page.DispatcherQueue.TryEnqueue(() =>
+        if (availability != MediaFileAvailability.Available)
+        {
+            // The storage stack could not answer (offline/stalled volume, I/O
+            // error, access denied). Keep the library entry and the current
+            // player content instead of attempting a source switch that would
+            // block the UI thread on a dead device.
+            LogPlayerSwitchTrace(
+                0,
+                media,
+                "UpdatePlayerDeferred",
+                $"FileAvailabilityMs={availabilityElapsedMs:0.###}, Availability={availability}.");
+            AppTraceLogger.LogSampled(
+                "MainPageShell",
+                "player-update-deferred-storage",
+                $"Deferred player update because the media file is temporarily unavailable. MediaId='{media.Id}', Path='{media.FileSystemPath}', FileAvailabilityMs={availabilityElapsedMs:0.###}.",
+                TimeSpan.FromSeconds(1));
+            await RunOnPageAsync(() =>
+            {
+                if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
+                {
+                    return;
+                }
+
+                ViewModel.StatusMessage = $"暂时无法访问媒体文件（存储设备未就绪），已保留媒体库记录：{media.FileName}";
+            });
+            _ = RetryDeferredPlayerUpdateAsync(media, version);
+            return;
+        }
+
+        if (!TryApplyPlayerUpdate(media, version))
+        {
+            AppTraceLogger.Log("MainPageShell", $"Verified player update dispatcher rejected. MediaId='{media.Id}'.");
+        }
+    }
+
+    private bool TryApplyPlayerUpdate(MediaItemViewModel media, int version)
+    {
+        return _page.DispatcherQueue.TryEnqueue(() =>
         {
             if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
             {
@@ -988,9 +1028,55 @@ public sealed class MainPageShellController
             {
                 _mediaBrowserController.RevealSelectedMedia(selected);
             }
-        }))
+        });
+    }
+
+    private async Task RetryDeferredPlayerUpdateAsync(MediaItemViewModel media, int version)
+    {
+        // A stalled volume usually recovers on its own. Retry a couple of times
+        // so the user does not have to reselect the same item (re-selecting it
+        // would not raise SelectedMedia again) once storage answers again.
+        try
         {
-            AppTraceLogger.Log("MainPageShell", $"Verified player update dispatcher rejected. MediaId='{media.Id}'.");
+            foreach (var delay in DeferredPlayerUpdateRetryDelays)
+            {
+                await Task.Delay(delay);
+                var stillSelected = await RunOnPageAsync(() =>
+                    !_isDisposed
+                    && version == Volatile.Read(ref _playerAvailabilityCheckVersion)
+                    && string.Equals(ViewModel.SelectedMedia?.Id, media.Id, StringComparison.Ordinal));
+                if (!stillSelected)
+                {
+                    return;
+                }
+
+                var availability = await _missingMediaCleanupWorker.ProbeMediaFileAsync(media);
+                if (_isDisposed || version != Volatile.Read(ref _playerAvailabilityCheckVersion))
+                {
+                    return;
+                }
+
+                if (availability == MediaFileAvailability.Available)
+                {
+                    AppTraceLogger.Log("MainPageShell", $"Media storage recovered; applying deferred player update. MediaId='{media.Id}'.");
+                    if (!TryApplyPlayerUpdate(media, version))
+                    {
+                        AppTraceLogger.Log("MainPageShell", $"Deferred player update dispatcher rejected. MediaId='{media.Id}'.");
+                    }
+
+                    return;
+                }
+
+                if (availability == MediaFileAvailability.Missing)
+                {
+                    QueueMissingMediaCleanup(media, "availability-retry");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("MainPageShell", $"Deferred player update retry failed. MediaId='{media.Id}'.", ex);
         }
     }
 
@@ -1041,60 +1127,144 @@ public sealed class MainPageShellController
             return;
         }
 
-        ClearPlayerSelection();
         _ = HandleMissingMediaAsync(media);
     }
 
     private async Task HandleMissingMediaAsync(MediaItemViewModel media)
     {
-        var cleanupIds = new HashSet<string>(StringComparer.Ordinal);
-        MediaItemViewModel? nextSelection = media;
-        var removedCount = 0;
-
         using var cleanupScope = _missingMediaCleanupWorker.EnterCleanup();
         try
         {
-            for (var round = 0; round < 4 && nextSelection != null && !await _missingMediaCleanupWorker.IsMediaFileAvailableAsync(nextSelection); round++)
+            // Re-confirm on a background thread before touching the library.
+            // A storage hiccup must never turn into a mass deletion.
+            var availability = await _missingMediaCleanupWorker.ProbeMediaFileAsync(media);
+            await RunOnPageAsync(async () =>
             {
-                var batch = (await _missingMediaCleanupWorker.BuildCleanupBatchAsync(nextSelection)).ToList();
-                if (batch.Count == 0)
+                if (_isDisposed)
                 {
-                    break;
+                    return;
                 }
 
-                _missingMediaCleanupWorker.MarkBatchQueued(batch, cleanupIds);
+                if (availability != MediaFileAvailability.Missing)
+                {
+                    AppTraceLogger.Log(
+                        "MainPageShell",
+                        $"Missing media cleanup skipped because the file is not confirmed missing. MediaId='{media.Id}', Availability={availability}, Path='{media.FileSystemPath}'.");
+                    ViewModel.StatusMessage = $"暂时无法访问媒体文件（存储设备未就绪），已保留媒体库记录：{media.FileName}";
+                    return;
+                }
 
-                removedCount += batch.Count;
                 AppTraceLogger.Log(
                     "MainPageShell",
-                    $"Missing media cleanup batch deleting. Round={round + 1}, Count={batch.Count}, FirstId='{batch[0].Id}', FirstFile='{batch[0].FileName}'.");
-                nextSelection = await ViewModel.DeleteMediaAsync(batch);
-                _mediaBrowserController.SuppressTransientEmptySelectionFor(nextSelection, "missing-media-cleanup");
-            }
-
-            ViewModel.StatusMessage = removedCount <= 1
-                ? $"媒体文件已不存在，已从媒体库移除：{media.FileName}"
-                : $"已从媒体库移除 {removedCount} 个不存在的媒体文件";
-
-            if (nextSelection == null)
-            {
+                    $"Missing media cleanup deleting confirmed-missing media. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
                 ClearPlayerSelection();
-            }
+                var nextSelection = await ViewModel.DeleteMediaAsync(new[] { media });
+                // DeleteMediaAsync awaits, and this process has no SynchronizationContext,
+                // so the rest of this callback is no longer on the UI thread.
+                await RunOnPageAsync(() =>
+                {
+                    if (_isDisposed)
+                    {
+                        return;
+                    }
 
-            AppTraceLogger.Log(
-                "MainPageShell",
-                $"Missing media cleanup completed. RequestedId='{media.Id}', Removed={removedCount}, NextSelection='{ViewModel.SelectedMedia?.Id ?? "<null>"}'.");
+                    _mediaBrowserController.SuppressTransientEmptySelectionFor(nextSelection, "missing-media-cleanup");
+                    ViewModel.StatusMessage = $"媒体文件已不存在，已从媒体库移除：{media.FileName}";
+                    if (nextSelection == null)
+                    {
+                        ClearPlayerSelection();
+                    }
+
+                    AppTraceLogger.Log(
+                        "MainPageShell",
+                        $"Missing media cleanup completed. RequestedId='{media.Id}', Removed=1, NextSelection='{ViewModel.SelectedMedia?.Id ?? "<null>"}'.");
+                });
+            });
         }
         catch (Exception ex)
         {
             AppTraceLogger.LogException("MainPageShell", $"Missing media cleanup failed. MediaId='{media.Id}'.", ex);
-            await ShowInfoDialogAsync("媒体已失效", $"文件不存在，且从媒体库移除失败：{media.FileName}{Environment.NewLine}{ex.Message}");
+            await RunOnPageAsync(() => ShowInfoDialogAsync("媒体已失效", $"文件不存在，且从媒体库移除失败：{media.FileName}{Environment.NewLine}{ex.Message}"));
         }
         finally
         {
-            _missingMediaCleanupWorker.ReleaseQueued(media, cleanupIds);
-            SyncSelectionFromViewModel();
+            _missingMediaCleanupWorker.ReleaseQueued(media);
+            try
+            {
+                await RunOnPageAsync(SyncSelectionFromViewModel);
+            }
+            catch (Exception ex)
+            {
+                AppTraceLogger.LogException("MainPageShell", $"Missing media cleanup could not sync selection. MediaId='{media.Id}'.", ex);
+            }
         }
+    }
+
+    private Task RunOnPageAsync(Action action)
+    {
+        return RunOnPageAsync(() =>
+        {
+            action();
+            return Task.CompletedTask;
+        });
+    }
+
+    private Task RunOnPageAsync(Func<Task> action)
+    {
+        if (_isDisposed)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (_page.DispatcherQueue.HasThreadAccess)
+        {
+            return action();
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_page.DispatcherQueue.TryEnqueue(async () =>
+            {
+                try
+                {
+                    await action();
+                    completion.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            completion.TrySetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return completion.Task;
+    }
+
+    private Task<T> RunOnPageAsync<T>(Func<T> action)
+    {
+        if (_page.DispatcherQueue.HasThreadAccess)
+        {
+            return Task.FromResult(action());
+        }
+
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_page.DispatcherQueue.TryEnqueue(() =>
+            {
+                try
+                {
+                    completion.TrySetResult(action());
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            }))
+        {
+            completion.TrySetException(new InvalidOperationException("无法切换到 UI 线程。"));
+        }
+
+        return completion.Task;
     }
 
     private void ClearPlayerSelection()
@@ -1743,28 +1913,33 @@ public sealed class MainPageShellController
         if (index < 0)
         {
             var found = await ViewModel.EnsureMediaItemLoadedAsync(currentMedia.Id);
-            index = IndexOfMediaId(list, currentMedia.Id);
-            if (!found || index < 0)
+            index = await RunOnPageAsync(() =>
             {
-                index = ResolveLoadedNavigationAnchorIndex(list, currentMedia);
-                if (index < 0)
+                var loadedIndex = IndexOfMediaId(list, currentMedia.Id);
+                if (found && loadedIndex >= 0)
                 {
-                    index = offset > 0 ? -1 : list.Count;
-                    AppTraceLogger.LogSampled(
-                        "MainPageShell",
-                        "navigate-relative-current-missing-boundary-fallback",
-                        $"NavigateRelative using boundary fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, FallbackIndex={index}.",
-                        TimeSpan.FromSeconds(1));
+                    return loadedIndex;
                 }
-                else
+
+                var anchorIndex = ResolveLoadedNavigationAnchorIndex(list, currentMedia);
+                if (anchorIndex >= 0)
                 {
                     AppTraceLogger.LogSampled(
                         "MainPageShell",
                         "navigate-relative-current-missing-anchor-fallback",
-                        $"NavigateRelative using loaded anchor fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, AnchorIndex={index}.",
+                        $"NavigateRelative using loaded anchor fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, AnchorIndex={anchorIndex}.",
                         TimeSpan.FromSeconds(1));
+                    return anchorIndex;
                 }
-            }
+
+                var fallbackIndex = offset > 0 ? -1 : list.Count;
+                AppTraceLogger.LogSampled(
+                    "MainPageShell",
+                    "navigate-relative-current-missing-boundary-fallback",
+                    $"NavigateRelative using boundary fallback because current media is not in the loaded list. Offset={offset}, CurrentId='{currentMedia.Id}', LoadedCount={list.Count}, FoundAfterLoad={found}, FallbackIndex={fallbackIndex}.",
+                    TimeSpan.FromSeconds(1));
+                return fallbackIndex;
+            });
         }
 
         var nextIndex = index + offset;
@@ -1773,13 +1948,18 @@ public sealed class MainPageShellController
             await ViewModel.EnsureMediaItemLoadedAsync(nextIndex);
         }
 
-        if (list.Count == 0)
+        await RunOnPageAsync(() =>
         {
-            return;
-        }
+            if (list.Count == 0)
+            {
+                return;
+            }
 
-        nextIndex = ((nextIndex % list.Count) + list.Count) % list.Count;
-        ViewModel.SelectedMedia = list[nextIndex];
+            var currentIndex = IndexOfMediaId(list, currentMedia.Id);
+            var targetIndex = currentIndex >= 0 ? currentIndex + offset : nextIndex;
+            targetIndex = ((targetIndex % list.Count) + list.Count) % list.Count;
+            ViewModel.SelectedMedia = list[targetIndex];
+        });
     }
 
     private int ResolveLoadedNavigationAnchorIndex(IReadOnlyList<MediaItemViewModel> items, MediaItemViewModel currentMedia)

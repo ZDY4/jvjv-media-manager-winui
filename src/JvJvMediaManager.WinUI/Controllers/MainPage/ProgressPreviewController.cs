@@ -322,7 +322,7 @@ internal sealed class ProgressPreviewController : IDisposable
 
     private async Task LoadFrameAsync(ProgressPreviewRequest request)
     {
-        if (!IsRequestCurrent(request))
+        if (_disposed || _isDisposed() || !IsRequestCurrent(request))
         {
             return;
         }
@@ -364,80 +364,144 @@ internal sealed class ProgressPreviewController : IDisposable
                 backgroundIo?.Dispose();
             }
             var generationElapsed = Stopwatch.GetElapsedTime(frameStartTimestamp);
-            if (frameBytes == null || cancellationToken.IsCancellationRequested)
-            {
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    RegisterFailure(request.MediaId, "frame-empty");
-                }
-
-                AppTraceLogger.LogSampled(
-                    "VideoHoverPreview",
-                    "preview-frame-empty",
-                    $"Progress preview frame generation returned no frame. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, Canceled={cancellationToken.IsCancellationRequested}, FfmpegAvailable={_hoverPreviewFrameService.IsAvailable}, ElapsedMs={generationElapsed.TotalMilliseconds:0}.",
-                    TimeSpan.FromSeconds(2));
-                return;
-            }
-
-            _enqueueSafeAsync(async () =>
-            {
-                if (cancellationToken.IsCancellationRequested || !IsRequestCurrent(request))
-                {
-                    AppTraceLogger.LogSampled(
-                        "VideoHoverPreview",
-                        "preview-frame-stale",
-                        $"Progress preview frame discarded as stale. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, TargetMatches={string.Equals(_targetCacheKey, request.CacheKey, StringComparison.Ordinal)}, Canceled={cancellationToken.IsCancellationRequested}.",
-                        TimeSpan.FromMilliseconds(500));
-                    return;
-                }
-
-                var source = await CreateImageSourceAsync(frameBytes);
-                if (source == null)
-                {
-                    RegisterFailure(request.MediaId, "decode-empty");
-                    return;
-                }
-
-                _frameCache.Add(request.CacheKey, source);
-                ResetFailures(request.MediaId);
-                _lastSource = source;
-                _transportBarView.ProgressPreviewImage.Source = source;
-                AppTraceLogger.LogSampled(
-                    "VideoHoverPreview",
-                    "preview-frame-applied",
-                    $"Progress preview frame applied. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, Bytes={frameBytes.Length}, CacheCount={_frameCache.Count}, GenerateElapsedMs={generationElapsed.TotalMilliseconds:0}.",
-                    TimeSpan.FromMilliseconds(500));
-            },
-            $"Progress preview frame UI apply failed. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}.");
+            ScheduleFrameLoadCompletion(request, cancellation, frameBytes, generationElapsed, generationError: null);
         }
         catch (OperationCanceledException)
         {
+            ScheduleFrameLoadCompletion(request, cancellation, frameBytes: null, generationElapsed: TimeSpan.Zero, generationError: null);
         }
-        finally
+        catch (Exception ex)
         {
-            if (ReferenceEquals(_frameCts, cancellation))
-            {
-                _frameCts = null;
-            }
-
-            if (string.Equals(_inFlightCacheKey, request.CacheKey, StringComparison.Ordinal))
-            {
-                _inFlightCacheKey = null;
-            }
-
-            cancellation.Dispose();
-
-            // Single-flight chase: if the pointer moved while this frame was
-            // generating, immediately start the latest pending target instead
-            // of waiting for another hover event.
-            var next = _pendingRequest;
-            _pendingRequest = null;
-            if (next != null
-                && !string.Equals(next.CacheKey, request.CacheKey, StringComparison.Ordinal))
-            {
-                _ = LoadFrameAsync(next);
-            }
+            // Debounce and the chase below start this method with a discarded
+            // task. Anything other than cancellation must be logged here or it
+            // becomes an unobserved exception during shutdown.
+            AppTraceLogger.LogException(
+                "VideoHoverPreview",
+                $"Progress preview frame generation failed. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}.",
+                ex);
+            ScheduleFrameLoadCompletion(request, cancellation, frameBytes: null, generationElapsed: TimeSpan.Zero, generationError: ex);
         }
+    }
+
+    private void ScheduleFrameLoadCompletion(
+        ProgressPreviewRequest request,
+        CancellationTokenSource cancellation,
+        byte[]? frameBytes,
+        TimeSpan generationElapsed,
+        Exception? generationError)
+    {
+        // GenerateFrameAsync continues off the UI thread. The in-flight flag,
+        // the pending chase, and the image element all belong to that thread;
+        // mutating them here dropped the newest hover target or set Source
+        // off-thread.
+        _enqueueSafeAsync(
+            () => FinishFrameLoadAsync(request, cancellation, frameBytes, generationElapsed, generationError),
+            $"Progress preview frame completion failed. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}.");
+    }
+
+    private async Task FinishFrameLoadAsync(
+        ProgressPreviewRequest request,
+        CancellationTokenSource cancellation,
+        byte[]? frameBytes,
+        TimeSpan generationElapsed,
+        Exception? generationError)
+    {
+        if (ReferenceEquals(_frameCts, cancellation))
+        {
+            _frameCts = null;
+        }
+
+        if (string.Equals(_inFlightCacheKey, request.CacheKey, StringComparison.Ordinal))
+        {
+            _inFlightCacheKey = null;
+        }
+
+        var canceled = false;
+        try
+        {
+            canceled = cancellation.IsCancellationRequested;
+            cancellation.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+            canceled = true;
+        }
+
+        // Single-flight chase: if the pointer moved while this frame was
+        // generating, immediately start the latest pending target instead
+        // of waiting for another hover event.
+        var next = _pendingRequest;
+        _pendingRequest = null;
+        if (next != null
+            && !_disposed
+            && !_isDisposed()
+            && !string.Equals(next.CacheKey, request.CacheKey, StringComparison.Ordinal))
+        {
+            _ = LoadFrameAsync(next);
+        }
+
+        if (generationError != null || frameBytes == null)
+        {
+            if (generationError == null && !canceled)
+            {
+                RegisterFailure(request.MediaId, "frame-empty");
+                AppTraceLogger.LogSampled(
+                    "VideoHoverPreview",
+                    "preview-frame-empty",
+                    $"Progress preview frame generation returned no frame. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, Canceled={canceled}, FfmpegAvailable={_hoverPreviewFrameService.IsAvailable}, ElapsedMs={generationElapsed.TotalMilliseconds:0}.",
+                    TimeSpan.FromSeconds(2));
+            }
+
+            return;
+        }
+
+        if (!IsRequestCurrent(request))
+        {
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "preview-frame-stale",
+                $"Progress preview frame discarded as stale. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, TargetMatches={string.Equals(_targetCacheKey, request.CacheKey, StringComparison.Ordinal)}.",
+                TimeSpan.FromMilliseconds(500));
+            return;
+        }
+
+        var source = await CreateImageSourceAsync(frameBytes);
+        _enqueueSafeAsync(
+            () =>
+            {
+                ApplyGeneratedFrame(request, source, frameBytes.Length, generationElapsed);
+                return Task.CompletedTask;
+            },
+            $"Progress preview frame UI apply failed. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}.");
+    }
+
+    private void ApplyGeneratedFrame(ProgressPreviewRequest request, ImageSource? source, int byteCount, TimeSpan generationElapsed)
+    {
+        if (_disposed || _isDisposed() || !IsRequestCurrent(request))
+        {
+            AppTraceLogger.LogSampled(
+                "VideoHoverPreview",
+                "preview-frame-stale",
+                $"Progress preview frame discarded as stale. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, TargetMatches={string.Equals(_targetCacheKey, request.CacheKey, StringComparison.Ordinal)}.",
+                TimeSpan.FromMilliseconds(500));
+            return;
+        }
+
+        if (source == null)
+        {
+            RegisterFailure(request.MediaId, "decode-empty");
+            return;
+        }
+
+        _frameCache.Add(request.CacheKey, source);
+        ResetFailures(request.MediaId);
+        _lastSource = source;
+        _transportBarView.ProgressPreviewImage.Source = source;
+        AppTraceLogger.LogSampled(
+            "VideoHoverPreview",
+            "preview-frame-applied",
+            $"Progress preview frame applied. MediaId='{request.MediaId}', Bucket={request.BucketedPlaybackTime.TotalSeconds:F3}, Bytes={byteCount}, CacheCount={_frameCache.Count}, GenerateElapsedMs={generationElapsed.TotalMilliseconds:0}.",
+            TimeSpan.FromMilliseconds(500));
     }
 
     private bool IsFrameAlreadyPending(string cacheKey)

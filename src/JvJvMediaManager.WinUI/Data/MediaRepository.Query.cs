@@ -563,6 +563,7 @@ INNER JOIN playlist_media pm
         IReadOnlyList<string> excludedFolders,
         string? playlistId,
         IReadOnlyList<string> excludedMediaIds,
+        MediaType? typeFilter,
         string? ftsSearch)
     {
         var sql = new StringBuilder(@"
@@ -650,6 +651,12 @@ INNER JOIN playlist_media pm
 ");
             cmd.Parameters.AddWithValue($"{parameterName}Exact", excludedFolders[i]);
             cmd.Parameters.AddWithValue(parameterName, BuildFolderLikePattern(excludedFolders[i]).Pattern);
+        }
+
+        if (typeFilter.HasValue)
+        {
+            sql.Append("\n  AND m.type = $typeFilter COLLATE NOCASE\n");
+            cmd.Parameters.AddWithValue("$typeFilter", typeFilter.Value.ToString().ToLowerInvariant());
         }
 
         if (excludedMediaIds.Count > 0)

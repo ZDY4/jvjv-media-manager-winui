@@ -38,13 +38,93 @@ public sealed class IndependentMediaWindowService : IDisposable
             return;
         }
 
+        var queue = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        var pending = new List<(MediaItemViewModel Media, string Path, IReadOnlyList<IndependentMediaWindowMedia> Navigation)>(mediaItems.Count);
         foreach (var media in mediaItems)
         {
             // Each window only needs a prev/next neighborhood around its
             // starting item. Sharing the entire library snapshot would
             // copy thousands of view-models onto the UI thread.
-            var navigationSnapshots = CreateNavigationSnapshots(navigationItems, new[] { media });
-            OpenMediaWindow(media, navigationSnapshots);
+            pending.Add((media, media.FileSystemPath, CreateNavigationSnapshots(navigationItems, new[] { media })));
+        }
+
+        _ = OpenMediaWindowsAfterProbeAsync(pending, queue);
+    }
+
+    private async Task OpenMediaWindowsAfterProbeAsync(
+        List<(MediaItemViewModel Media, string Path, IReadOnlyList<IndependentMediaWindowMedia> Navigation)> pending,
+        Microsoft.UI.Dispatching.DispatcherQueue? queue)
+    {
+        try
+        {
+            var opened = new List<(MediaItemViewModel Media, IReadOnlyList<IndependentMediaWindowMedia> Navigation)>(pending.Count);
+            foreach (var item in pending)
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                MediaFileProbeResult probe;
+                try
+                {
+                    var path = item.Path;
+                    probe = await Task.Run(() => MediaFileProbe.Probe(path));
+                }
+                catch (Exception ex)
+                {
+                    AppTraceLogger.LogException("IndependentMediaWindow", $"OpenMediaWindows probe failed. MediaId='{item.Media.Id}'.", ex);
+                    probe = new MediaFileProbeResult(MediaFileAvailability.Unavailable, 0);
+                }
+
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                if (probe.Availability == MediaFileAvailability.Missing)
+                {
+                    AppTraceLogger.Log(
+                        "IndependentMediaWindow",
+                        $"Skipped missing media. MediaId='{item.Media.Id}', File='{item.Media.FileName}', Path='{item.Path}'.");
+                    continue;
+                }
+
+                opened.Add((item.Media, item.Navigation));
+            }
+
+            if (opened.Count == 0 || _isDisposed)
+            {
+                return;
+            }
+
+            void OpenAll()
+            {
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                foreach (var item in opened)
+                {
+                    OpenProbedMediaWindow(item.Media, item.Navigation);
+                }
+            }
+
+            if (queue == null)
+            {
+                AppTraceLogger.Log("IndependentMediaWindow", "OpenMediaWindows skipped because no UI dispatcher was available.");
+                return;
+            }
+
+            if (!queue.TryEnqueue(OpenAll))
+            {
+                AppTraceLogger.Log("IndependentMediaWindow", "OpenMediaWindows dispatcher rejected.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppTraceLogger.LogException("IndependentMediaWindow", "OpenMediaWindows failed.", ex);
         }
     }
 
@@ -114,20 +194,12 @@ public sealed class IndependentMediaWindowService : IDisposable
         return window.TryHandleShortcutAsync(key);
     }
 
-    private void OpenMediaWindow(
+    private void OpenProbedMediaWindow(
         MediaItemViewModel media,
         IReadOnlyList<IndependentMediaWindowMedia> navigationItems)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(media.FileSystemPath) || !File.Exists(media.FileSystemPath))
-            {
-                AppTraceLogger.Log(
-                    "IndependentMediaWindow",
-                    $"Skipped missing media. MediaId='{media.Id}', File='{media.FileName}', Path='{media.FileSystemPath}'.");
-                return;
-            }
-
             var initialIndex = FindNavigationIndex(navigationItems, media.Id);
             var window = new IndependentMediaWindow(navigationItems, initialIndex);
             TrackAndActivate(window);
